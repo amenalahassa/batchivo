@@ -44,6 +44,16 @@ export type ModelFileType = 'source_stl' | 'source_3mf' | 'slicer_project' | 'gc
 // Where the file is stored
 export type FileLocation = 'uploaded' | 'local_reference'
 
+// Result of parsing a .3mf file's embedded slicer metadata (transient, not persisted)
+export interface ThreeMFParseResponse {
+  print_time_minutes: number | null
+  filament_weight_grams: number | null
+  plate_count: number | null
+  source_plate_index: number | null
+  slicer_detected: 'bambu_orca' | 'prusaslicer' | null
+  thumbnail_available: boolean
+}
+
 export interface ModelFile {
   id: string
   model_id: string
@@ -396,6 +406,31 @@ export async function uploadModelFile(
 
   const result = await response.json()
   return result.file
+}
+
+/**
+ * Parse a .3mf file's embedded slicer metadata (print time, filament weight,
+ * plate count) without attaching it to any model. Used to pre-fill the model
+ * creation form before a model exists.
+ */
+export async function parse3mfFile(file: File): Promise<ThreeMFParseResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${config.apiBaseUrl}/api/v1/models/files/parse-3mf`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+    },
+    body: formData,
+  })
+
+  if (!response.ok) {
+    const error = await response.json()
+    throw new Error(error.detail || 'Failed to parse 3MF file')
+  }
+
+  return response.json()
 }
 
 /**

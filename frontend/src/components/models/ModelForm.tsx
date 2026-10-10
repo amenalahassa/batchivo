@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, RefreshCw } from 'lucide-react'
 
-import { createModel, updateModel, listModels, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest } from '@/lib/api/models'
+import { createModel, updateModel, listModels, parse3mfFile, uploadModelFile, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest } from '@/lib/api/models'
 import { listDesigners } from '@/lib/api/designers'
 import { useNextSKU } from '@/hooks/useSKU'
 
@@ -91,6 +91,12 @@ export function ModelForm({ model, mode }: ModelFormProps) {
   const [customSource, setCustomSource] = useState('')
   const [customMachine, setCustomMachine] = useState('')
 
+  // 3MF import auto-fill state (create mode only)
+  const [isParsing3mf, setIsParsing3mf] = useState(false)
+  const [parse3mfError, setParse3mfError] = useState<string | null>(null)
+  const [parsedWeightGrams, setParsedWeightGrams] = useState<number | null>(null)
+  const [uploadedThreeMfFile, setUploadedThreeMfFile] = useState<File | null>(null)
+
   // Fetch existing models to get unique values for sources/machines
   const { data: modelsData } = useQuery({
     queryKey: ['models', { limit: 500 }],
@@ -160,9 +166,59 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     mutationFn: (data: ModelCreateRequest) => createModel(data),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['models'] })
+      if (parsedWeightGrams != null) {
+        try {
+          // Carried client-side only (research.md §5) - BOMEditor reads and
+          // clears this the first time it opens for this model.
+          sessionStorage.setItem(`model-weight-suggestion:${data.id}`, String(parsedWeightGrams))
+        } catch {
+          // sessionStorage unavailable (private browsing, etc.) - the
+          // suggestion is a convenience, not critical, so just skip it.
+        }
+      }
+      if (uploadedThreeMfFile) {
+        // Attach the originally-uploaded .3mf so the model gets a ModelFile
+        // record and the existing thumbnail-extraction path runs exactly as
+        // it does for the pre-existing post-creation upload flow (FR-006).
+        // Best-effort: a failure here shouldn't block navigation to the
+        // model that was already successfully created.
+        uploadModelFile(data.id, uploadedThreeMfFile, 'source_3mf').catch((err) => {
+          console.error('Failed to attach the uploaded 3MF file to the new model:', err)
+        })
+      }
       navigate({ to: '/models/$modelId', params: { modelId: data.id } })
     },
   })
+
+  const handle3mfUpload = async (file: File) => {
+    setIsParsing3mf(true)
+    setParse3mfError(null)
+    try {
+      const result = await parse3mfFile(file)
+      const dirtyFields = form.formState.dirtyFields
+
+      if (
+        result.print_time_minutes != null &&
+        !dirtyFields.print_time_hours &&
+        !dirtyFields.print_time_minutes
+      ) {
+        form.setValue('print_time_hours', Math.floor(result.print_time_minutes / 60).toString())
+        form.setValue('print_time_minutes', (result.print_time_minutes % 60).toString())
+      }
+
+      if (result.plate_count != null && !dirtyFields.prints_per_plate) {
+        form.setValue('prints_per_plate', result.plate_count.toString())
+      }
+
+      if (result.filament_weight_grams != null) {
+        setParsedWeightGrams(result.filament_weight_grams)
+      }
+    } catch (err) {
+      setParse3mfError(err instanceof Error ? err.message : 'Failed to parse 3MF file')
+    } finally {
+      setIsParsing3mf(false)
+    }
+  }
 
   const updateMutation = useMutation({
     mutationFn: (data: ModelUpdateRequest) => updateModel(model!.id, data),
@@ -419,6 +475,40 @@ export function ModelForm({ model, mode }: ModelFormProps) {
               )}
             />
           </div>
+
+          {mode === 'create' && (
+            <div className="rounded-md border border-dashed p-4 space-y-2">
+              <label htmlFor="model-3mf-upload" className="text-sm font-medium">
+                Auto-fill from .3mf file (optional)
+              </label>
+              <Input
+                id="model-3mf-upload"
+                type="file"
+                accept=".3mf"
+                disabled={isParsing3mf}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) {
+                    // Captured regardless of parse outcome (FR-006) so it
+                    // can still be attached to the model after creation.
+                    setUploadedThreeMfFile(file)
+                    void handle3mfUpload(file)
+                  }
+                  e.target.value = ''
+                }}
+              />
+              <p className="text-sm text-muted-foreground">
+                Pre-fills print time and plate count from the slicer's embedded data. You can
+                still edit any field before saving.
+              </p>
+              {isParsing3mf && (
+                <p className="text-sm text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Parsing file...
+                </p>
+              )}
+              {parse3mfError && <p className="text-sm text-destructive">{parse3mfError}</p>}
+            </div>
+          )}
 
           <div className="grid gap-4 md:grid-cols-5">
             <FormField

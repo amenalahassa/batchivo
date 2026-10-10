@@ -134,3 +134,31 @@ class LocalPathValidationResponse(BaseModel):
     is_file: bool = Field(False, description="Whether the path is a file (not directory)")
     file_size: Optional[int] = Field(None, description="File size in bytes if exists")
     filename: Optional[str] = Field(None, description="Extracted filename from path")
+
+
+class ThreeMFParseResponse(BaseModel):
+    """Response for parsing embedded slicer metadata out of a 3MF file.
+
+    Transient/informational only - parsing never creates or modifies a
+    Model, ModelFile, or ModelMaterial record.
+    """
+
+    print_time_minutes: Optional[int] = Field(
+        None, description="Estimated print time in minutes, from the selected plate"
+    )
+    filament_weight_grams: Optional[float] = Field(
+        None, description="Total filament weight in grams, from the selected plate"
+    )
+    plate_count: Optional[int] = Field(
+        None, description="Total number of plates found in the file"
+    )
+    source_plate_index: Optional[int] = Field(
+        None,
+        description="1-based index of the plate print_time_minutes/filament_weight_grams were taken from",
+    )
+    slicer_detected: Optional[str] = Field(
+        None, description="'bambu_orca', 'prusaslicer', or None if unrecognized"
+    )
+    thumbnail_available: bool = Field(
+        False, description="Whether a thumbnail was also found in this file"
+    )

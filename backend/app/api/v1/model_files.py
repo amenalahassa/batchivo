@@ -18,9 +18,17 @@ from app.schemas.model_file import (
     ModelFileResponse,
     ModelFileUpdate,
     ModelFileUploadResponse,
+    ThreeMFParseResponse,
     ModelFileType as SchemaFileType,
 )
-from app.services.model_file_service import ModelFileService, ModelFileStorageError
+from app.services.model_file_service import (
+    ALLOWED_EXTENSIONS,
+    MAX_FILE_SIZE,
+    ModelFileService,
+    ModelFileStorageError,
+    extract_3mf_thumbnail,
+    parse_3mf_metadata,
+)
 
 router = APIRouter()
 
@@ -168,6 +176,48 @@ async def validate_local_path(
     """
     result = ModelFileService.validate_local_path(data.path)
     return LocalPathValidationResponse(**result)
+
+
+@router.post(
+    "/files/parse-3mf",
+    response_model=ThreeMFParseResponse,
+    summary="Parse 3MF slicer metadata",
+    description=(
+        "Parse an uploaded .3mf file for embedded print time, filament weight, "
+        "and plate count, without creating or modifying any model record."
+    ),
+)
+async def parse_3mf_file(
+    file: UploadFile = File(..., description="The .3mf file to parse"),
+    user: CurrentUser = None,
+    tenant: CurrentTenant = None,
+) -> ThreeMFParseResponse:
+    """
+    Parse slicer-embedded metadata out of a .3mf file for use as suggested
+    form values. Does not require an existing model and never persists
+    anything - purely informational.
+    """
+    content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"File too large: {len(content)} bytes. Maximum: {MAX_FILE_SIZE} bytes",
+        )
+
+    extension = (file.filename or "").rsplit(".", 1)
+    extension = f".{extension[-1].lower()}" if len(extension) == 2 else ""
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file type: {extension}. Allowed: {', '.join(ALLOWED_EXTENSIONS)}",
+        )
+
+    parse_result = parse_3mf_metadata(content)
+    thumbnail_result = extract_3mf_thumbnail(content)
+    parse_result.thumbnail_available = thumbnail_result is not None
+
+    return parse_result
 
 
 @router.get(

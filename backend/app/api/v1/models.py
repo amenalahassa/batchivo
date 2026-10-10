@@ -171,6 +171,52 @@ async def list_models(
     )
 
 
+@router.get("/export")
+async def export_models_csv(
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Export all models to CSV file.
+
+    Returns CSV with columns matching import format.
+    """
+    # Fetch all models with relationships
+    query = (
+        select(Model)
+        .where(
+            Model.tenant_id == tenant.id,
+            Model.is_active.is_(True),
+        )
+        .options(
+            selectinload(Model.materials).selectinload(ModelMaterial.spool),
+        )
+        .order_by(Model.created_at.desc())
+    )
+
+    result = await db.execute(query)
+    models = result.scalars().all()
+
+    # Convert to dicts with cost breakdown
+    model_dicts = []
+    for model in models:
+        model_dict = await model_with_cost(model)
+        model_dicts.append(model_dict)
+
+    # Generate CSV
+    csv_content = generate_csv_export(model_dicts)
+
+    # Return as downloadable file
+    return StreamingResponse(
+        iter([csv_content]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=models_export.csv"},
+    )
+
+
+# NOTE: /export (above) must be defined BEFORE /{model_id} (below) so the
+# literal "export" segment isn't swallowed as a model_id path parameter.
 @router.get("/{model_id}", response_model=ModelDetailResponse)
 async def get_model(
     model_id: UUID,
@@ -685,47 +731,3 @@ async def import_models_csv(
         "total_rows": len(rows),
         "errors": errors if errors else None,
     }
-
-
-@router.get("/export")
-async def export_models_csv(
-    user: CurrentUser,
-    tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Export all models to CSV file.
-
-    Returns CSV with columns matching import format.
-    """
-    # Fetch all models with relationships
-    query = (
-        select(Model)
-        .where(
-            Model.tenant_id == tenant.id,
-            Model.is_active.is_(True),
-        )
-        .options(
-            selectinload(Model.materials).selectinload(ModelMaterial.spool),
-        )
-        .order_by(Model.created_at.desc())
-    )
-
-    result = await db.execute(query)
-    models = result.scalars().all()
-
-    # Convert to dicts with cost breakdown
-    model_dicts = []
-    for model in models:
-        model_dict = await model_with_cost(model)
-        model_dicts.append(model_dict)
-
-    # Generate CSV
-    csv_content = generate_csv_export(model_dicts)
-
-    # Return as downloadable file
-    return StreamingResponse(
-        iter([csv_content]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=models_export.csv"},
-    )

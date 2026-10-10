@@ -32,17 +32,20 @@ CORS_ALLOW_HEADERS = [
 async def lifespan(app: FastAPI):
     """Application lifespan manager (startup and shutdown)."""
     # Startup
-    print(f"🚀 Starting {settings.app_name} ({settings.environment})")
+    # NOTE: these use logger.info (not print) with plain ASCII text because
+    # print() with emoji crashes on startup on Windows terminals whose
+    # console codepage (e.g. cp1252) can't encode them (UnicodeEncodeError).
+    logger.info(f"Starting {settings.app_name} ({settings.environment})")
 
     # Initialize Sentry error monitoring (before other services)
     from app.observability.sentry import init_sentry
 
     if init_sentry():
-        print("✓ Sentry error monitoring enabled")
+        logger.info("Sentry error monitoring enabled")
 
     # Initialize database
     await init_db()
-    print("✓ Database initialized")
+    logger.info("Database initialized")
 
     # Set up OpenTelemetry (if enabled)
     if settings.enable_tracing:
@@ -52,21 +55,21 @@ async def lifespan(app: FastAPI):
         from app.database import engine
 
         instrument_app(app, engine)
-        print("✓ OpenTelemetry tracing enabled")
+        logger.info("OpenTelemetry tracing enabled")
 
     # Set up OpenTelemetry Metrics (if enabled)
     if settings.enable_metrics:
         from app.observability.metrics import setup_metrics
 
         setup_metrics(prometheus_port=9090)
-        print("✓ OpenTelemetry metrics enabled")
+        logger.info("OpenTelemetry metrics enabled")
 
     yield
 
     # Shutdown
-    print("👋 Shutting down...")
+    logger.info("Shutting down...")
     await close_db()
-    print("✓ Database connections closed")
+    logger.info("Database connections closed")
 
 
 # Create FastAPI app
