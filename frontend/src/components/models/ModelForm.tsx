@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, RefreshCw } from 'lucide-react'
 
-import { createModel, updateModel, listModels, parse3mfFile, uploadModelFile, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest } from '@/lib/api/models'
+import { createModel, updateModel, listModels, parse3mfFile, uploadModelFile, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest, type ThreeMFParseResponse } from '@/lib/api/models'
 import { listDesigners } from '@/lib/api/designers'
 import { useNextSKU } from '@/hooks/useSKU'
 
@@ -52,6 +52,16 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
+import { AlertCircle, FileCheck2 } from 'lucide-react'
+
+function formatPrintTime(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  if (hours === 0) return `${mins}m`
+  if (mins === 0) return `${hours}h`
+  return `${hours}h ${mins}m`
+}
 
 const modelFormSchema = z.object({
   sku: z.string().min(1, 'SKU is required').max(100, 'SKU must be 100 characters or less'),
@@ -96,6 +106,13 @@ export function ModelForm({ model, mode }: ModelFormProps) {
   const [parse3mfError, setParse3mfError] = useState<string | null>(null)
   const [parsedWeightGrams, setParsedWeightGrams] = useState<number | null>(null)
   const [uploadedThreeMfFile, setUploadedThreeMfFile] = useState<File | null>(null)
+  const [threeMfResult, setThreeMfResult] = useState<ThreeMFParseResponse | null>(null)
+  const [threeMfApplied, setThreeMfApplied] = useState(false)
+  const [applySelection, setApplySelection] = useState({
+    printTime: true,
+    plateCount: true,
+    weight: true,
+  })
 
   // Fetch existing models to get unique values for sources/machines
   const { data: modelsData } = useQuery({
@@ -190,34 +207,53 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     },
   })
 
+  const hasThreeMfPrefillData = (result: ThreeMFParseResponse) =>
+    result.print_time_minutes != null || result.plate_count != null || result.filament_weight_grams != null
+
   const handle3mfUpload = async (file: File) => {
     setIsParsing3mf(true)
     setParse3mfError(null)
+    setThreeMfResult(null)
+    setThreeMfApplied(false)
+    setParsedWeightGrams(null)
     try {
       const result = await parse3mfFile(file)
-      const dirtyFields = form.formState.dirtyFields
-
-      if (
-        result.print_time_minutes != null &&
-        !dirtyFields.print_time_hours &&
-        !dirtyFields.print_time_minutes
-      ) {
-        form.setValue('print_time_hours', Math.floor(result.print_time_minutes / 60).toString())
-        form.setValue('print_time_minutes', (result.print_time_minutes % 60).toString())
-      }
-
-      if (result.plate_count != null && !dirtyFields.prints_per_plate) {
-        form.setValue('prints_per_plate', result.plate_count.toString())
-      }
-
-      if (result.filament_weight_grams != null) {
-        setParsedWeightGrams(result.filament_weight_grams)
-      }
+      setThreeMfResult(result)
+      setApplySelection({ printTime: true, plateCount: true, weight: true })
     } catch (err) {
       setParse3mfError(err instanceof Error ? err.message : 'Failed to parse 3MF file')
     } finally {
       setIsParsing3mf(false)
     }
+  }
+
+  const applyThreeMfResult = () => {
+    if (!threeMfResult) return
+    const dirtyFields = form.formState.dirtyFields
+
+    if (
+      applySelection.printTime &&
+      threeMfResult.print_time_minutes != null &&
+      !dirtyFields.print_time_hours &&
+      !dirtyFields.print_time_minutes
+    ) {
+      form.setValue('print_time_hours', Math.floor(threeMfResult.print_time_minutes / 60).toString())
+      form.setValue('print_time_minutes', (threeMfResult.print_time_minutes % 60).toString())
+    }
+
+    if (
+      applySelection.plateCount &&
+      threeMfResult.plate_count != null &&
+      !dirtyFields.prints_per_plate
+    ) {
+      form.setValue('prints_per_plate', threeMfResult.plate_count.toString())
+    }
+
+    if (applySelection.weight && threeMfResult.filament_weight_grams != null) {
+      setParsedWeightGrams(threeMfResult.filament_weight_grams)
+    }
+
+    setThreeMfApplied(true)
   }
 
   const updateMutation = useMutation({
@@ -498,15 +534,94 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                 }}
               />
               <p className="text-sm text-muted-foreground">
-                Pre-fills print time and plate count from the slicer's embedded data. You can
-                still edit any field before saving.
+                Parses the slicer's embedded print time, plate count, and filament weight. After
+                parsing, you choose which values to apply to the form below.
               </p>
               {isParsing3mf && (
                 <p className="text-sm text-muted-foreground flex items-center gap-1">
                   <Loader2 className="h-3 w-3 animate-spin" /> Parsing file...
                 </p>
               )}
-              {parse3mfError && <p className="text-sm text-destructive">{parse3mfError}</p>}
+
+              {parse3mfError && (
+                <p className="text-sm text-destructive flex items-start gap-1">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{parse3mfError}</span>
+                </p>
+              )}
+
+              {threeMfResult && !hasThreeMfPrefillData(threeMfResult) && (
+                <div className="rounded-md bg-muted p-3 text-sm space-y-1">
+                  <p className="font-medium flex items-center gap-1">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    No print data found in &quot;{uploadedThreeMfFile?.name}&quot;
+                  </p>
+                  <p className="text-muted-foreground">
+                    {threeMfResult.thumbnail_available
+                      ? 'A thumbnail was extracted, but no print time, plate count, or filament weight was found. '
+                      : 'Nothing could be extracted from this file. '}
+                    This usually means the file was exported directly from CAD software (e.g.
+                    Fusion 360) rather than sliced. To auto-fill these fields, open it in a
+                    slicer — Bambu Studio, OrcaSlicer, or PrusaSlicer — slice it, then upload the
+                    sliced .3mf here instead.
+                  </p>
+                </div>
+              )}
+
+              {threeMfResult && hasThreeMfPrefillData(threeMfResult) && (
+                <div className="rounded-md border p-3 space-y-2">
+                  <p className="text-sm font-medium flex items-center gap-1">
+                    <FileCheck2 className="h-4 w-4 shrink-0" />
+                    Found in &quot;{uploadedThreeMfFile?.name}&quot; — choose what to apply:
+                  </p>
+                  <div className="space-y-2">
+                    {threeMfResult.print_time_minutes != null && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={applySelection.printTime}
+                          disabled={threeMfApplied}
+                          onCheckedChange={(checked) =>
+                            setApplySelection((prev) => ({ ...prev, printTime: checked === true }))
+                          }
+                        />
+                        Print time: {formatPrintTime(threeMfResult.print_time_minutes)}
+                      </label>
+                    )}
+                    {threeMfResult.plate_count != null && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={applySelection.plateCount}
+                          disabled={threeMfApplied}
+                          onCheckedChange={(checked) =>
+                            setApplySelection((prev) => ({ ...prev, plateCount: checked === true }))
+                          }
+                        />
+                        Plates: {threeMfResult.plate_count}
+                      </label>
+                    )}
+                    {threeMfResult.filament_weight_grams != null && (
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={applySelection.weight}
+                          disabled={threeMfApplied}
+                          onCheckedChange={(checked) =>
+                            setApplySelection((prev) => ({ ...prev, weight: checked === true }))
+                          }
+                        />
+                        Filament weight: {threeMfResult.filament_weight_grams}g (suggested on the
+                        next step, after saving)
+                      </label>
+                    )}
+                  </div>
+                  {threeMfApplied ? (
+                    <p className="text-sm text-muted-foreground">Applied to the form below.</p>
+                  ) : (
+                    <Button type="button" size="sm" onClick={applyThreeMfResult}>
+                      Apply to form
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

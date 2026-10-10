@@ -109,7 +109,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
     mockUploadModelFile.mockResolvedValue({ id: 'file-1' })
   })
 
-  it('pre-fills print time and plate count from a parsed 3MF upload', async () => {
+  it('shows a review of parsed values and pre-fills the form once applied', async () => {
     mockParse3mfFile.mockResolvedValue({
       print_time_minutes: 125,
       filament_weight_grams: 15.5,
@@ -126,16 +126,46 @@ describe('ModelForm - 3MF import auto-fill', () => {
 
     await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
 
-    const hoursField = await screen.findByLabelText('Plate Print Time')
+    // The parsed values are shown for review before touching the form.
+    await screen.findByText(/print time: 2h 5m/i)
+    await screen.findByText(/plates: 2/i)
+    const hoursField = screen.getByLabelText('Plate Print Time')
     const minutesField = screen.getByLabelText('')
     const platesField = screen.getByLabelText('Items per Plate')
+    expect(hoursField).toHaveValue(null)
+    expect(platesField).toHaveValue(1) // schema default, unrelated to the parse result
+
+    await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
 
     await waitFor(() => expect(hoursField).toHaveValue(2)) // 125 min -> 2h 5m
     expect(minutesField).toHaveValue(5)
     expect(platesField).toHaveValue(2)
   })
 
-  it('does not overwrite a field the maker already edited before uploading', async () => {
+  it('shows a hint to slice the file first when nothing could be parsed', async () => {
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: null,
+      filament_weight_grams: null,
+      plate_count: null,
+      source_plate_index: null,
+      slicer_detected: null,
+      thumbnail_available: false,
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    const fileInput = await screen.findByLabelText(/auto-fill from \.3mf/i)
+    await userEvent.upload(fileInput, makeThreeMfFile('fusion-export.3mf'))
+
+    await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+
+    await screen.findByText(/no print data found/i)
+    expect(screen.getByText(/fusion 360/i)).toBeInTheDocument()
+    expect(screen.getByText(/bambu studio, orcaslicer, or prusaslicer/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /apply to form/i })).not.toBeInTheDocument()
+  })
+
+  it('does not overwrite a field the maker already edited before applying', async () => {
     mockParse3mfFile.mockResolvedValue({
       print_time_minutes: 125,
       filament_weight_grams: null,
@@ -155,8 +185,9 @@ describe('ModelForm - 3MF import auto-fill', () => {
     await userEvent.upload(fileInput, makeThreeMfFile())
 
     await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+    await userEvent.click(await screen.findByRole('button', { name: /apply to form/i }))
 
-    // The maker's manually-entered value survives the later parse result.
+    // The maker's manually-entered value survives applying the parse result.
     await waitFor(() => expect(platesField).toHaveValue(3))
   })
 

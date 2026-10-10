@@ -8,6 +8,39 @@
 import { apiClient } from '../api'
 import { config } from '../config'
 
+/**
+ * Extract a human-readable message from a failed fetch Response.
+ *
+ * FastAPI's `detail` is usually a string, but on a 422 validation error it's
+ * an array of {msg, loc, ...} objects - passing that straight to `new
+ * Error()` stringifies to "[object Object]". Also guards against a
+ * non-JSON error body (e.g. an HTML page from a proxy/gateway in front of
+ * a down backend), which would otherwise throw out of `response.json()`
+ * and mask the real HTTP status.
+ */
+async function extractErrorMessage(response: Response, fallback: string): Promise<string> {
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return `${fallback} (server returned ${response.status} ${response.statusText || ''}`.trim() + ')'
+  }
+
+  const detail = (body as { detail?: unknown } | null)?.detail
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail
+  }
+  if (Array.isArray(detail) && detail.length > 0) {
+    const messages = detail
+      .map((item) => (item && typeof item === 'object' && 'msg' in item ? String(item.msg) : null))
+      .filter((msg): msg is string => !!msg)
+    if (messages.length > 0) {
+      return messages.join('; ')
+    }
+  }
+  return `${fallback} (server returned ${response.status})`
+}
+
 // ==================== Types ====================
 
 export interface CostBreakdown {
@@ -391,17 +424,21 @@ export async function uploadModelFile(
   if (options?.isPrimary) formData.append('is_primary', 'true')
   if (options?.notes) formData.append('notes', options.notes)
 
-  const response = await fetch(`${config.apiBaseUrl}/api/v1/models/${modelId}/files`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
-    body: formData,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.apiBaseUrl}/api/v1/models/${modelId}/files`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+      },
+      body: formData,
+    })
+  } catch {
+    throw new Error("Couldn't reach the server to upload this file. Check your connection and try again.")
+  }
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Upload failed')
+    throw new Error(await extractErrorMessage(response, 'Upload failed'))
   }
 
   const result = await response.json()
@@ -417,17 +454,21 @@ export async function parse3mfFile(file: File): Promise<ThreeMFParseResponse> {
   const formData = new FormData()
   formData.append('file', file)
 
-  const response = await fetch(`${config.apiBaseUrl}/api/v1/models/files/parse-3mf`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
-    body: formData,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.apiBaseUrl}/api/v1/models/files/parse-3mf`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+      },
+      body: formData,
+    })
+  } catch {
+    throw new Error("Couldn't reach the server to parse this file. Check your connection and try again.")
+  }
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Failed to parse 3MF file')
+    throw new Error(await extractErrorMessage(response, 'Failed to parse 3MF file'))
   }
 
   return response.json()
