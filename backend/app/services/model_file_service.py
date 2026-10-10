@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC, datetime
 from io import BytesIO
@@ -19,6 +20,7 @@ from app.models.model import Model
 from app.models.model_file import FileLocation, ModelFile, ModelFileType
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.schemas.model_file import ThreeMFParseResponse
 from app.services.image_storage import ImageStorageError, get_image_storage
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,11 @@ class ModelFileStorageError(Exception):
     """Error during model file storage operation."""
 
     pass
+
+
+# Slicer-embedded metadata config locations within a 3MF zip archive
+BAMBU_ORCA_SLICE_INFO_PATH = "Metadata/slice_info.config"
+PRUSASLICER_CONFIG_PATH = "Metadata/Slic3r_PE.config"
 
 
 def extract_3mf_thumbnail(file_content: bytes) -> Optional[tuple[bytes, str]]:
@@ -112,6 +119,141 @@ def extract_3mf_thumbnail(file_content: bytes) -> Optional[tuple[bytes, str]]:
     except Exception as e:
         logger.warning(f"Failed to extract 3MF thumbnail: {e}")
         return None
+
+
+def _positive_or_none(value: Optional[str]) -> Optional[float]:
+    """Parse a numeric string, returning None for missing/non-numeric/non-positive values.
+
+    A parsed 0 or negative value is treated as unparseable (data-model.md).
+    """
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _parse_bambu_orca_slice_info(raw: bytes) -> Optional[ThreeMFParseResponse]:
+    """Parse a Bambu Studio/OrcaSlicer Metadata/slice_info.config XML document."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+
+    plates = root.findall("plate")
+    if not plates:
+        return None
+
+    first_meta = {m.get("key"): m.get("value") for m in plates[0].findall("metadata")}
+
+    prediction_seconds = _positive_or_none(first_meta.get("prediction"))
+    print_time_minutes: Optional[int] = None
+    if prediction_seconds is not None:
+        minutes = int(prediction_seconds // 60)
+        print_time_minutes = minutes if minutes > 0 else None
+
+    filament_weight_grams = _positive_or_none(first_meta.get("weight"))
+
+    try:
+        source_plate_index = int(first_meta.get("index", "1"))
+    except ValueError:
+        source_plate_index = 1
+
+    return ThreeMFParseResponse(
+        print_time_minutes=print_time_minutes,
+        filament_weight_grams=filament_weight_grams,
+        plate_count=len(plates),
+        source_plate_index=source_plate_index,
+        slicer_detected="bambu_orca",
+    )
+
+
+def _parse_prusaslicer_config(raw: bytes) -> Optional[ThreeMFParseResponse]:
+    """Parse a PrusaSlicer Metadata/Slic3r_PE.config key=value document.
+
+    Best-effort only: per research.md, this file is a pre-slice project
+    settings snapshot, not confirmed to reliably contain computed
+    print-time/weight results the way Bambu/Orca's slice_info.config does.
+    Recognizing the file (so slicer_detected is set) does not imply useful
+    metadata was found inside it.
+    """
+    try:
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    key_values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("; ", ";", "#")) or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key_values[key.strip()] = value.strip()
+
+    if not key_values:
+        return None
+
+    prediction_seconds = _positive_or_none(key_values.get("estimated_printing_time_normal_mode"))
+    print_time_minutes: Optional[int] = None
+    if prediction_seconds is not None:
+        minutes = int(prediction_seconds // 60)
+        print_time_minutes = minutes if minutes > 0 else None
+
+    filament_weight_grams = _positive_or_none(key_values.get("total_filament_used_g"))
+
+    return ThreeMFParseResponse(
+        print_time_minutes=print_time_minutes,
+        filament_weight_grams=filament_weight_grams,
+        plate_count=None,
+        source_plate_index=None,
+        slicer_detected="prusaslicer",
+    )
+
+
+def parse_3mf_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """
+    Parse embedded slicer metadata (print time, filament weight, plate count)
+    from a 3MF file.
+
+    Tries the Bambu Studio/OrcaSlicer metadata location first, then falls
+    back to PrusaSlicer's. Never raises: malformed archives, missing
+    metadata, or unrecognized slicers all return an all-null result so the
+    caller can always fall back to manual entry (FR-007).
+
+    Args:
+        file_content: Raw bytes of the 3MF file
+
+    Returns:
+        ThreeMFParseResponse with whichever fields were found (all optional
+        except thumbnail_available, which the caller fills in separately).
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(file_content), "r") as zf:
+            namelist_lower = {n.lower(): n for n in zf.namelist()}
+
+            bambu_entry = namelist_lower.get(BAMBU_ORCA_SLICE_INFO_PATH.lower())
+            if bambu_entry:
+                result = _parse_bambu_orca_slice_info(zf.read(bambu_entry))
+                if result is not None:
+                    return result
+
+            prusa_entry = namelist_lower.get(PRUSASLICER_CONFIG_PATH.lower())
+            if prusa_entry:
+                result = _parse_prusaslicer_config(zf.read(prusa_entry))
+                if result is not None:
+                    return result
+
+            logger.debug("No recognized slicer metadata found in 3MF file")
+            return ThreeMFParseResponse()
+
+    except zipfile.BadZipFile:
+        logger.warning("File is not a valid ZIP/3MF archive for metadata parsing")
+        return ThreeMFParseResponse()
+    except Exception as e:
+        logger.warning(f"Failed to parse 3MF metadata: {e}")
+        return ThreeMFParseResponse()
 
 
 class ModelFileService:

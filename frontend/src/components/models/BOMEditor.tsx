@@ -4,7 +4,7 @@
  * Editor for managing model Bill of Materials (filament materials).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -79,6 +79,24 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
       cost_per_gram: '',
     },
   })
+
+  // Consume a 3MF-parsed weight suggestion stashed by ModelForm (research.md §5),
+  // if any, pre-filling weight_grams exactly once. Never pre-selects a spool.
+  useEffect(() => {
+    const key = `model-weight-suggestion:${modelId}`
+    try {
+      const stored = sessionStorage.getItem(key)
+      if (stored === null) return
+      sessionStorage.removeItem(key)
+      const suggestedWeight = parseFloat(stored)
+      if (!Number.isNaN(suggestedWeight) && !form.formState.dirtyFields.weight_grams) {
+        form.setValue('weight_grams', suggestedWeight.toString())
+      }
+    } catch {
+      // sessionStorage unavailable - no suggestion, falls back to manual entry
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId])
 
   const addMutation = useMutation({
     mutationFn: (data: MaterialFormValues) =>

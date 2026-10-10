@@ -14,10 +14,18 @@ Tests:
 
 import io
 import zipfile
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+
+FIXTURES_3MF_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "3mf"
+
+
+def load_3mf_fixture(filename: str) -> bytes:
+    """Load a prebuilt .3mf (or invalid-file) fixture from tests/fixtures/3mf/."""
+    return (FIXTURES_3MF_DIR / filename).read_bytes()
 
 
 # =============================================================================
@@ -178,6 +186,79 @@ class TestModelFilesUpload:
 
         assert response.status_code == 400
         assert "not found" in response.json()["detail"].lower()
+
+
+# =============================================================================
+# Parse 3MF Metadata Tests (3MF import auto-fill - no model_id required)
+# =============================================================================
+
+
+class TestParse3mfEndpoint:
+    """Test cases for POST /models/files/parse-3mf."""
+
+    @pytest.mark.asyncio
+    async def test_parse_bambu_single_plate_success(self, client: AsyncClient):
+        """US1/US1a: successful parse returns time, weight, plate count (200)."""
+        content = load_3mf_fixture("bambu_single_plate.3mf")
+        files = {"file": ("model.3mf", content, "model/3mf")}
+
+        response = await client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["print_time_minutes"] == 120
+        assert result["filament_weight_grams"] == 15.5
+        assert result["plate_count"] == 1
+        assert result["slicer_detected"] == "bambu_orca"
+        assert result["thumbnail_available"] is True
+
+    @pytest.mark.asyncio
+    async def test_parse_requires_auth(self, unauthenticated_client: AsyncClient):
+        """US1: no token -> 401, per CLAUDE.md's standard endpoint test matrix."""
+        content = load_3mf_fixture("bambu_single_plate.3mf")
+        files = {"file": ("model.3mf", content, "model/3mf")}
+
+        response = await unauthenticated_client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_parse_wrong_extension_rejected(self, client: AsyncClient):
+        """FR-009: a file with a disallowed extension is rejected before parsing (400)."""
+        py_content = b"print('not a model file')"
+        files = {"file": ("script.py", py_content, "text/x-python")}
+
+        response = await client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 400
+        assert "Invalid file type" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_parse_valid_zip_no_metadata_returns_nulls(self, client: AsyncClient):
+        """US2: a recognized-but-resultless PrusaSlicer file is 200 with all parse fields null."""
+        content = load_3mf_fixture("prusaslicer_export.3mf")
+        files = {"file": ("model.3mf", content, "model/3mf")}
+
+        response = await client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["print_time_minutes"] is None
+        assert result["filament_weight_grams"] is None
+        assert result["plate_count"] is None
+        assert result["slicer_detected"] == "prusaslicer"
+
+    @pytest.mark.asyncio
+    async def test_parse_corrupted_3mf_content_degrades_gracefully(self, client: AsyncClient):
+        """Edge Cases: a .3mf-extensioned file with non-zip bytes is 200, not 400/500."""
+        files = {"file": ("model.3mf", b"not actually a zip archive", "model/3mf")}
+
+        response = await client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["print_time_minutes"] is None
+        assert result["slicer_detected"] is None
 
 
 # =============================================================================

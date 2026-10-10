@@ -24,21 +24,25 @@ DEFAULT_MODULES_BY_TYPE: dict[str, list[str]] = {
         "products",
         "orders",
         "categories",
+        "sales_channels",
     ],
     TenantType.HAND_KNITTING.value: [
         "products",
         "orders",
         "categories",
+        "sales_channels",
     ],
     TenantType.MACHINE_KNITTING.value: [
         "products",
         "orders",
         "categories",
+        "sales_channels",
     ],
     TenantType.GENERIC.value: [
         "products",
         "orders",
         "categories",
+        "sales_channels",
     ],
 }
 
@@ -51,6 +55,7 @@ ALL_MODULES = [
     "products",
     "orders",
     "categories",
+    "sales_channels",
 ]
 
 
@@ -101,7 +106,11 @@ class TenantModuleService:
         """
         Get list of enabled module names for a tenant.
 
-        Falls back to defaults if no configuration exists.
+        Falls back to defaults if no configuration exists at all, and also
+        falls back to the per-module default for any module that was added
+        to ALL_MODULES after this tenant's configuration rows were created
+        (so it has no row yet) - same fallback get_module_status already
+        does per-module, kept consistent here instead of being all-or-nothing.
 
         Args:
             tenant_id: UUID of the tenant
@@ -111,17 +120,26 @@ class TenantModuleService:
         """
         modules = await self.get_tenant_modules(tenant_id)
 
+        tenant = await self._get_tenant(tenant_id)
+        default_modules = DEFAULT_MODULES_BY_TYPE.get(
+            tenant.tenant_type if tenant else None,
+            DEFAULT_MODULES_BY_TYPE[TenantType.GENERIC.value],
+        )
+
         if not modules:
             # No configuration - return defaults based on tenant type
-            tenant = await self._get_tenant(tenant_id)
-            if tenant:
-                return DEFAULT_MODULES_BY_TYPE.get(
-                    tenant.tenant_type,
-                    DEFAULT_MODULES_BY_TYPE[TenantType.GENERIC.value],
-                )
-            return DEFAULT_MODULES_BY_TYPE[TenantType.GENERIC.value]
+            return default_modules
 
-        return [m.module_name for m in modules if m.enabled]
+        modules_by_name = {m.module_name: m for m in modules}
+        enabled = []
+        for module_name in ALL_MODULES:
+            tenant_module = modules_by_name.get(module_name)
+            if tenant_module is not None:
+                if tenant_module.enabled:
+                    enabled.append(module_name)
+            elif module_name in default_modules:
+                enabled.append(module_name)
+        return enabled
 
     async def is_module_enabled(self, tenant_id: UUID, module_name: str) -> bool:
         """

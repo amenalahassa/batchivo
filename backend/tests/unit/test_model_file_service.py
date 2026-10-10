@@ -22,7 +22,15 @@ from app.services.model_file_service import (
     ModelFileService,
     ModelFileStorageError,
     extract_3mf_thumbnail,
+    parse_3mf_metadata,
 )
+
+FIXTURES_3MF_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "3mf"
+
+
+def load_3mf_fixture(filename: str) -> bytes:
+    """Load a prebuilt .3mf (or invalid-file) fixture from tests/fixtures/3mf/."""
+    return (FIXTURES_3MF_DIR / filename).read_bytes()
 
 
 # =============================================================================
@@ -235,6 +243,113 @@ class TestExtract3mfThumbnail:
         thumbnail_data, content_type = result
         # Standard path should be preferred
         assert thumbnail_data == png_data_standard
+
+
+# =============================================================================
+# 3MF Slicer Metadata Parsing Tests (print time / filament weight / plate count)
+# =============================================================================
+
+
+class TestParse3mfMetadata:
+    """Test cases for parse_3mf_metadata() - 3MF import auto-fill feature."""
+
+    def test_bambu_orca_single_plate_happy_path(self):
+        """US1/US1a: Bambu/Orca single-plate file yields time, weight, plate count."""
+        file_content = load_3mf_fixture("bambu_single_plate.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.print_time_minutes == 120  # 7200s / 60
+        assert result.filament_weight_grams == 15.5
+        assert result.plate_count == 1
+        assert result.source_plate_index == 1
+        assert result.slicer_detected == "bambu_orca"
+
+    def test_bambu_orca_multi_plate_sources_first_plate(self):
+        """US3: multi-plate file reports total count, values from plate 1 (FR-008)."""
+        file_content = load_3mf_fixture("bambu_multi_plate.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.plate_count == 3
+        assert result.source_plate_index == 1
+        assert result.print_time_minutes == 60  # plate 1's 3600s, not plate 2/3
+        assert result.filament_weight_grams == 10.0  # plate 1's weight, not plate 2/3
+        assert result.slicer_detected == "bambu_orca"
+
+    def test_prusaslicer_file_recognized_but_no_results(self):
+        """US2: PrusaSlicer config is recognized but yields no computed results (research.md §2)."""
+        file_content = load_3mf_fixture("prusaslicer_export.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.slicer_detected == "prusaslicer"
+        assert result.print_time_minutes is None
+        assert result.filament_weight_grams is None
+        assert result.plate_count is None
+
+    def test_not_a_3mf_file_returns_all_null(self):
+        """US2/Edge Cases: non-zip content never raises, returns an all-null result."""
+        file_content = load_3mf_fixture("not_a_3mf.txt")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.print_time_minutes is None
+        assert result.filament_weight_grams is None
+        assert result.plate_count is None
+        assert result.slicer_detected is None
+
+    def test_corrupted_3mf_extension_falls_back_gracefully(self):
+        """Edge Cases: a .3mf-named file with non-zip bytes degrades, doesn't raise."""
+        file_content = b"this is not a real zip archive despite the filename"
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.print_time_minutes is None
+        assert result.slicer_detected is None
+
+    def test_missing_weight_leaves_only_weight_null(self):
+        """US2 Acceptance Scenario 2: partial metadata - missing field stays null, others fill."""
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="index" value="1"/>
+    <metadata key="prediction" value="600"/>
+  </plate>
+</config>
+"""
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Metadata/slice_info.config", slice_info)
+
+        result = parse_3mf_metadata(buffer.getvalue())
+
+        assert result.print_time_minutes == 10  # 600s / 60
+        assert result.filament_weight_grams is None
+        assert result.slicer_detected == "bambu_orca"
+
+    def test_zero_or_negative_values_treated_as_unparseable(self):
+        """Edge Cases: parsed 0/negative values are nulled rather than saved as-is."""
+        slice_info = """<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <plate>
+    <metadata key="index" value="1"/>
+    <metadata key="prediction" value="0"/>
+    <metadata key="weight" value="-5"/>
+  </plate>
+</config>
+"""
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Metadata/slice_info.config", slice_info)
+
+        result = parse_3mf_metadata(buffer.getvalue())
+
+        assert result.print_time_minutes is None
+        assert result.filament_weight_grams is None
+        # Plate was still found, so slicer/plate_count are still reported
+        assert result.slicer_detected == "bambu_orca"
+        assert result.plate_count == 1
 
 
 # =============================================================================

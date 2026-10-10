@@ -207,6 +207,68 @@ class TestGetEnabledModules:
         expected = DEFAULT_MODULES_BY_TYPE[TenantType.GENERIC.value]
         assert result == expected
 
+    @pytest.mark.asyncio
+    async def test_falls_back_to_default_for_module_with_no_row(
+        self, mock_db, mock_tenant_3d_print
+    ):
+        """A module added to ALL_MODULES after a tenant was initialized has no
+        TenantModule row yet. It must fall back to its per-tenant-type default
+        instead of being silently treated as disabled (this was bug: a tenant
+        initialized before "sales_channels" existed never saw it enabled,
+        even though it's a default module, because the old all-or-nothing
+        logic only applied defaults when a tenant had NO configured rows at all).
+        """
+        tenant_id = mock_tenant_3d_print.id
+
+        # Tenant has rows for the "old" module set, but none for sales_channels
+        modules = [
+            create_mock_tenant_module(tenant_id, "spools", True),
+            create_mock_tenant_module(tenant_id, "models", True),
+            create_mock_tenant_module(tenant_id, "printers", True),
+            create_mock_tenant_module(tenant_id, "production", True),
+            create_mock_tenant_module(tenant_id, "products", True),
+            create_mock_tenant_module(tenant_id, "orders", True),
+            create_mock_tenant_module(tenant_id, "categories", True),
+        ]
+
+        mock_modules_result = MagicMock()
+        mock_modules_result.scalars.return_value.all.return_value = modules
+
+        mock_tenant_result = MagicMock()
+        mock_tenant_result.scalar_one_or_none.return_value = mock_tenant_3d_print
+
+        mock_db.execute.side_effect = [mock_modules_result, mock_tenant_result]
+
+        service = TenantModuleService(db=mock_db)
+        result = await service.get_enabled_modules(tenant_id)
+
+        assert "sales_channels" in result
+
+    @pytest.mark.asyncio
+    async def test_module_with_no_row_not_enabled_if_not_default(
+        self, mock_db, mock_tenant_knitting
+    ):
+        """A module missing a row stays disabled if it isn't a default for
+        this tenant type (e.g. "spools" for a knitting tenant)."""
+        tenant_id = mock_tenant_knitting.id
+
+        modules = [
+            create_mock_tenant_module(tenant_id, "products", True),
+        ]
+
+        mock_modules_result = MagicMock()
+        mock_modules_result.scalars.return_value.all.return_value = modules
+
+        mock_tenant_result = MagicMock()
+        mock_tenant_result.scalar_one_or_none.return_value = mock_tenant_knitting
+
+        mock_db.execute.side_effect = [mock_modules_result, mock_tenant_result]
+
+        service = TenantModuleService(db=mock_db)
+        result = await service.get_enabled_modules(tenant_id)
+
+        assert "spools" not in result
+
 
 # =============================================================================
 # Test: is_module_enabled

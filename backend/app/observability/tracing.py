@@ -1,5 +1,7 @@
 """OpenTelemetry tracing and instrumentation setup."""
 
+import logging
+
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -10,6 +12,7 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -24,7 +27,7 @@ def setup_tracing() -> None:
     Exports traces to OTLP endpoint (Tempo via Grafana Agent).
     """
     if not settings.enable_tracing:
-        print("⏭️  Tracing disabled (ENABLE_TRACING=false)")
+        logger.info("Tracing disabled (ENABLE_TRACING=false)")
         return
 
     # Create resource with service information
@@ -46,14 +49,14 @@ def setup_tracing() -> None:
             insecure=True,  # Use insecure for local development
         )
         provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-        print(f"✓ OTLP exporter configured: {settings.otel_exporter_otlp_endpoint}")
+        logger.info(f"OTLP exporter configured: {settings.otel_exporter_otlp_endpoint}")
     except Exception as e:
-        print(f"⚠️  Failed to configure OTLP exporter: {e}")
-        print("   Continuing without tracing export...")
+        logger.warning(f"Failed to configure OTLP exporter: {e}")
+        logger.warning("Continuing without tracing export...")
 
     # Set global tracer provider
     trace.set_tracer_provider(provider)
-    print(f"✓ OpenTelemetry tracer initialized: {settings.otel_service_name}")
+    logger.info(f"OpenTelemetry tracer initialized: {settings.otel_service_name}")
 
 
 def instrument_app(app, engine) -> None:
@@ -70,13 +73,13 @@ def instrument_app(app, engine) -> None:
     # Instrument FastAPI
     try:
         FastAPIInstrumentor.instrument_app(app)
-        print("✓ FastAPI instrumentation enabled")
+        logger.info("FastAPI instrumentation enabled")
     except Exception as e:
-        print(f"⚠️  FastAPI instrumentation failed: {e}")
+        logger.warning(f"FastAPI instrumentation failed: {e}")
 
     # Instrument SQLAlchemy
     try:
         SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
-        print("✓ SQLAlchemy instrumentation enabled")
+        logger.info("SQLAlchemy instrumentation enabled")
     except Exception as e:
-        print(f"⚠️  SQLAlchemy instrumentation failed: {e}")
+        logger.warning(f"SQLAlchemy instrumentation failed: {e}")
