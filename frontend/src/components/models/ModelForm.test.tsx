@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
@@ -64,6 +64,7 @@ const ALL_NULL_PARSE_RESULT: ThreeMFParseResponse = {
   source_plate_index: null,
   slicer_detected: null,
   thumbnail_available: false,
+  plates: [],
 }
 
 function createTestQueryClient() {
@@ -117,6 +118,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
       source_plate_index: 1,
       slicer_detected: 'bambu_orca',
       thumbnail_available: true,
+      plates: [],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()
@@ -142,6 +144,52 @@ describe('ModelForm - 3MF import auto-fill', () => {
     expect(platesField).toHaveValue(2)
   })
 
+  it('lets the maker select which plates to combine from a multi-plate file', async () => {
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: 60,
+      filament_weight_grams: 10,
+      plate_count: 3,
+      source_plate_index: 1,
+      slicer_detected: 'bambu_orca',
+      thumbnail_available: false,
+      plates: [
+        { index: 1, print_time_minutes: 60, filament_weight_grams: 10 },
+        { index: 2, print_time_minutes: 30, filament_weight_grams: 5 },
+        { index: 3, print_time_minutes: 15, filament_weight_grams: 2 },
+      ],
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    const fileInput = await screen.findByLabelText(/auto-fill from \.3mf/i)
+    await userEvent.upload(fileInput, makeThreeMfFile())
+    await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+
+    // All 3 plates are listed and selected by default; combined values sum all of them.
+    await screen.findByText(/plate 1: 1h · 10g/i)
+    screen.getByText(/plate 2: 30m · 5g/i)
+    screen.getByText(/plate 3: 15m · 2g/i)
+    await screen.findByText(/combined print time: 1h 45m/i) // 60+30+15 = 105 min
+    screen.getByText(/combined filament weight: 17g/i) // 10+5+2
+
+    // Deselecting plate 3 recomputes the combined totals from the remaining selection.
+    const plate3Row = screen.getByText(/plate 3: 15m · 2g/i).closest('label')
+    await userEvent.click(within(plate3Row!).getByRole('checkbox'))
+
+    await screen.findByText(/combined print time: 1h 30m/i) // 60+30
+    screen.getByText(/combined filament weight: 15g/i) // 10+5
+    screen.getByText(/plates: 2 selected/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
+
+    const hoursField = screen.getByLabelText('Plate Print Time')
+    const minutesField = screen.getByLabelText('')
+    const platesField = screen.getByLabelText('Items per Plate')
+    await waitFor(() => expect(hoursField).toHaveValue(1))
+    expect(minutesField).toHaveValue(30)
+    expect(platesField).toHaveValue(2)
+  })
+
   it('shows a hint to slice the file first when nothing could be parsed', async () => {
     mockParse3mfFile.mockResolvedValue({
       print_time_minutes: null,
@@ -150,6 +198,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
       source_plate_index: null,
       slicer_detected: null,
       thumbnail_available: false,
+      plates: [],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()
@@ -173,6 +222,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
       source_plate_index: 1,
       slicer_detected: 'bambu_orca',
       thumbnail_available: false,
+      plates: [],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()
@@ -218,6 +268,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
       source_plate_index: 1,
       slicer_detected: 'bambu_orca',
       thumbnail_available: true,
+      plates: [],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()

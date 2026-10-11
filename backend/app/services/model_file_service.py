@@ -20,7 +20,7 @@ from app.models.model import Model
 from app.models.model_file import FileLocation, ModelFile, ModelFileType
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.schemas.model_file import ThreeMFParseResponse
+from app.schemas.model_file import ThreeMFParseResponse, ThreeMFPlateMetadata
 from app.services.image_storage import ImageStorageError, get_image_storage
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,30 @@ def _positive_or_none(value: Optional[str]) -> Optional[float]:
     return parsed if parsed > 0 else None
 
 
+def _seconds_to_minutes(prediction_seconds: Optional[float]) -> Optional[int]:
+    """Convert a positive seconds value to whole minutes, or None if unusable."""
+    if prediction_seconds is None:
+        return None
+    minutes = int(prediction_seconds // 60)
+    return minutes if minutes > 0 else None
+
+
+def _parse_bambu_orca_plate(plate_element, fallback_index: int) -> ThreeMFPlateMetadata:
+    """Parse a single <plate> element's metadata into a ThreeMFPlateMetadata."""
+    meta = {m.get("key"): m.get("value") for m in plate_element.findall("metadata")}
+
+    try:
+        index = int(meta.get("index", str(fallback_index)))
+    except ValueError:
+        index = fallback_index
+
+    return ThreeMFPlateMetadata(
+        index=index,
+        print_time_minutes=_seconds_to_minutes(_positive_or_none(meta.get("prediction"))),
+        filament_weight_grams=_positive_or_none(meta.get("weight")),
+    )
+
+
 def _parse_bambu_orca_slice_info(raw: bytes) -> Optional[ThreeMFParseResponse]:
     """Parse a Bambu Studio/OrcaSlicer Metadata/slice_info.config XML document."""
     try:
@@ -142,31 +166,23 @@ def _parse_bambu_orca_slice_info(raw: bytes) -> Optional[ThreeMFParseResponse]:
     except ET.ParseError:
         return None
 
-    plates = root.findall("plate")
-    if not plates:
+    plate_elements = root.findall("plate")
+    if not plate_elements:
         return None
 
-    first_meta = {m.get("key"): m.get("value") for m in plates[0].findall("metadata")}
-
-    prediction_seconds = _positive_or_none(first_meta.get("prediction"))
-    print_time_minutes: Optional[int] = None
-    if prediction_seconds is not None:
-        minutes = int(prediction_seconds // 60)
-        print_time_minutes = minutes if minutes > 0 else None
-
-    filament_weight_grams = _positive_or_none(first_meta.get("weight"))
-
-    try:
-        source_plate_index = int(first_meta.get("index", "1"))
-    except ValueError:
-        source_plate_index = 1
+    plates = [
+        _parse_bambu_orca_plate(plate_element, fallback_index=i)
+        for i, plate_element in enumerate(plate_elements, start=1)
+    ]
+    first = plates[0]
 
     return ThreeMFParseResponse(
-        print_time_minutes=print_time_minutes,
-        filament_weight_grams=filament_weight_grams,
+        print_time_minutes=first.print_time_minutes,
+        filament_weight_grams=first.filament_weight_grams,
         plate_count=len(plates),
-        source_plate_index=source_plate_index,
+        source_plate_index=first.index,
         slicer_detected="bambu_orca",
+        plates=plates,
     )
 
 

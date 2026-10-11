@@ -213,6 +213,22 @@ class TestParse3mfEndpoint:
         assert result["thumbnail_available"] is True
 
     @pytest.mark.asyncio
+    async def test_parse_bambu_multi_plate_includes_per_plate_breakdown(self, client: AsyncClient):
+        """US3: a multi-plate file's response includes a plates[] breakdown for every plate."""
+        content = load_3mf_fixture("bambu_multi_plate.3mf")
+        files = {"file": ("model.3mf", content, "model/3mf")}
+
+        response = await client.post("/api/v1/models/files/parse-3mf", files=files)
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["plate_count"] == 3
+        assert len(result["plates"]) == 3
+        assert [p["index"] for p in result["plates"]] == [1, 2, 3]
+        assert [p["print_time_minutes"] for p in result["plates"]] == [60, 30, 15]
+        assert [p["filament_weight_grams"] for p in result["plates"]] == [10.0, 5.0, 2.0]
+
+    @pytest.mark.asyncio
     async def test_parse_requires_auth(self, unauthenticated_client: AsyncClient):
         """US1: no token -> 401, per CLAUDE.md's standard endpoint test matrix."""
         content = load_3mf_fixture("bambu_single_plate.3mf")

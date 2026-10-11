@@ -113,6 +113,8 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     plateCount: true,
     weight: true,
   })
+  // Which plates (by 1-based index) are included when combining a multi-plate file.
+  const [selectedPlateIndices, setSelectedPlateIndices] = useState<Set<number>>(new Set())
 
   // Fetch existing models to get unique values for sources/machines
   const { data: modelsData } = useQuery({
@@ -210,6 +212,35 @@ export function ModelForm({ model, mode }: ModelFormProps) {
   const hasThreeMfPrefillData = (result: ThreeMFParseResponse) =>
     result.print_time_minutes != null || result.plate_count != null || result.filament_weight_grams != null
 
+  const hasMultiplePlates = (result: ThreeMFParseResponse) => result.plates.length > 1
+
+  // When a file has more than one plate, the maker can select which ones to
+  // combine (e.g. printing plates 1 and 3 together as one batch). Combined
+  // print time / weight are the sum of the selected plates; combined plate
+  // count is how many were selected (maps to "Items per Plate" below, same
+  // as the single-plate case always did).
+  const getEffectiveThreeMfValues = (result: ThreeMFParseResponse, selected: Set<number>) => {
+    if (!hasMultiplePlates(result)) {
+      return {
+        printTimeMinutes: result.print_time_minutes,
+        weightGrams: result.filament_weight_grams,
+        plateCount: result.plate_count,
+      }
+    }
+
+    const chosen = result.plates.filter((p) => selected.has(p.index))
+    const sum = (values: (number | null)[]) => {
+      const present = values.filter((v): v is number => v != null)
+      return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null
+    }
+
+    return {
+      printTimeMinutes: sum(chosen.map((p) => p.print_time_minutes)),
+      weightGrams: sum(chosen.map((p) => p.filament_weight_grams)),
+      plateCount: chosen.length > 0 ? chosen.length : null,
+    }
+  }
+
   const handle3mfUpload = async (file: File) => {
     setIsParsing3mf(true)
     setParse3mfError(null)
@@ -220,6 +251,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
       const result = await parse3mfFile(file)
       setThreeMfResult(result)
       setApplySelection({ printTime: true, plateCount: true, weight: true })
+      setSelectedPlateIndices(new Set(result.plates.map((p) => p.index)))
     } catch (err) {
       setParse3mfError(err instanceof Error ? err.message : 'Failed to parse 3MF file')
     } finally {
@@ -227,30 +259,39 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     }
   }
 
+  const togglePlateSelected = (index: number) => {
+    setSelectedPlateIndices((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) {
+        next.delete(index)
+      } else {
+        next.add(index)
+      }
+      return next
+    })
+  }
+
   const applyThreeMfResult = () => {
     if (!threeMfResult) return
     const dirtyFields = form.formState.dirtyFields
+    const effective = getEffectiveThreeMfValues(threeMfResult, selectedPlateIndices)
 
     if (
       applySelection.printTime &&
-      threeMfResult.print_time_minutes != null &&
+      effective.printTimeMinutes != null &&
       !dirtyFields.print_time_hours &&
       !dirtyFields.print_time_minutes
     ) {
-      form.setValue('print_time_hours', Math.floor(threeMfResult.print_time_minutes / 60).toString())
-      form.setValue('print_time_minutes', (threeMfResult.print_time_minutes % 60).toString())
+      form.setValue('print_time_hours', Math.floor(effective.printTimeMinutes / 60).toString())
+      form.setValue('print_time_minutes', (effective.printTimeMinutes % 60).toString())
     }
 
-    if (
-      applySelection.plateCount &&
-      threeMfResult.plate_count != null &&
-      !dirtyFields.prints_per_plate
-    ) {
-      form.setValue('prints_per_plate', threeMfResult.plate_count.toString())
+    if (applySelection.plateCount && effective.plateCount != null && !dirtyFields.prints_per_plate) {
+      form.setValue('prints_per_plate', effective.plateCount.toString())
     }
 
-    if (applySelection.weight && threeMfResult.filament_weight_grams != null) {
-      setParsedWeightGrams(threeMfResult.filament_weight_grams)
+    if (applySelection.weight && effective.weightGrams != null) {
+      setParsedWeightGrams(effective.weightGrams)
     }
 
     setThreeMfApplied(true)
@@ -569,54 +610,92 @@ export function ModelForm({ model, mode }: ModelFormProps) {
               )}
 
               {threeMfResult && hasThreeMfPrefillData(threeMfResult) && (
-                <div className="rounded-md border p-3 space-y-2">
+                <div className="rounded-md border p-3 space-y-3">
                   <p className="text-sm font-medium flex items-center gap-1">
                     <FileCheck2 className="h-4 w-4 shrink-0" />
                     Found in &quot;{uploadedThreeMfFile?.name}&quot; — choose what to apply:
                   </p>
+
+                  {hasMultiplePlates(threeMfResult) && (
+                    <div className="space-y-1.5 border-b pb-3">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {threeMfResult.plates.length} plates found — select which to combine:
+                      </p>
+                      {threeMfResult.plates.map((plate) => (
+                        <label key={plate.index} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={selectedPlateIndices.has(plate.index)}
+                            disabled={threeMfApplied}
+                            onCheckedChange={() => togglePlateSelected(plate.index)}
+                          />
+                          Plate {plate.index}:{' '}
+                          {plate.print_time_minutes != null
+                            ? formatPrintTime(plate.print_time_minutes)
+                            : '—'}
+                          {plate.filament_weight_grams != null && ` · ${plate.filament_weight_grams}g`}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+
                   <div className="space-y-2">
-                    {threeMfResult.print_time_minutes != null && (
-                      <label className="flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={applySelection.printTime}
-                          disabled={threeMfApplied}
-                          onCheckedChange={(checked) =>
-                            setApplySelection((prev) => ({ ...prev, printTime: checked === true }))
-                          }
-                        />
-                        Print time: {formatPrintTime(threeMfResult.print_time_minutes)}
-                      </label>
-                    )}
-                    {threeMfResult.plate_count != null && (
-                      <label className="flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={applySelection.plateCount}
-                          disabled={threeMfApplied}
-                          onCheckedChange={(checked) =>
-                            setApplySelection((prev) => ({ ...prev, plateCount: checked === true }))
-                          }
-                        />
-                        Plates: {threeMfResult.plate_count}
-                      </label>
-                    )}
-                    {threeMfResult.filament_weight_grams != null && (
-                      <label className="flex items-center gap-2 text-sm">
-                        <Checkbox
-                          checked={applySelection.weight}
-                          disabled={threeMfApplied}
-                          onCheckedChange={(checked) =>
-                            setApplySelection((prev) => ({ ...prev, weight: checked === true }))
-                          }
-                        />
-                        Filament weight: {threeMfResult.filament_weight_grams}g (suggested on the
-                        next step, after saving)
-                      </label>
-                    )}
+                    {(() => {
+                      const effective = getEffectiveThreeMfValues(threeMfResult, selectedPlateIndices)
+                      const multi = hasMultiplePlates(threeMfResult)
+                      return (
+                        <>
+                          {effective.printTimeMinutes != null && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={applySelection.printTime}
+                                disabled={threeMfApplied}
+                                onCheckedChange={(checked) =>
+                                  setApplySelection((prev) => ({ ...prev, printTime: checked === true }))
+                                }
+                              />
+                              {multi ? 'Combined print' : 'Print'} time:{' '}
+                              {formatPrintTime(effective.printTimeMinutes)}
+                            </label>
+                          )}
+                          {effective.plateCount != null && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={applySelection.plateCount}
+                                disabled={threeMfApplied}
+                                onCheckedChange={(checked) =>
+                                  setApplySelection((prev) => ({ ...prev, plateCount: checked === true }))
+                                }
+                              />
+                              Plates: {effective.plateCount}
+                              {multi ? ' selected' : ''}
+                            </label>
+                          )}
+                          {effective.weightGrams != null && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={applySelection.weight}
+                                disabled={threeMfApplied}
+                                onCheckedChange={(checked) =>
+                                  setApplySelection((prev) => ({ ...prev, weight: checked === true }))
+                                }
+                              />
+                              {multi ? 'Combined filament' : 'Filament'} weight: {effective.weightGrams}g
+                              {' '}(suggested on the next step, after saving)
+                            </label>
+                          )}
+                        </>
+                      )
+                    })()}
                   </div>
                   {threeMfApplied ? (
                     <p className="text-sm text-muted-foreground">Applied to the form below.</p>
                   ) : (
-                    <Button type="button" size="sm" onClick={applyThreeMfResult}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={applyThreeMfResult}
+                      disabled={hasMultiplePlates(threeMfResult) && selectedPlateIndices.size === 0}
+                    >
                       Apply to form
                     </Button>
                   )}

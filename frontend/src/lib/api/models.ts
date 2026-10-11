@@ -7,6 +7,17 @@
 
 import { apiClient } from '../api'
 import { config } from '../config'
+import { getAuthTokens } from '../auth'
+
+/** Bearer header for the raw `fetch()` calls below (multipart uploads the
+ * shared axios client doesn't carry), reading the same token store the
+ * axios client uses - NOT the plain 'access_token' localStorage key (that
+ * key is never written anywhere; tokens are stored as a JSON blob under
+ * 'batchivo_auth_tokens' via auth.ts), which silently sent `Bearer null`. */
+function authHeader(): Record<string, string> {
+  const token = getAuthTokens()?.accessToken
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
 
 /**
  * Extract a human-readable message from a failed fetch Response.
@@ -78,6 +89,12 @@ export type ModelFileType = 'source_stl' | 'source_3mf' | 'slicer_project' | 'gc
 export type FileLocation = 'uploaded' | 'local_reference'
 
 // Result of parsing a .3mf file's embedded slicer metadata (transient, not persisted)
+export interface ThreeMFPlateInfo {
+  index: number
+  print_time_minutes: number | null
+  filament_weight_grams: number | null
+}
+
 export interface ThreeMFParseResponse {
   print_time_minutes: number | null
   filament_weight_grams: number | null
@@ -85,6 +102,8 @@ export interface ThreeMFParseResponse {
   source_plate_index: number | null
   slicer_detected: 'bambu_orca' | 'prusaslicer' | null
   thumbnail_available: boolean
+  /** Per-plate breakdown (Bambu/Orca only; empty for PrusaSlicer or single-plate files). */
+  plates: ThreeMFPlateInfo[]
 }
 
 export interface ModelFile {
@@ -360,15 +379,12 @@ export async function importModels(file: File): Promise<ImportModelsResponse> {
 
   const response = await fetch(`${config.apiBaseUrl}/api/v1/models/import`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
+    headers: authHeader(),
     body: formData,
   })
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Import failed')
+    throw new Error(await extractErrorMessage(response, 'Import failed'))
   }
 
   return response.json()
@@ -380,13 +396,11 @@ export async function importModels(file: File): Promise<ImportModelsResponse> {
 export async function exportModels(): Promise<Blob> {
   const response = await fetch(`${config.apiBaseUrl}/api/v1/models/export`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
+    headers: authHeader(),
   })
 
   if (!response.ok) {
-    throw new Error('Export failed')
+    throw new Error(await extractErrorMessage(response, 'Export failed'))
   }
 
   return response.blob()
@@ -428,9 +442,7 @@ export async function uploadModelFile(
   try {
     response = await fetch(`${config.apiBaseUrl}/api/v1/models/${modelId}/files`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-      },
+      headers: authHeader(),
       body: formData,
     })
   } catch {
@@ -458,9 +470,7 @@ export async function parse3mfFile(file: File): Promise<ThreeMFParseResponse> {
   try {
     response = await fetch(`${config.apiBaseUrl}/api/v1/models/files/parse-3mf`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-      },
+      headers: authHeader(),
       body: formData,
     })
   } catch {

@@ -277,6 +277,36 @@ class TestParse3mfMetadata:
         assert result.filament_weight_grams == 10.0  # plate 1's weight, not plate 2/3
         assert result.slicer_detected == "bambu_orca"
 
+    def test_bambu_orca_multi_plate_includes_per_plate_breakdown(self):
+        """Multi-plate file also exposes every plate's own values, not just plate 1's."""
+        file_content = load_3mf_fixture("bambu_multi_plate.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert len(result.plates) == 3
+        assert [p.index for p in result.plates] == [1, 2, 3]
+        assert [p.print_time_minutes for p in result.plates] == [60, 30, 15]
+        assert [p.filament_weight_grams for p in result.plates] == [10.0, 5.0, 2.0]
+
+    def test_single_plate_file_still_reports_a_one_item_plates_list(self):
+        """A single-plate file's `plates` list mirrors the top-level fields."""
+        file_content = load_3mf_fixture("bambu_single_plate.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert len(result.plates) == 1
+        assert result.plates[0].index == 1
+        assert result.plates[0].print_time_minutes == result.print_time_minutes
+        assert result.plates[0].filament_weight_grams == result.filament_weight_grams
+
+    def test_prusaslicer_file_has_no_per_plate_breakdown(self):
+        """PrusaSlicer's config has no per-plate structure to expose."""
+        file_content = load_3mf_fixture("prusaslicer_export.3mf")
+
+        result = parse_3mf_metadata(file_content)
+
+        assert result.plates == []
+
     def test_prusaslicer_file_recognized_but_no_results(self):
         """US2: PrusaSlicer config is recognized but yields no computed results (research.md §2)."""
         file_content = load_3mf_fixture("prusaslicer_export.3mf")

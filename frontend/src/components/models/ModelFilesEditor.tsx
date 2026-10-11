@@ -35,6 +35,7 @@ import {
   type ModelFileType,
   type LocalPathValidationResponse,
 } from '@/lib/api/models'
+import { getAuthTokens } from '@/lib/auth'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -252,10 +253,10 @@ export function ModelFilesEditor({ modelId }: ModelFilesEditorProps) {
 
   const handleDownload = (file: ModelFile) => {
     const url = getModelFileDownloadUrl(modelId, file.id)
-    const token = localStorage.getItem('access_token')
+    const token = getAuthTokens()?.accessToken
     // Create a temporary link with auth header via fetch
     fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
       .then((response) => response.blob())
       .then((blob) => {

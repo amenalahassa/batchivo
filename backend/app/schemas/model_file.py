@@ -136,6 +136,18 @@ class LocalPathValidationResponse(BaseModel):
     filename: Optional[str] = Field(None, description="Extracted filename from path")
 
 
+class ThreeMFPlateMetadata(BaseModel):
+    """Per-plate metadata for a single plate within a multi-plate 3MF file."""
+
+    index: int = Field(..., description="1-based plate index as recorded by the slicer")
+    print_time_minutes: Optional[int] = Field(
+        None, description="Estimated print time in minutes for this plate"
+    )
+    filament_weight_grams: Optional[float] = Field(
+        None, description="Filament weight in grams for this plate"
+    )
+
+
 class ThreeMFParseResponse(BaseModel):
     """Response for parsing embedded slicer metadata out of a 3MF file.
 
@@ -161,4 +173,12 @@ class ThreeMFParseResponse(BaseModel):
     )
     thumbnail_available: bool = Field(
         False, description="Whether a thumbnail was also found in this file"
+    )
+    plates: list[ThreeMFPlateMetadata] = Field(
+        default_factory=list,
+        description=(
+            "Per-plate breakdown when the slicer format exposes one (Bambu/Orca only; "
+            "empty for PrusaSlicer or single-plate files). Lets the caller combine "
+            "multiple plates instead of only using the first."
+        ),
     )
