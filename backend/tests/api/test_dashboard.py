@@ -452,3 +452,151 @@ class TestFailureAnalytics:
         """Test that unauthenticated requests are rejected."""
         response = await unauthenticated_client.get("/api/v1/dashboard/failure-analytics")
         assert response.status_code == 401
+
+
+# ============================================
+# Regression: "today" is UTC, not the server's local day
+# ============================================
+
+
+class TestTodayIsMeasuredInUtc:
+    """`completed_at` holds UTC, so the day it is compared against must too.
+
+    `datetime.now().date()` returned the server's *local* date. On any server
+    not running in UTC the counts below were wrong for several hours of every
+    day, and raised no error: at UTC-4, a run finished at 21:00 local is
+    01:00 UTC tomorrow, so it vanished from "completed today" while a run from
+    the previous UTC morning was still being counted in it.
+
+    The two tests above catch this, but only when the suite happens to run
+    inside the offending window -- they passed at 13:27 and failed at 20:14 on
+    the same code. These pin the clock instead, so the regression fails
+    whatever the time of day and whatever zone the machine is in.
+    """
+
+    async def test_a_run_completed_today_in_utc_is_counted(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        monkeypatch,
+    ) -> None:
+        """A run finished just after UTC midnight belongs to the UTC day.
+
+        This is the exact instant the old code mishandled: at a negative UTC
+        offset the server's local date is still yesterday, so the run was not
+        counted.
+        """
+        from app.api.v1 import dashboard
+
+        utc_now = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr(dashboard, "_utc_today", lambda: utc_now.date())
+
+        db_session.add(
+            ProductionRun(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                run_number="RUN-UTC-TODAY",
+                status="completed",
+                started_at=utc_now - timedelta(hours=2),
+                completed_at=utc_now,
+                total_plates=0,
+                completed_plates=0,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/dashboard/summary")
+        assert response.status_code == 200, response.text
+        assert response.json()["completed_today"] == 1
+
+    async def test_a_run_completed_yesterday_in_utc_is_not_counted(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        monkeypatch,
+    ) -> None:
+        """The boundary has to cut both ways, or "today" means nothing."""
+        from app.api.v1 import dashboard
+
+        utc_now = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr(dashboard, "_utc_today", lambda: utc_now.date())
+
+        db_session.add(
+            ProductionRun(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                run_number="RUN-UTC-YESTERDAY",
+                status="completed",
+                started_at=utc_now - timedelta(hours=26),
+                completed_at=utc_now - timedelta(hours=24),
+                total_plates=0,
+                completed_plates=0,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/dashboard/summary")
+        assert response.status_code == 200, response.text
+        assert response.json()["completed_today"] == 0
+
+    async def test_a_failed_run_is_dated_the_same_way(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        monkeypatch,
+    ) -> None:
+        from app.api.v1 import dashboard
+
+        utc_now = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr(dashboard, "_utc_today", lambda: utc_now.date())
+
+        db_session.add(
+            ProductionRun(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                run_number="RUN-UTC-FAILED",
+                status="failed",
+                started_at=utc_now - timedelta(hours=1),
+                completed_at=utc_now,
+                total_plates=0,
+                completed_plates=0,
+            )
+        )
+        await db_session.commit()
+
+        response = await client.get("/api/v1/dashboard/summary")
+        assert response.status_code == 200, response.text
+        assert response.json()["failed_today"] == 1
+
+    def test_the_helper_asks_the_clock_for_utc(self, monkeypatch) -> None:
+        """Guards the fix itself, deterministically, in any zone at any hour.
+
+        Comparing `_utc_today()` against today's UTC date would only fail while
+        the machine's local date happens to differ -- the same time-of-day
+        dependence that let the original bug sit here. So this watches *how* the
+        clock is read instead: `datetime.now()` with no argument returns local
+        time, and that is the defect. A stub records the timezone it was handed.
+        """
+        from app.api.v1 import dashboard
+
+        asked_for: list[object] = []
+        fixed = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
+
+        class RecordingDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                asked_for.append(tz)
+                return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+        monkeypatch.setattr(dashboard, "datetime", RecordingDatetime)
+
+        result = dashboard._utc_today()
+
+        assert asked_for == [timezone.utc], (
+            f"the clock was read with {asked_for!r}; `datetime.now()` without a "
+            f"timezone returns the server's local time, which is the defect"
+        )
+        assert result == fixed.date()

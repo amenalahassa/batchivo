@@ -10,7 +10,7 @@ Provides dashboard data for the authenticated home page including:
 - Failure analytics
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -29,6 +29,27 @@ from app.auth.dependencies import CurrentTenant
 
 
 router = APIRouter(tags=["dashboard"])
+
+
+def _utc_today() -> date:
+    """Today's date in UTC, matching how `completed_at` is stored.
+
+    `ProductionRun.completed_at` is a `DateTime(timezone=True)` holding UTC, and
+    these endpoints compare it against a day. `datetime.now().date()` returned
+    the *server's* local date, so on any server not running in UTC the
+    comparison asked a UTC column about a local day: for an operator at UTC-4,
+    every run finished after 20:00 local was missing from "today" while runs
+    from the previous UTC morning were counted in it. The figure was wrong for
+    several hours of every day and raised no error.
+
+    Known limitation: the tenant carries an IANA `localization.timezone`
+    setting, so the figure an operator would call correct is their *local* day,
+    not the UTC one. Honouring that means threading the tenant's zone through
+    these three endpoints, which is a change to the dashboard rather than a fix
+    to it. UTC is at least consistent with the stored data and no longer
+    depends on what time of day the request arrives.
+    """
+    return datetime.now(timezone.utc).date()
 
 
 # Response Schemas
@@ -171,7 +192,7 @@ async def get_dashboard_summary(
     Returns counts for active prints, completions/failures today,
     low stock alerts, and 7-day success rate.
     """
-    today = datetime.now().date()
+    today = _utc_today()
     seven_days_ago = today - timedelta(days=7)
 
     # Active prints count
@@ -440,7 +461,7 @@ async def get_performance_data(
 
     Returns success rate trends, material usage, and daily production data.
     """
-    today = datetime.now().date()
+    today = _utc_today()
     start_date = today - timedelta(days=days - 1)
 
     # Success rate trend by day
@@ -605,7 +626,7 @@ async def get_failure_analytics(
 
     Leverages the waste_reason field from the cancel/fail feature.
     """
-    today = datetime.now().date()
+    today = _utc_today()
     start_date = today - timedelta(days=days - 1)
 
     # Get all failed runs in period
