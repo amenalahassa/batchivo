@@ -40,6 +40,11 @@ from app.models.shipping_profile import ShippingProfile
 from app.models.tenant import Tenant
 from app.schemas.fee_rule import (
     FeeChargeResponse,
+    PriceAdjustmentResponse,
+    PriceLadderResponse,
+    PriceLadderRungResponse,
+    PriceSolveRequest,
+    PriceSolveResponse,
     ProductMarginResponse,
     RevenueDeductionResponse,
 )
@@ -68,12 +73,14 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
-from app.services import fee_engine
+from app.services import fee_engine, pricing_solver
 from app.services.cost_resolution import product_cost_breakdown
 from app.services.costing import (
+    MARGIN_BASIS_LABELS,
     CircularReferenceError,
     CostingService,
     MaxDepthExceededError,
+    resolve_margin_basis,
 )
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
@@ -870,6 +877,342 @@ async def _postage_for(
         if profile.covers(weight):
             return Decimal(str(profile.postage_cost))
     return Decimal("0")
+
+
+# ---------------------------------------------------------------------------
+# The target-margin solver and the price ladder (tasks T088, T088a)
+# ---------------------------------------------------------------------------
+
+
+class _PricingContext:
+    """Everything a price question about one product on one channel needs.
+
+    The solver and the ladder ask the same four things of the database -- the
+    product, the channel, the policy in effect and the fee rules -- and both
+    then need the make-cost and the postage. Resolving that once here is what
+    keeps them from drifting apart, and from drifting away from the margin
+    endpoint above, which resolves the same figures the same way.
+    """
+
+    def __init__(
+        self,
+        product: Product,
+        channel: SalesChannel,
+        pricing: ProductPricing,
+        policy,
+        rules: list[FeeRule],
+        breakdown: CostBreakdown,
+        postage: Decimal,
+    ) -> None:
+        self.product = product
+        self.channel = channel
+        self.pricing = pricing
+        self.policy = policy
+        self.rules = rules
+        self.breakdown = breakdown
+        self.postage = postage
+
+
+async def _pricing_context(
+    db: AsyncSession,
+    tenant: Tenant,
+    product_id: UUID,
+    channel_id: UUID,
+    reference: date,
+) -> _PricingContext:
+    """Load and cost one product on one channel, or raise the right error.
+
+    A missing product or channel is a ``404``, and so is a product the operator
+    has not listed on that channel: every route under
+    ``/products/{id}/pricing/{channel_id}/`` describes that listing, and asking
+    what to charge somewhere the product is not sold has no answer to give. The
+    message names the prior step rather than leaving the caller to guess it.
+
+    A cycle or an over-deep bundle in the operator's own bill of materials is a
+    ``409`` naming what was found, exactly as the cost and margin endpoints
+    report them -- a price solved from a cost the engine refused to compute
+    would be a number with nothing behind it.
+    """
+    product = (
+        await db.execute(
+            select(Product)
+            .where(
+                Product.id == product_id,
+                Product.tenant_id == tenant.id,
+                Product.is_active.is_(True),
+            )
+            .options(*_get_product_load_options())
+        )
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    channel = (
+        await db.execute(
+            select(SalesChannel).where(
+                SalesChannel.id == channel_id,
+                SalesChannel.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sales channel not found",
+        )
+
+    # `ProductPricing` carries no tenant_id of its own; it is scoped through the
+    # product and the channel, both already checked against the tenant above.
+    pricing = (
+        await db.execute(
+            select(ProductPricing).where(
+                ProductPricing.product_id == product.id,
+                ProductPricing.sales_channel_id == channel.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not pricing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "This product is not sold on that channel, so there is no "
+                "price there to solve for or to vary -- list it on the channel "
+                "first, then ask what it should charge"
+            ),
+        )
+
+    policy = await resolve_cost_policy(db, tenant, reference)
+    try:
+        breakdown = await product_cost_breakdown(db, tenant, product, policy=policy)
+    except CircularReferenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "circular_reference", "message": str(exc)},
+        ) from exc
+    except MaxDepthExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "max_depth_exceeded", "message": str(exc)},
+        ) from exc
+
+    rules = list(
+        (
+            await db.execute(
+                select(FeeRule).where(
+                    FeeRule.sales_channel_id == channel.id,
+                    FeeRule.tenant_id == tenant.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    postage = await _postage_for(db, tenant, product)
+    return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage)
+
+
+def _rendered_inputs(inputs: dict) -> dict[str, str]:
+    """FR-034's inputs as strings, so no money crosses the wire as a number.
+
+    A `Decimal` serialised into a JSON number is exactly the lossiness
+    Constitution IV exists to prevent, and this payload is a free-form map that
+    no field annotation can police -- so every value is rendered here.
+    """
+    rendered: dict[str, str] = {}
+    for key, value in inputs.items():
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            rendered[key] = ", ".join(f"{name}={amount}" for name, amount in value.items())
+        else:
+            rendered[key] = str(value)
+    return rendered
+
+
+@router.post(
+    "/{product_id}/pricing/{channel_id}/solve",
+    response_model=PriceSolveResponse,
+)
+async def solve_product_price(
+    product_id: UUID,
+    channel_id: UUID,
+    request: PriceSolveRequest,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+) -> PriceSolveResponse:
+    """The price that achieves a target margin on one channel (task T088).
+
+    The arithmetic an operator cannot do with a calculator: the percentage fees
+    a marketplace charges are charged on the price being solved for, so cost
+    plus a markup less the fees leaves a margin several points below the one
+    asked for. FR-032 is this endpoint, and FR-034 is why it returns every
+    figure behind the answer rather than the answer alone.
+
+    A target no price can achieve is a ``422`` naming the binding constraint
+    (FR-035), never a very large number -- which would read as an answer.
+
+    **The result is a proposal.** Nothing is published to any channel; applying
+    it is a separate write on the price (US4 scenario 5). This endpoint is a
+    ``POST`` because the body carries the target, not because it changes
+    anything: it writes nothing at all.
+    """
+    reference = request.as_of or date.today()
+    ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
+
+    result = pricing_solver.solve(
+        channel=ctx.channel,
+        make_cost=ctx.breakdown.total_make_cost,
+        target_margin_pct=request.target_margin_pct,
+        as_of=reference,
+        rules=ctx.rules,
+        postage_paid=ctx.postage,
+        shipping_revenue=request.shipping_revenue,
+        extras=request.extras,
+        quantity=request.quantity,
+        policy=ctx.policy,
+        margin_basis=request.margin_basis,
+        # `apply_rounding=False` still quantises to the cent; what it turns off
+        # is the operator's rule, which is the part that moves the price by
+        # more than a rounding boundary.
+        rounding_rule=(request.rounding_rule if request.apply_rounding else "nearest_cent"),
+        snap_to_free_shipping=request.snap_to_free_shipping,
+    )
+
+    fees: list[FeeChargeResponse] = []
+    if result.price is not None:
+        context = fee_engine.OrderContext(
+            item_subtotal=result.price,
+            shipping_revenue=request.shipping_revenue,
+            extras=request.extras,
+            quantity=request.quantity,
+        )
+        stack = fee_engine.compute(ctx.channel, context, reference, rules=ctx.rules)
+        fees = [FeeChargeResponse.model_validate(charge) for charge in stack.charges]
+
+    payload = PriceSolveResponse(
+        product_id=ctx.product.id,
+        sales_channel_id=ctx.channel.id,
+        as_of=reference,
+        achievable=result.achievable,
+        reason=result.reason,
+        binding_constraint=result.binding_constraint,
+        target_margin_pct=result.target_margin_pct,
+        margin_basis=result.margin_basis,
+        margin_basis_label=result.margin_basis_label,
+        required_price_raw=result.raw_price,
+        required_price_rounded=result.price,
+        adjustments=[
+            PriceAdjustmentResponse(
+                key=adjustment.key,
+                label=adjustment.label,
+                from_price=adjustment.from_price,
+                to_price=adjustment.to_price,
+                delta=adjustment.delta,
+            )
+            for adjustment in result.adjustments
+        ],
+        binding_clamps=result.binding_clamps,
+        margin_pct_at_price=result.margin_pct_at_price,
+        profit_at_price=result.profit_at_price,
+        make_cost=ctx.breakdown.total_make_cost,
+        postage_paid=ctx.postage,
+        fees=fees,
+        inputs=_rendered_inputs(result.inputs),
+        passes=result.passes,
+    )
+
+    if not result.achievable:
+        # 422 rather than 200-with-a-null-price: the request asked for a figure
+        # that does not exist, and an interface that has to inspect a boolean
+        # inside a 200 to discover that will eventually forget to.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=payload.model_dump(mode="json"),
+        )
+
+    return payload
+
+
+@router.get(
+    "/{product_id}/pricing/{channel_id}/ladder",
+    response_model=PriceLadderResponse,
+)
+async def get_product_price_ladder(
+    product_id: UUID,
+    channel_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+    price_from: Decimal = Query(..., gt=0, description="First price on the ladder"),
+    price_to: Decimal = Query(..., gt=0, description="Last price on the ladder"),
+    step: Decimal = Query(..., gt=0, description="Distance between rungs"),
+    quantity: int = Query(1, ge=1, description="Units on the hypothetical line"),
+    shipping_revenue: Decimal = Query(
+        Decimal("0"), ge=0, description="Shipping revenue charged to the customer"
+    ),
+    as_of: Optional[date] = Query(
+        None, description="Read the fee rules and policy in effect on this date"
+    ),
+) -> PriceLadderResponse:
+    """Margin at each of a range of prices (task T088a).
+
+    FR-007 forbids storing or computing a market judgement as a single number:
+    what a customer will pay is not derivable from any data this system holds,
+    so a single "recommended price" would be a figure resting on nothing while
+    sitting beside figures that are real.
+
+    This is the alternative. The operator names the range and the step -- there
+    are no defaults, because a default range's midpoint would function as a
+    recommendation wearing a different hat -- and the system reports margin,
+    profit and profit per machine-hour at each point. Nothing is written.
+
+    ``price_from`` above ``price_to``, or a step of zero, is a ``422``: an
+    empty ladder would read as "no price works".
+    """
+    reference = as_of or date.today()
+    ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
+
+    try:
+        rungs = pricing_solver.ladder(
+            channel=ctx.channel,
+            make_cost=ctx.breakdown.total_make_cost,
+            start=price_from,
+            stop=price_to,
+            step=step,
+            as_of=reference,
+            rules=ctx.rules,
+            postage_paid=ctx.postage,
+            shipping_revenue=shipping_revenue,
+            quantity=quantity,
+            machine_hours=ctx.breakdown.machine_hours,
+            policy=ctx.policy,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+    basis = resolve_margin_basis(ctx.policy)
+    return PriceLadderResponse(
+        product_id=ctx.product.id,
+        sales_channel_id=ctx.channel.id,
+        as_of=reference,
+        price_from=price_from,
+        price_to=price_to,
+        step=step,
+        margin_basis=basis,
+        margin_basis_label=MARGIN_BASIS_LABELS[basis],
+        make_cost=ctx.breakdown.total_make_cost,
+        postage_paid=ctx.postage,
+        machine_hours=ctx.breakdown.machine_hours,
+        rungs=[PriceLadderRungResponse.model_validate(rung) for rung in rungs],
+    )
 
 
 @router.put("/{product_id}", response_model=ProductDetailResponse)

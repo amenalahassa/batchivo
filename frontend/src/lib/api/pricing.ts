@@ -7,6 +7,10 @@ import type {
   FilamentPurchaseUpdate,
   PricingPolicy,
   PricingPolicyUpdate,
+  PriceLadder,
+  PriceLadderParams,
+  PriceSolveRequest,
+  PriceSolveResult,
   PrinterCostPolicy,
   PrinterCostPolicyUpdate,
 } from '@/types/pricing'
@@ -69,6 +73,81 @@ export const pricingApi = {
     return apiClient.put<PrinterCostPolicy>(
       `/api/v1/printers/${printerId}/cost-policy`,
       changes,
+    )
+  },
+
+  /**
+   * The price that achieves a target margin on one channel (FR-032).
+   *
+   * A `POST` because the body carries the target, not because anything
+   * changes: the endpoint writes nothing and the answer is a proposal.
+   *
+   * A target no price can achieve comes back as a 422 whose `detail` is a
+   * `PriceSolveResult` with `reason: "unachievable"` (FR-035). `solvePrice`
+   * lets that reject, so a caller cannot read an unachievable answer as a
+   * price by forgetting to check a flag; `trySolvePrice` below returns it as
+   * data for the panel that wants to render the constraint.
+   */
+  solvePrice: async (
+    productId: string,
+    channelId: string,
+    request: PriceSolveRequest,
+  ): Promise<PriceSolveResult> => {
+    return apiClient.post<PriceSolveResult>(
+      `/api/v1/products/${productId}/pricing/${channelId}/solve`,
+      request,
+    )
+  },
+
+  /**
+   * The same solve, with an unachievable target returned rather than thrown.
+   *
+   * FR-035 requires the binding constraint to reach the operator, and a
+   * rejected promise carrying it inside an error body is awkward to render.
+   * Anything that is not the solver's own 422 still rejects: a 404 or a 500 is
+   * not an unachievable target and must not be shown as one.
+   */
+  trySolvePrice: async (
+    productId: string,
+    channelId: string,
+    request: PriceSolveRequest,
+  ): Promise<PriceSolveResult> => {
+    try {
+      return await pricingApi.solvePrice(productId, channelId, request)
+    } catch (error) {
+      const detail = (error as { response?: { status?: number; data?: { detail?: unknown } } })
+        ?.response
+      const body = detail?.data?.detail as PriceSolveResult | undefined
+      if (detail?.status === 422 && body && body.reason === 'unachievable') {
+        return body
+      }
+      throw error
+    }
+  },
+
+  /**
+   * Margin at each of a range of prices (FR-007).
+   *
+   * The range is required, deliberately: a default range's midpoint would
+   * function as a recommended price while resting on nothing.
+   */
+  getPriceLadder: async (
+    productId: string,
+    channelId: string,
+    params: PriceLadderParams,
+  ): Promise<PriceLadder> => {
+    const query = new URLSearchParams({
+      price_from: params.price_from,
+      price_to: params.price_to,
+      step: params.step,
+    })
+    if (params.quantity !== undefined) query.append('quantity', params.quantity.toString())
+    if (params.shipping_revenue !== undefined)
+      query.append('shipping_revenue', params.shipping_revenue)
+    if (params.as_of) query.append('as_of', params.as_of)
+
+    return apiClient.get<PriceLadder>(
+      `/api/v1/products/${productId}/pricing/${channelId}/ladder?${query.toString()}`,
     )
   },
 

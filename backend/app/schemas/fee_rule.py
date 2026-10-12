@@ -430,3 +430,192 @@ class ProductMarginResponse(BaseModel):
     )
     assumed_share: Optional[Decimal] = None
     incomplete_reasons: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# The target-margin solver and the price ladder (tasks T088, T088a)
+#
+# Field names follow contracts/pricing-api.md: `required_price_raw` and
+# `required_price_rounded` rather than one `price`, because the pair is the
+# point. The raw figure is what the arithmetic produced and the rounded one is
+# what the operator would charge, and an interface showing only the second
+# cannot be checked against the first (FR-033, FR-034).
+# ---------------------------------------------------------------------------
+
+
+class PriceSolveRequest(BaseModel):
+    """A target margin, and the sale it should be achieved on (FR-032).
+
+    ``margin_basis`` is normally left unset so the operator's own policy
+    decides (FR-031); passing one is for a screen comparing the same target
+    across bases, which is a read rather than a change of policy.
+    """
+
+    target_margin_pct: Decimal = Field(
+        ...,
+        ge=0,
+        lt=100,
+        description="The margin to achieve, on the basis in effect (FR-032)",
+    )
+    quantity: int = Field(1, ge=1, description="Units on the hypothetical line")
+    shipping_revenue: Decimal = Field(
+        Decimal("0"), ge=0, description="Shipping revenue charged to the customer"
+    )
+    extras: Decimal = Field(Decimal("0"), ge=0, description="Gift wrap and the like")
+    margin_basis: Optional[MarginBasis] = Field(
+        None, description="Overrides the operator's policy for this read only"
+    )
+    apply_rounding: bool = Field(
+        True, description="Apply the operator's rounding rule to the answer (FR-033)"
+    )
+    rounding_rule: Optional[str] = Field(
+        None,
+        max_length=30,
+        description="Overrides the channel's rounding rule for this read (FR-033)",
+    )
+    snap_to_free_shipping: bool = Field(
+        True,
+        description=(
+            "Lift the price to the channel's free-shipping threshold where it "
+            "falls short of one (FR-033). Safe as a default because the result "
+            "is a proposal that publishes nothing"
+        ),
+    )
+    as_of: Optional[date] = Field(
+        None, description="Read the fee rules and policy in effect on this date"
+    )
+
+
+class PriceAdjustmentResponse(BaseModel):
+    """One deliberate move away from the solved price, named (FR-033)."""
+
+    key: str
+    label: str
+    from_price: Decimal
+    to_price: Decimal
+    delta: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PriceSolveResponse(BaseModel):
+    """The price, what moved it, and everything behind it (FR-032 -- FR-035).
+
+    Served with ``200`` when a price exists. Where none does the endpoint
+    answers ``422`` instead, carrying this same shape in ``detail`` with
+    ``reason = "unachievable"`` and every price field null -- a very large
+    number would read as an answer, which is what FR-035 exists to prevent.
+
+    The result is a **proposal**. Nothing is published to any channel; applying
+    it is a separate write on the price (US4 scenario 5).
+    """
+
+    product_id: UUID
+    sales_channel_id: UUID
+    as_of: date
+
+    achievable: bool
+    reason: Optional[str] = Field(
+        None, description='"unachievable" when no price exists (FR-035)'
+    )
+    binding_constraint: Optional[str] = Field(
+        None, description="Which constraint made it unachievable, in words (FR-035)"
+    )
+
+    target_margin_pct: Decimal
+    margin_basis: MarginBasis
+    margin_basis_label: str
+
+    required_price_raw: Optional[Decimal] = Field(
+        None, description="The closed-form answer, before any rounding or snap"
+    )
+    required_price_rounded: Optional[Decimal] = Field(
+        None, description="The price to charge: the raw price with every adjustment applied"
+    )
+    adjustments: list[PriceAdjustmentResponse] = Field(
+        default_factory=list, description="In the order they were applied (FR-033)"
+    )
+    binding_clamps: list[str] = Field(
+        default_factory=list,
+        description="Fees whose cap or floor bound at the price returned (FR-032a)",
+    )
+
+    margin_pct_at_price: Optional[Decimal] = Field(
+        None,
+        description=(
+            "The margin actually achieved. It exceeds the target by whatever "
+            "the rounding moved, since every rounding rule rounds up"
+        ),
+    )
+    profit_at_price: Optional[Decimal] = None
+
+    make_cost: Decimal
+    postage_paid: Decimal
+    fees: list[FeeChargeResponse] = Field(
+        default_factory=list, description="The stack as charged at the price returned"
+    )
+
+    inputs: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Every figure the answer was computed from, rendered as strings so "
+            "no monetary value crosses the wire as a JSON number (FR-034)"
+        ),
+    )
+    passes: int = Field(0, description="Closed-form solves it took; one when no clamp bound")
+
+    is_proposal: bool = Field(
+        True,
+        description=(
+            "Always true, and present so a client cannot mistake this for a "
+            "published price: applying it is a separate write (US4 scenario 5)"
+        ),
+    )
+
+
+class PriceLadderRungResponse(BaseModel):
+    """One price point and what it earns (FR-007).
+
+    No rung is marked as recommended, and there is deliberately no field in
+    which one could be: what a customer will pay is not derivable from any data
+    this system holds, so the choice stays with the operator.
+    """
+
+    price: Decimal
+    margin_pct: Optional[Decimal] = Field(
+        None, description="Null where fees consume the whole basis, never zero"
+    )
+    profit: Decimal
+    margin_basis: MarginBasis
+    profit_per_machine_hour: Optional[Decimal] = Field(
+        None, description="Null when the print time is unknown, never zero"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PriceLadderResponse(BaseModel):
+    """Margin across a range of prices, for the operator to choose from.
+
+    The bounds are echoed back because they were the caller's: the ladder has
+    no range of its own, since a default range's midpoint would function as a
+    recommended price while resting on nothing (FR-007).
+    """
+
+    product_id: UUID
+    sales_channel_id: UUID
+    as_of: date
+
+    price_from: Decimal
+    price_to: Decimal
+    step: Decimal
+
+    margin_basis: MarginBasis
+    margin_basis_label: str
+    make_cost: Decimal
+    postage_paid: Decimal
+    machine_hours: Optional[Decimal] = Field(
+        None, description="Machine occupancy per unit; null when nobody has timed the print"
+    )
+
+    rungs: list[PriceLadderRungResponse]

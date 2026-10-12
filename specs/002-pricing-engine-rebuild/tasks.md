@@ -223,15 +223,15 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 **Depends on**: US2 and US3 (built earlier it would confidently return the wrong price).
 
-- [ ] T086 [P] [US4] Solver tests in `backend/tests/unit/pricing/test_solver.py`: CA$64.64 for a 35% target; the three margin bases each solved correctly; a capped fee that stops scaling with price and is reported as binding; rounding and free-shipping snap each shown as an adjustment; an unachievable target reported with its binding constraint rather than a number
-- [ ] T086a [P] [US4] Price-ladder tests in `backend/tests/unit/pricing/test_price_ladder.py`: margin is returned at each price point on the basis in effect, the ladder's bounds and step are inputs rather than constants, and no single market-judgement figure is ever stored (FR-007)
-- [ ] T087 [US4] Implement `backend/app/services/pricing_solver.py` with one closed form per margin basis and a bounded clamp loop — solve, check which clamps bind, move each bound fee to the fixed bucket, re-solve, terminating in at most one pass per capped rule (research D10)
-- [ ] T088 [US4] Add `POST /products/{product_id}/pricing/{channel_id}/solve` in `backend/app/api/v1/products.py` returning the raw and rounded price, the adjustments in order, `binding_clamps[]` and the full `inputs`; `422` with `reason: "unachievable"` when no price exists
-- [ ] T088a [US4] Add `GET /products/{product_id}/pricing/{channel_id}/ladder` in `backend/app/api/v1/products.py`, taking a price range and step and returning margin, profit and profit per machine-hour at each point
-- [ ] T088b [US4] API tests for the solve and ladder endpoints in `backend/tests/api/test_price_solver.py` covering `200`, `401`, `422` with `reason: "unachievable"`, and `404` for an unpriced product on that channel
-- [ ] T089 [P] [US4] Build `frontend/src/components/pricing/PriceSolverPanel.tsx` presenting the result as a proposal the operator applies or rejects — nothing is published to a channel automatically
-- [ ] T089a [P] [US4] Vitest test asserting the solver result is a proposal that publishes nothing, and that an unachievable target renders its binding constraint, in `frontend/src/components/pricing/PriceSolverPanel.test.tsx`
-- [ ] T089b [P] [US4] Build `frontend/src/components/pricing/PriceLadder.tsx` presenting margin across the ladder for the operator to choose from, with no value written back automatically
+- [X] T086 [P] [US4] Solver tests in `backend/tests/unit/pricing/test_solver.py`: CA$64.64 for a 35% target; the three margin bases each solved correctly; a capped fee that stops scaling with price and is reported as binding; rounding and free-shipping snap each shown as an adjustment; an unachievable target reported with its binding constraint rather than a number
+- [X] T086a [P] [US4] Price-ladder tests in `backend/tests/unit/pricing/test_price_ladder.py`: margin is returned at each price point on the basis in effect, the ladder's bounds and step are inputs rather than constants, and no single market-judgement figure is ever stored (FR-007)
+- [X] T087 [US4] Implement `backend/app/services/pricing_solver.py` with one closed form per margin basis and a bounded clamp loop — solve, check which clamps bind, move each bound fee to the fixed bucket, re-solve, terminating in at most one pass per capped rule (research D10)
+- [X] T088 [US4] Add `POST /products/{product_id}/pricing/{channel_id}/solve` in `backend/app/api/v1/products.py` returning the raw and rounded price, the adjustments in order, `binding_clamps[]` and the full `inputs`; `422` with `reason: "unachievable"` when no price exists
+- [X] T088a [US4] Add `GET /products/{product_id}/pricing/{channel_id}/ladder` in `backend/app/api/v1/products.py`, taking a price range and step and returning margin, profit and profit per machine-hour at each point
+- [X] T088b [US4] API tests for the solve and ladder endpoints in `backend/tests/api/test_price_solver.py` covering `200`, `401`, `422` with `reason: "unachievable"`, and `404` for an unpriced product on that channel
+- [X] T089 [P] [US4] Build `frontend/src/components/pricing/PriceSolverPanel.tsx` presenting the result as a proposal the operator applies or rejects — nothing is published to a channel automatically
+- [X] T089a [P] [US4] Vitest test asserting the solver result is a proposal that publishes nothing, and that an unachievable target renders its binding constraint, in `frontend/src/components/pricing/PriceSolverPanel.test.tsx`
+- [X] T089b [P] [US4] Build `frontend/src/components/pricing/PriceLadder.tsx` presenting margin across the ladder for the operator to choose from, with no value written back automatically
 
 **Checkpoint**: the solver returns CA$64.64 and explains itself.
 

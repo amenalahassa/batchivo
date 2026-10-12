@@ -17,6 +17,10 @@ import type {
   FilamentPurchaseUpdate,
   PricingPolicy,
   PricingPolicyUpdate,
+  PriceLadder,
+  PriceLadderParams,
+  PriceSolveRequest,
+  PriceSolveResult,
   PrinterCostPolicy,
   PrinterCostPolicyUpdate,
 } from '@/types/pricing'
@@ -31,6 +35,19 @@ export const pricingKeys = {
   filamentPurchases: () => ['pricing', 'filament-purchases'] as const,
   filamentPurchase: (purchaseId: string) =>
     ['pricing', 'filament-purchase', purchaseId] as const,
+  ladder: (productId: string, channelId: string, params: PriceLadderParams) =>
+    [
+      'pricing',
+      'ladder',
+      productId,
+      channelId,
+      params.price_from,
+      params.price_to,
+      params.step,
+      params.quantity ?? 1,
+      params.shipping_revenue ?? '0',
+      params.as_of ?? 'today',
+    ] as const,
 }
 
 /** The itemised make-cost of one printed item, optionally on a given printer. */
@@ -214,5 +231,66 @@ export function useSaveFilamentPurchase() {
     deletePurchase: remove.mutate,
     isSaving: create.isPending || update.isPending || remove.isPending,
     error: create.error ?? update.error ?? remove.error,
+  }
+}
+
+
+/**
+ * Solve for the price that achieves a target margin (FR-032).
+ *
+ * A mutation rather than a query, although the endpoint writes nothing: the
+ * operator asks a question by pressing a button, and a query keyed on the
+ * target would re-solve on every keystroke and cache answers to targets
+ * nobody asked about.
+ *
+ * Nothing is invalidated on success, deliberately. The answer is a proposal
+ * (US4 scenario 5) and no stored figure moved, so invalidating a price here
+ * would be claiming a write that never happened.
+ */
+export function useSolvePrice(productId: string | undefined, channelId: string | undefined) {
+  const mutation = useMutation<PriceSolveResult, Error, PriceSolveRequest>({
+    mutationFn: (request) =>
+      pricingApi.trySolvePrice(productId as string, channelId as string, request),
+  })
+
+  return {
+    solve: mutation.mutate,
+    solveAsync: mutation.mutateAsync,
+    result: mutation.data,
+    isSolving: mutation.isPending,
+    error: mutation.error,
+    reset: mutation.reset,
+  }
+}
+
+/**
+ * Margin across a range of prices (FR-007).
+ *
+ * `params` is required and has no default range: the hook stays disabled until
+ * the caller names one, because a default range's midpoint would function as a
+ * recommended price while resting on nothing.
+ */
+export function usePriceLadder(
+  productId: string | undefined,
+  channelId: string | undefined,
+  params: PriceLadderParams | undefined,
+) {
+  const query = useQuery<PriceLadder>({
+    queryKey: pricingKeys.ladder(
+      productId ?? '',
+      channelId ?? '',
+      params ?? { price_from: '', price_to: '', step: '' },
+    ),
+    queryFn: () =>
+      pricingApi.getPriceLadder(productId as string, channelId as string, params as PriceLadderParams),
+    enabled: Boolean(productId && channelId && params),
+  })
+
+  return {
+    ladder: query.data,
+    rungs: query.data?.rungs ?? [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
   }
 }

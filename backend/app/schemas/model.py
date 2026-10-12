@@ -83,6 +83,15 @@ class CostBreakdown(BaseModel):
 
     total_make_cost: Decimal = Field(..., description="Total cost to make one sellable unit")
 
+    machine_hours: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Machine occupancy for one sellable unit, bundles included. Null "
+            "when no print time is recorded anywhere below it — never zero, "
+            "which would read as an item that occupies no machine (FR-019)"
+        ),
+    )
+
     observed_share: Decimal = Field(
         ..., ge=0, le=1, description="Share of the cost whose inputs are observed or measured"
     )

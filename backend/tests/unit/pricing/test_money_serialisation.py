@@ -69,6 +69,7 @@ def _a_breakdown() -> CostBreakdown:
         failure_mode="per_part",
         failure_premium=Decimal("1.68"),
         total_make_cost=Decimal("20.30"),
+        machine_hours=Decimal("9.5"),
         observed_share=Decimal("0.70"),
         assumed_share=Decimal("0.30"),
         incomplete_reasons=[],
@@ -116,6 +117,20 @@ class TestEveryMoneyFieldIsAString:
             )
         for line in payload["lines"]:
             assert isinstance(line["amount"], str)
+
+    def test_an_unknown_figure_crosses_the_wire_as_null_not_zero(self) -> None:
+        """FR-019: a gap is reported as a gap, through the serialiser too.
+
+        ``machine_hours`` is null on an item nobody has timed. A zero would
+        deserialise as a real figure -- an item that occupies no machine -- and
+        a consumer dividing profit by it would then divide by zero instead of
+        declining to report a rate.
+        """
+        breakdown = _a_breakdown().model_copy(update={"machine_hours": None})
+        payload = json.loads(breakdown.model_dump_json())
+
+        assert payload["machine_hours"] is None
+        assert payload["machine_hours"] != 0
 
     def test_the_total_keeps_its_cents(self) -> None:
         payload = json.loads(_a_breakdown().model_dump_json())

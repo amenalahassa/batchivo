@@ -690,6 +690,7 @@ def _assemble(
     failure_mode: str,
     failure_divisor: Decimal,
     incomplete_reasons: Sequence[str],
+    machine_hours: Optional[Decimal] = None,
 ) -> CostBreakdown:
     """Build the served breakdown from raw lines, rounding once.
 
@@ -718,6 +719,7 @@ def _assemble(
         failure_mode=failure_mode,  # type: ignore[arg-type]
         failure_premium=premium,
         total_make_cost=at_risk + premium + not_at_risk,
+        machine_hours=machine_hours,
         observed_share=observed.quantize(Decimal("0.0001")),
         assumed_share=assumed.quantize(Decimal("0.0001")),
         incomplete_reasons=list(dict.fromkeys(incomplete_reasons)),
@@ -929,6 +931,7 @@ class CostingService:
             failure_mode=raw.failure_mode,
             failure_divisor=raw.failure_divisor,
             incomplete_reasons=raw.incomplete_reasons,
+            machine_hours=raw.print_hours_per_item,
         )
 
     @staticmethod
@@ -967,12 +970,22 @@ class CostingService:
         raw: list[_RawLine] = []
         inherited_premium = ZERO
         inherited_at_risk = ZERO
+        # Machine occupancy totals across the bundle so the one engine that
+        # knows each item's print time is also the one that reports the
+        # bundle's. `None` until some child reports hours, so a product nobody
+        # has timed stays unknown rather than becoming a zero that reads as an
+        # item occupying no machine (FR-019).
+        inherited_machine_hours: Optional[Decimal] = None
         reasons: list[str] = []
         modes: set[str] = set()
         yields: set[Decimal] = set()
 
         def absorb(breakdown: CostBreakdown, quantity: Decimal) -> None:
-            nonlocal inherited_premium, inherited_at_risk
+            nonlocal inherited_premium, inherited_at_risk, inherited_machine_hours
+            if breakdown.machine_hours is not None:
+                inherited_machine_hours = (
+                    inherited_machine_hours or ZERO
+                ) + breakdown.machine_hours * quantity
             for line in breakdown.lines:
                 raw.append(
                     _RawLine(
@@ -1055,6 +1068,7 @@ class CostingService:
             failure_mode=(modes.pop() if len(modes) == 1 else "per_part"),
             failure_divisor=ONE,
             incomplete_reasons=reasons,
+            machine_hours=inherited_machine_hours,
         )
 
         if inherited_premium <= ZERO:

@@ -532,3 +532,137 @@ export interface ChannelEconomics {
   currency_code: string
   offsite_ads_opt_in: boolean
 }
+
+// ---------------------------------------------------------------------------
+// The target-margin solver and the price ladder (tasks T089, T089b)
+//
+// `machine_hours` and every amount below is a decimal string, like everything
+// else in this file. Nothing here parses one into a number: see `lib/money`.
+// ---------------------------------------------------------------------------
+
+/** Rounding rules the solver understands (FR-033). Every one rounds up. */
+export type RoundingRule =
+  | 'nearest_cent'
+  | 'nearest_five_cents'
+  | 'nearest_dollar'
+  | 'psychological_99'
+  | 'psychological_95'
+
+/** What the operator asks for: a target margin, on a hypothetical sale. */
+export interface PriceSolveRequest {
+  target_margin_pct: Percent
+  quantity?: number
+  shipping_revenue?: Money
+  extras?: Money
+  margin_basis?: MarginBasis | null
+  apply_rounding?: boolean
+  rounding_rule?: RoundingRule | string | null
+  snap_to_free_shipping?: boolean
+  as_of?: string | null
+}
+
+/**
+ * One deliberate move away from the solved price (FR-033).
+ *
+ * A rounding rule and a free-shipping snap both change the answer. Neither is
+ * a correction, so neither is hidden: each says where the price came from and
+ * where it went, which is the only way an operator can check it.
+ */
+export interface PriceAdjustment {
+  key: string
+  label: string
+  from_price: Money
+  to_price: Money
+  delta: Money
+}
+
+/**
+ * The solver's answer, and everything behind it (FR-032 - FR-035).
+ *
+ * `achievable` is false, with `reason` of `"unachievable"` and every price
+ * field null, where no price achieves the target. The API serves that case as
+ * a 422 carrying this shape in `detail`.
+ *
+ * `is_proposal` is always true. Nothing here has been published to any
+ * channel: applying it is a separate write on the price (US4 scenario 5).
+ */
+export interface PriceSolveResult {
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+
+  achievable: boolean
+  reason: string | null
+  binding_constraint: string | null
+
+  target_margin_pct: Percent
+  margin_basis: MarginBasis
+  margin_basis_label: string
+
+  /** The closed-form answer, before any rounding or snap. */
+  required_price_raw: Money | null
+  /** The price to charge: the raw price with every adjustment applied. */
+  required_price_rounded: Money | null
+  adjustments: PriceAdjustment[]
+  /** Fees whose cap or floor bound at the price returned (FR-032a). */
+  binding_clamps: string[]
+
+  /** At or above the target, since every rounding rule rounds up. */
+  margin_pct_at_price: Percent | null
+  profit_at_price: Money | null
+
+  make_cost: Money
+  postage_paid: Money
+  fees: FeeCharge[]
+
+  /** Every figure the answer came from, rendered as strings (FR-034). */
+  inputs: Record<string, string>
+  passes: number
+  is_proposal: boolean
+}
+
+/** One price point and what it earns (FR-007). No rung is recommended. */
+export interface PriceLadderRung {
+  price: Money
+  /** Null where fees consume the whole basis, never zero. */
+  margin_pct: Percent | null
+  profit: Money
+  margin_basis: MarginBasis
+  /** Null when nobody has timed the print, never zero. */
+  profit_per_machine_hour: Money | null
+}
+
+/**
+ * Margin across a range of prices, for the operator to choose from.
+ *
+ * The bounds are echoed back because they were the caller's: the ladder has no
+ * range of its own, since a default range's midpoint would function as a
+ * recommended price while resting on nothing (FR-007).
+ */
+export interface PriceLadder {
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+
+  price_from: Money
+  price_to: Money
+  step: Money
+
+  margin_basis: MarginBasis
+  margin_basis_label: string
+  make_cost: Money
+  postage_paid: Money
+  machine_hours: Money | null
+
+  rungs: PriceLadderRung[]
+}
+
+/** The range the operator asks the ladder for. No defaults (FR-007). */
+export interface PriceLadderParams {
+  price_from: Money
+  price_to: Money
+  step: Money
+  quantity?: number
+  shipping_revenue?: Money
+  as_of?: string | null
+}
