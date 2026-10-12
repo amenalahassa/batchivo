@@ -135,8 +135,21 @@ class TestSpoolCostPerGram:
         assert Spool.cost_per_gram.fget(obj) is None
 
     def test_calculates_correctly(self):
+        # Exact, with no tolerance. This figure seeds `ModelMaterial.cost_per_gram`
+        # and so reaches every make-cost in the system, which is why it is a
+        # Decimal rather than a float (Constitution IV).
         obj = make_spool(purchase_price=Decimal("20.00"), initial_weight=Decimal("1000"))
-        assert abs(Spool.cost_per_gram.fget(obj) - 0.02) < 0.0001
+        assert Spool.cost_per_gram.fget(obj) == Decimal("0.02")
+
+    def test_a_price_that_does_not_divide_evenly_stays_exact(self):
+        """A third of a cent per gram must not be rounded by the property.
+
+        17.99 over 750 g is 0.02398666... -- the property returns the full
+        quotient and leaves rounding to whoever displays it, because rounding
+        between intermediate steps is what makes a cost drift.
+        """
+        obj = make_spool(purchase_price=Decimal("17.99"), initial_weight=Decimal("750"))
+        assert Spool.cost_per_gram.fget(obj) == Decimal("17.99") / Decimal("750")
 
     def test_zero_initial_weight_returns_none(self):
         obj = make_spool(purchase_price=Decimal("20.00"), initial_weight=Decimal("0"))

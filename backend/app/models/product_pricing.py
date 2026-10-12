@@ -41,7 +41,7 @@ class ProductPricing(Base, UUIDMixin, TimestampMixin):
     )
 
     # Pricing
-    list_price: Mapped[float] = mapped_column(
+    list_price: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Listed selling price",
@@ -75,33 +75,45 @@ class ProductPricing(Base, UUIDMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<ProductPricing(product_id={self.product_id}, channel_id={self.sales_channel_id}, price={self.list_price})>"
 
-    def calculate_profit(self, make_cost: float) -> dict:
+    def calculate_profit(self, make_cost: Decimal) -> dict[str, Decimal]:
         """
         Calculate profit for this product on this channel.
+
+        Every figure in and out is a `Decimal`. The previous version took and
+        returned `float`, and converted the price to a float purely to call
+        `calculate_platform_fee` -- so a margin shown to the operator had passed
+        through binary floating point twice before it reached the screen
+        (Constitution IV).
 
         Args:
             make_cost: Total cost to make the product
 
         Returns:
-            dict with:
+            dict of Decimals with:
             - list_price: What customer pays
             - platform_fee: Fee charged by platform
             - net_revenue: After platform fees
             - profit: Net revenue minus make cost
             - margin_percentage: Profit as % of list price
+
+        Note:
+            The margin here is taken on price and is tax-inclusive. Tier 2
+            (tasks T071, T072) introduces the tax-exclusive margin and names the
+            basis beside every percentage; until then a reader should not assume
+            which basis this is.
         """
         list_price = Decimal(str(self.list_price))
-        platform_fee = Decimal(str(self.sales_channel.calculate_platform_fee(float(list_price))))
+        platform_fee = self.sales_channel.calculate_platform_fee(list_price)
         net_revenue = list_price - platform_fee
         make = Decimal(str(make_cost))
         profit = net_revenue - make
 
-        margin_pct = (profit / list_price * 100) if list_price > 0 else Decimal("0")
+        margin_pct = (profit / list_price * Decimal("100")) if list_price > 0 else Decimal("0")
 
         return {
-            "list_price": float(list_price),
-            "platform_fee": float(platform_fee),
-            "net_revenue": float(net_revenue),
-            "profit": float(profit),
-            "margin_percentage": float(margin_pct),
+            "list_price": list_price,
+            "platform_fee": platform_fee,
+            "net_revenue": net_revenue,
+            "profit": profit,
+            "margin_percentage": margin_pct,
         }

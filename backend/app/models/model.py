@@ -1,6 +1,7 @@
 """Model for 3D printed items (individual printed parts)."""
 
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from datetime import datetime
@@ -75,7 +76,7 @@ class Model(Base, UUIDMixin, TimestampMixin):
     )
 
     # Labor Costing
-    labor_hours: Mapped[float] = mapped_column(
+    labor_hours: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
@@ -83,14 +84,14 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Labor hours required (post-processing, assembly, etc.)",
     )
 
-    labor_rate_override: Mapped[Optional[float]] = mapped_column(
+    labor_rate_override: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Override labor rate for this model (£/hour). If null, use tenant default.",
     )
 
     # Overhead
-    overhead_percentage: Mapped[float] = mapped_column(
+    overhead_percentage: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=0,
@@ -154,7 +155,7 @@ class Model(Base, UUIDMixin, TimestampMixin):
     )
 
     # Production Cost Tracking (Phase 2: Rolling average from actual runs)
-    actual_production_cost: Mapped[Optional[float]] = mapped_column(
+    actual_production_cost: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Rolling average actual production cost per unit from completed runs",

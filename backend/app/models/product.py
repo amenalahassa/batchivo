@@ -157,7 +157,7 @@ class Product(Base, UUIDMixin, TimestampMixin):
     )
 
     # Packaging - can be manual cost or linked to consumable
-    packaging_cost: Mapped[float] = mapped_column(
+    packaging_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
@@ -457,100 +457,3 @@ class Product(Base, UUIDMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<Product(sku={self.sku}, name={self.name})>"
-
-    def calculate_make_cost(self, labor_rate: float = 10.0, visited: set | None = None) -> dict:
-        """
-        Calculate the make cost for this product.
-
-        Supports composite products (bundles) by recursively calculating costs
-        for child products. Includes cycle detection to prevent infinite loops.
-
-        Args:
-            labor_rate: Hourly labor rate (default £10/hr)
-            visited: Set of product IDs already visited (for cycle detection)
-
-        Returns:
-            dict with cost breakdown:
-            - models_cost: Sum of (model.cost × quantity) for all models
-            - child_products_cost: Sum of child product costs × quantity
-            - packaging_cost: Packaging cost
-            - assembly_cost: Assembly labor cost
-            - total_make_cost: Total cost to make this product
-
-        Raises:
-            ValueError: If circular reference detected in product hierarchy
-        """
-        # Initialize visited set for cycle detection
-        if visited is None:
-            visited = set()
-
-        # Check for circular reference
-        if self.id in visited:
-            raise ValueError(
-                f"Circular reference detected: Product {self.sku} appears in its own hierarchy"
-            )
-        visited.add(self.id)
-
-        models_cost = Decimal("0")
-        child_products_cost = Decimal("0")
-
-        # Calculate cost of direct models (printed items)
-        for pm in self.product_models:
-            if pm.model:
-                # Get model cost (materials + components + labor + overhead)
-                model_cost = self._calculate_model_cost(pm.model, labor_rate)
-                models_cost += model_cost * pm.quantity
-
-        # Calculate cost of child products (composite/bundles)
-        for pc in self.child_products:
-            if pc.child_product:
-                # Recursively calculate child product cost with visited copy
-                child_cost_breakdown = pc.child_product.calculate_make_cost(
-                    labor_rate=labor_rate, visited=visited.copy()
-                )
-                child_products_cost += (
-                    Decimal(str(child_cost_breakdown["total_make_cost"])) * pc.quantity
-                )
-
-        assembly_cost = Decimal(str(self.assembly_minutes)) / 60 * Decimal(str(labor_rate))
-
-        # Get packaging cost (from consumable or manual)
-        if self.packaging_consumable and self.packaging_consumable.unit_cost:
-            packaging = Decimal(str(self.packaging_consumable.unit_cost)) * self.packaging_quantity
-        else:
-            packaging = Decimal(str(self.packaging_cost))
-
-        total_make_cost = models_cost + child_products_cost + packaging + assembly_cost
-
-        return {
-            "models_cost": float(models_cost),
-            "child_products_cost": float(child_products_cost),
-            "packaging_cost": float(packaging),
-            "assembly_cost": float(assembly_cost),
-            "total_make_cost": float(total_make_cost),
-        }
-
-    def _calculate_model_cost(self, model, labor_rate: float) -> Decimal:
-        """Calculate cost for a single model."""
-        # Materials cost
-        materials_cost = sum(
-            Decimal(str(m.weight_grams)) * Decimal(str(m.cost_per_gram)) for m in model.materials
-        )
-
-        # Components cost
-        components_cost = sum(
-            Decimal(str(c.quantity)) * Decimal(str(c.unit_cost)) for c in model.components
-        )
-
-        # Labor cost
-        rate = float(model.labor_rate_override) if model.labor_rate_override else labor_rate
-        labor_cost = Decimal(str(model.labor_hours)) * Decimal(str(rate))
-
-        # Subtotal before overhead
-        subtotal = materials_cost + components_cost + labor_cost
-
-        # Overhead
-        overhead_pct = Decimal(str(model.overhead_percentage)) / 100
-        overhead_cost = subtotal * overhead_pct
-
-        return subtotal + overhead_cost

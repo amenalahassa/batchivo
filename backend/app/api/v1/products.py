@@ -34,6 +34,7 @@ from app.models.product_model import ProductModel
 from app.models.product_pricing import ProductPricing
 from app.models.product_variant import ProductVariant
 from app.models.sales_channel import SalesChannel
+from app.models.tenant import Tenant
 from app.schemas.product import (
     ProductComponentCreate,
     ProductComponentResponse,
@@ -59,6 +60,7 @@ from app.schemas.product_image import (
     ProductImageListResponse,
 )
 from app.services.costing import CostingService
+from app.services.tenant_cost_settings import tenant_labor_rate, tenant_overhead_percentage
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
 from app.services.shopify_sync import (
     ShopifySyncService,
@@ -135,14 +137,30 @@ def _get_product_load_options():
 
 
 # Helper function to calculate and attach cost breakdown
-async def product_with_cost(product: Product, db: AsyncSession) -> dict:
-    """Convert Product model to response dict with cost breakdown."""
-    cost_breakdown = CostingService.calculate_product_cost(product)
+async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) -> dict:
+    """Convert Product model to response dict with cost breakdown.
+
+    The tenant is required, not optional: every figure below is built from the
+    labor rate and overhead default this operator configured, resolved once so
+    that no two figures in one response can disagree (Constitution III, IV).
+    """
+    labor_rate = tenant_labor_rate(tenant)
+    overhead_percentage = tenant_overhead_percentage(tenant)
+
+    cost_breakdown = CostingService.calculate_product_cost(
+        product, labor_rate=labor_rate, overhead_percentage=overhead_percentage
+    )
 
     # Build model responses with details
     model_responses = []
     for pm in product.product_models:
-        model_cost = CostingService.calculate_model_cost(pm.model) if pm.model else None
+        model_cost = (
+            CostingService.calculate_model_cost(
+                pm.model, labor_rate=labor_rate, overhead_percentage=overhead_percentage
+            )
+            if pm.model
+            else None
+        )
         model_responses.append(
             {
                 "id": pm.id,
@@ -161,7 +179,9 @@ async def product_with_cost(product: Product, db: AsyncSession) -> dict:
     for pc in getattr(product, "child_products", []):
         child = pc.child_product
         if child:
-            child_cost = CostingService.calculate_product_cost(child)
+            child_cost = CostingService.calculate_product_cost(
+                child, labor_rate=labor_rate, overhead_percentage=overhead_percentage
+            )
             child_product_responses.append(
                 {
                     "id": pc.id,
@@ -337,7 +357,7 @@ async def create_product(
     result = await db.execute(query)
     product = result.scalar_one()
 
-    return ProductDetailResponse(**await product_with_cost(product, db))
+    return ProductDetailResponse(**await product_with_cost(product, db, tenant))
 
 
 @router.get("", response_model=ProductListResponse)
@@ -390,10 +410,19 @@ async def list_products(
                 products_with_rels.get(p.id, p) for p in products if p.id in products_with_rels
             ]
 
+        # Resolve the operator's figures once per request, not once per row: a
+        # rejected setting would otherwise log a warning for every product.
+        labor_rate = tenant_labor_rate(tenant)
+        overhead_percentage = tenant_overhead_percentage(tenant)
+
         # Build response with calculated costs
         product_responses = []
         for product in products:
-            cost_breakdown = CostingService.calculate_product_cost(product)
+            cost_breakdown = CostingService.calculate_product_cost(
+                product,
+                labor_rate=labor_rate,
+                overhead_percentage=overhead_percentage,
+            )
             total_make_cost = cost_breakdown.total_make_cost
             suggested_price = total_make_cost * Decimal("2.5")
 
@@ -472,11 +501,20 @@ async def list_products(
     result = await db.execute(query)
     products = result.scalars().all()
 
+    # Resolve the operator's figures once per request, not once per row: a
+    # rejected setting would otherwise log a warning for every product.
+    labor_rate = tenant_labor_rate(tenant)
+    overhead_percentage = tenant_overhead_percentage(tenant)
+
     # Build response with calculated costs
     product_responses = []
     for product in products:
         # Calculate cost breakdown
-        cost_breakdown = CostingService.calculate_product_cost(product)
+        cost_breakdown = CostingService.calculate_product_cost(
+            product,
+            labor_rate=labor_rate,
+            overhead_percentage=overhead_percentage,
+        )
         total_make_cost = cost_breakdown.total_make_cost
         suggested_price = total_make_cost * Decimal("2.5")  # 2.5x markup
 
@@ -564,7 +602,7 @@ async def get_product(
             detail="Product not found",
         )
 
-    return ProductDetailResponse(**await product_with_cost(product, db))
+    return ProductDetailResponse(**await product_with_cost(product, db, tenant))
 
 
 @router.put("/{product_id}", response_model=ProductDetailResponse)
@@ -633,7 +671,7 @@ async def update_product(
     await db.commit()
     await db.refresh(product)
 
-    return ProductDetailResponse(**await product_with_cost(product, db))
+    return ProductDetailResponse(**await product_with_cost(product, db, tenant))
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -740,7 +778,11 @@ async def add_product_model(
     await db.refresh(product_model)
 
     # Calculate model cost
-    model_cost = CostingService.calculate_model_cost(model)
+    model_cost = CostingService.calculate_model_cost(
+        model,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
 
     return ProductModelResponse(
         id=product_model.id,
@@ -791,7 +833,11 @@ async def update_product_model(
     await db.commit()
     await db.refresh(product_model)
 
-    model_cost = CostingService.calculate_model_cost(product_model.model)
+    model_cost = CostingService.calculate_model_cost(
+        product_model.model,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
 
     return ProductModelResponse(
         id=product_model.id,
@@ -917,7 +963,11 @@ async def add_product_pricing(
     await db.refresh(pricing)
 
     # Calculate profit
-    cost_breakdown = CostingService.calculate_product_cost(product)
+    cost_breakdown = CostingService.calculate_product_cost(
+        product,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
     profit_data = CostingService.calculate_profit(
         list_price=Decimal(str(pricing.list_price)),
         make_cost=cost_breakdown.total_make_cost,
@@ -989,7 +1039,11 @@ async def update_product_pricing(
     await db.refresh(pricing)
 
     # Calculate profit
-    cost_breakdown = CostingService.calculate_product_cost(pricing.product)
+    cost_breakdown = CostingService.calculate_product_cost(
+        pricing.product,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
     channel = pricing.sales_channel
     profit_data = CostingService.calculate_profit(
         list_price=Decimal(str(pricing.list_price)),
@@ -1170,7 +1224,11 @@ async def add_product_component(
     result = await db.execute(query)
     child_product_loaded = result.scalar_one()
 
-    child_cost = CostingService.calculate_product_cost(child_product_loaded)
+    child_cost = CostingService.calculate_product_cost(
+        child_product_loaded,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
 
     return ProductComponentResponse(
         id=product_component.id,
@@ -1233,7 +1291,11 @@ async def update_product_component(
     result = await db.execute(query)
     child_product_loaded = result.scalar_one()
 
-    child_cost = CostingService.calculate_product_cost(child_product_loaded)
+    child_cost = CostingService.calculate_product_cost(
+        child_product_loaded,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
 
     return ProductComponentResponse(
         id=product_component.id,

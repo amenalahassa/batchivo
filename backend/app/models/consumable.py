@@ -1,6 +1,7 @@
 """Consumable inventory models for tracking magnets, inserts, hardware, etc."""
 
 import uuid
+from decimal import Decimal
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
@@ -70,7 +71,7 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
     )
 
     # Current pricing (updated from latest purchase)
-    current_cost_per_unit: Mapped[Optional[float]] = mapped_column(
+    current_cost_per_unit: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Current cost per unit from latest purchase",
@@ -158,11 +159,11 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
         return self.quantity_on_hand <= self.reorder_point
 
     @property
-    def stock_value(self) -> float:
+    def stock_value(self) -> Decimal:
         """Calculate total value of stock on hand."""
         if self.current_cost_per_unit is None:
-            return 0.0
-        return self.quantity_on_hand * float(self.current_cost_per_unit)
+            return Decimal("0")
+        return Decimal(str(self.quantity_on_hand)) * Decimal(str(self.current_cost_per_unit))
 
 
 class ConsumablePurchase(Base, UUIDMixin, TimestampMixin):
@@ -198,14 +199,14 @@ class ConsumablePurchase(Base, UUIDMixin, TimestampMixin):
         comment="Quantity purchased",
     )
 
-    total_cost: Mapped[float] = mapped_column(
+    total_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Total cost of purchase",
     )
 
     # Calculated field (stored for performance)
-    cost_per_unit: Mapped[float] = mapped_column(
+    cost_per_unit: Mapped[Decimal] = mapped_column(
         Numeric(10, 4),
         nullable=False,
         comment="Cost per unit (total_cost / quantity_purchased)",
@@ -308,7 +309,7 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         comment="Quantity used (positive) or adjusted (negative for returns)",
     )
 
-    cost_at_use: Mapped[Optional[float]] = mapped_column(
+    cost_at_use: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Cost per unit at time of use (snapshot for historical accuracy)",
@@ -346,8 +347,8 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         return f"<ConsumableUsage(type={self.consumable_type_id}, qty={self.quantity_used})>"
 
     @property
-    def total_cost(self) -> float:
+    def total_cost(self) -> Decimal:
         """Calculate total cost of this usage."""
         if self.cost_at_use is None:
-            return 0.0
-        return self.quantity_used * float(self.cost_at_use)
+            return Decimal("0")
+        return Decimal(str(self.quantity_used)) * Decimal(str(self.cost_at_use))

@@ -1,6 +1,7 @@
 """ModelMaterial model for Bill of Materials (BOM) tracking."""
 
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import ForeignKey, Numeric
@@ -40,13 +41,13 @@ class ModelMaterial(Base, UUIDMixin, TimestampMixin):
     )
 
     # Usage & Cost
-    weight_grams: Mapped[float] = mapped_column(
+    weight_grams: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Weight of this material used in model (grams)",
     )
 
-    cost_per_gram: Mapped[float] = mapped_column(
+    cost_per_gram: Mapped[Decimal] = mapped_column(
         Numeric(10, 4),
         nullable=False,
         comment="Cost per gram at time of adding (snapshot for historical accuracy)",
@@ -67,6 +68,6 @@ class ModelMaterial(Base, UUIDMixin, TimestampMixin):
         return f"<ModelMaterial(model_id={self.model_id}, spool_id={self.spool_id}, weight={self.weight_grams}g)>"
 
     @property
-    def total_cost(self) -> float:
+    def total_cost(self) -> Decimal:
         """Calculate total cost for this material in the model."""
-        return float(self.weight_grams) * float(self.cost_per_gram)
+        return Decimal(str(self.weight_grams)) * Decimal(str(self.cost_per_gram))

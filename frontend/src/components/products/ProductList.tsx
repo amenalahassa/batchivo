@@ -12,6 +12,7 @@ import { Loader2, Plus, Search, Package, ArrowUpDown, Wand2 } from 'lucide-react
 
 import { listProducts } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { makeCostOf } from '@/lib/pricing/makeCost'
 import { ProductWizard } from '@/components/products/ProductWizard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -251,7 +252,7 @@ export function ProductList() {
 
                   <div className="flex flex-wrap items-center gap-3 text-sm">
                     <span className="font-medium">
-                      Cost: {formatCurrency(product.total_make_cost || '0')}
+                      Cost: {formatCurrency(makeCostOf(product))}
                     </span>
                     <span className="text-green-600 font-medium">
                       SRP: {formatCurrency(product.suggested_price || '0')}
@@ -305,7 +306,7 @@ export function ProductList() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-medium">
-                        {formatCurrency(product.total_make_cost || '0')}
+                        {formatCurrency(makeCostOf(product))}
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-medium text-green-600">
                         {formatCurrency(product.suggested_price || '0')}

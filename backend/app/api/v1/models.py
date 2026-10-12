@@ -15,6 +15,7 @@ from app.models.model import Model
 from app.models.model_component import ModelComponent
 from app.models.model_material import ModelMaterial
 from app.models.spool import Spool
+from app.models.tenant import Tenant
 from app.models.filament_type import FilamentType
 from app.schemas.model import (
     BOMSpoolSuggestion,
@@ -30,6 +31,7 @@ from app.schemas.model import (
     ModelUpdate,
 )
 from app.services.costing import CostingService
+from app.services.tenant_cost_settings import tenant_labor_rate, tenant_overhead_percentage
 from app.utils.csv_handler import (
     CSVImportError,
     generate_csv_export,
@@ -42,10 +44,17 @@ router = APIRouter()
 
 
 # Helper function to calculate and attach cost breakdown
-async def model_with_cost(model: Model) -> dict:
-    """Convert Model to response dict with cost breakdown."""
-    # Calculate cost (using default tenant rates - in production, fetch from tenant settings)
-    cost_breakdown = CostingService.calculate_model_cost(model)
+async def model_with_cost(model: Model, tenant: Tenant) -> dict:
+    """Convert Model to response dict with cost breakdown.
+
+    The tenant is required, not optional: the labor rate and overhead default
+    come from what this operator configured (Constitution IV).
+    """
+    cost_breakdown = CostingService.calculate_model_cost(
+        model,
+        labor_rate=tenant_labor_rate(tenant),
+        overhead_percentage=tenant_overhead_percentage(tenant),
+    )
 
     return {
         **model.__dict__,
@@ -90,7 +99,7 @@ async def create_model(
     await db.commit()
     await db.refresh(model)
 
-    return ModelDetailResponse(**await model_with_cost(model))
+    return ModelDetailResponse(**await model_with_cost(model, tenant))
 
 
 @router.get("", response_model=ModelListResponse)
@@ -151,10 +160,19 @@ async def list_models(
     result = await db.execute(query)
     models = result.scalars().all()
 
+    # Resolve the operator's figures once per request, not once per row: a
+    # rejected setting would otherwise log a warning for every model.
+    labor_rate = tenant_labor_rate(tenant)
+    overhead_percentage = tenant_overhead_percentage(tenant)
+
     # Calculate total_cost for each model
     model_responses = []
     for m in models:
-        cost_breakdown = CostingService.calculate_model_cost(m)
+        cost_breakdown = CostingService.calculate_model_cost(
+            m,
+            labor_rate=labor_rate,
+            overhead_percentage=overhead_percentage,
+        )
         model_dict = {
             **m.__dict__,
             "total_cost": cost_breakdown.total_cost,
@@ -201,7 +219,7 @@ async def export_models_csv(
     # Convert to dicts with cost breakdown
     model_dicts = []
     for model in models:
-        model_dict = await model_with_cost(model)
+        model_dict = await model_with_cost(model, tenant)
         model_dicts.append(model_dict)
 
     # Generate CSV
@@ -252,7 +270,7 @@ async def get_model(
             detail="Model not found",
         )
 
-    return ModelDetailResponse(**await model_with_cost(model))
+    return ModelDetailResponse(**await model_with_cost(model, tenant))
 
 
 @router.get("/{model_id}/production-defaults", response_model=ModelProductionDefaults)
@@ -398,7 +416,7 @@ async def update_model(
     await db.commit()
     await db.refresh(model)
 
-    return ModelDetailResponse(**await model_with_cost(model))
+    return ModelDetailResponse(**await model_with_cost(model, tenant))
 
 
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)

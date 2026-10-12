@@ -98,3 +98,23 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 timeout = 300
 timeout_method = "thread"
+
+# The money paths are held to a stricter standard than the rest of the app
+# (research.md D8). mypy cannot ban a builtin type, so this tightens everything
+# around it and tests/unit/pricing/test_no_float_in_money_paths.py bans `float`.
+[[tool.mypy.overrides]]
+module = [
+    "app.services.costing",
+    "app.services.landed_cost",
+    "app.services.fee_engine",
+    "app.services.pricing_solver",
+    "app.services.channel_pnl",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_equality = true
+warn_return_any = true
+warn_unreachable = true

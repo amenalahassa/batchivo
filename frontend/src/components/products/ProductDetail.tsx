@@ -58,6 +58,7 @@ import {
 import { ProductModelsEditor } from './ProductModelsEditor'
 import { ProductComponentsEditor } from './ProductComponentsEditor'
 import { ProductPricingEditor } from './ProductPricingEditor'
+import { makeCostOf, makeCostNumber } from '@/lib/pricing/makeCost'
 import { ProductImagesEditor } from './ProductImagesEditor'
 import { ProductCategoriesEditor } from './ProductCategoriesEditor'
 import { ProductionHistoryTable } from './ProductionHistoryTable'
@@ -151,7 +152,10 @@ export function ProductDetail({ productId }: ProductDetailProps) {
   const childProductsCost = parseFloat(costBreakdown?.child_products_cost || '0')
   const packagingCost = parseFloat(costBreakdown?.packaging_cost || '0')
   const assemblyCost = parseFloat(costBreakdown?.assembly_cost || '0')
-  const totalMakeCost = parseFloat(costBreakdown?.total_make_cost || '0')
+  // Read through the one accessor the three screens share, so the figure
+  // shown here, in the list and in the pricing editor is the same one.
+  const totalMakeCostExact = makeCostOf(product)
+  const totalMakeCost = makeCostNumber(product)
 
   // Check if this is a bundle (has child products)
   const hasChildProducts = (product.child_products?.length || 0) > 0
@@ -580,7 +584,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           <ProductPricingEditor
             productId={productId}
             pricing={product.pricing || []}
-            makeCost={totalMakeCost}
+            makeCost={totalMakeCostExact}
           />
         </CardContent>
       </Card>

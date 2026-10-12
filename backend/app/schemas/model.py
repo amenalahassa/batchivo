@@ -1,16 +1,111 @@
 """Pydantic schemas for Model API (printed items)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# Cost breakdown schema
+# Risk class: whether a cost is exposed to print failure. The failure premium
+# reaches only the at-risk portion — packaging materials and packing labor are
+# spent on a part already known good, so they never carry it.
+RiskClass = Literal["at_risk", "not_at_risk"]
+
+# Where a figure came from, so a reader knows how much to trust it
+# (Constitution VI). See research.md D1.
+ProvenanceSource = Literal["policy", "observed", "measured", "assumed"]
+
+# How a yield figure is read when a plate holds more than one print
+# (research.md D3).
+FailureMode = Literal["per_part", "per_plate"]
+
+
+class CostLine(BaseModel):
+    """One line of a cost breakdown, with its risk class and its provenance.
+
+    Every line carries where its inputs came from and when they were set or
+    observed, which is what makes the observed share computable from the
+    breakdown alone rather than from a database aggregate.
+    """
+
+    key: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Stable line identifier: material, waste, machine, overhead, "
+            "labor_handling, labor_finishing, labor_packing, packaging, "
+            "components, child_products"
+        ),
+    )
+    label: str = Field(..., min_length=1, description="Human-readable line name")
+    amount: Decimal = Field(..., description="Line amount in the tenant's currency")
+    risk_class: RiskClass = Field(..., description="Whether this cost is exposed to print failure")
+    source: ProvenanceSource = Field(..., description="Where the inputs behind this line came from")
+    as_of: Optional[date] = Field(
+        None, description="When the figure was set or observed; null if never recorded"
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CostBreakdown(BaseModel):
-    """Model cost breakdown."""
+    """A full make-cost breakdown (data-model.md, 'Cost breakdown shape').
+
+    Recomputed on demand and never stored as an authoritative figure
+    (Constitution V); the one exception is the once-written snapshot on a
+    settled order line (Constitution VI).
+
+    An incomplete breakdown reports what was missing in ``incomplete_reasons``
+    rather than costing the gap at zero (FR-019) — a zero is indistinguishable
+    from a real figure, which is the failure this field exists to prevent.
+    """
+
+    lines: list[CostLine] = Field(
+        default_factory=list, description="Cost lines, in presentation order"
+    )
+
+    at_risk_subtotal: Decimal = Field(
+        ..., description="Sum of lines exposed to print failure, before the premium"
+    )
+    not_at_risk_subtotal: Decimal = Field(
+        ..., description="Sum of lines spent on a part already known good"
+    )
+
+    yield_applied: Decimal = Field(
+        ..., gt=0, le=1, description="The yield figure actually applied, a fraction in (0, 1]"
+    )
+    failure_mode: FailureMode = Field(..., description="How the yield figure was interpreted")
+    failure_premium: Decimal = Field(
+        ..., description="What the yield figure added to the at-risk subtotal"
+    )
+
+    total_make_cost: Decimal = Field(..., description="Total cost to make one sellable unit")
+
+    observed_share: Decimal = Field(
+        ..., ge=0, le=1, description="Share of the cost whose inputs are observed or measured"
+    )
+    assumed_share: Decimal = Field(
+        ..., ge=0, le=1, description="Share of the cost still resting on assumptions"
+    )
+
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What was missing, if anything; empty means fully costed",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ModelCostBreakdown(BaseModel):
+    """The flat model cost breakdown served by the existing endpoints.
+
+    Superseded by :class:`CostBreakdown` once Tier 1 lands (tasks T043, T049).
+    Kept, under its own name, so existing routes keep their response shape
+    while the structured breakdown is built beside it. It is not a second
+    implementation — nothing computes it except the one authoritative engine.
+    """
 
     material_cost: Decimal = Field(..., description="Total material cost from BOM")
     component_cost: Decimal = Field(..., description="Total component cost")
@@ -169,7 +264,7 @@ class ModelDetailResponse(ModelResponse):
     components: list[ModelComponentResponse] = Field(
         default_factory=list, description="Model components"
     )
-    cost_breakdown: CostBreakdown = Field(..., description="Cost breakdown")
+    cost_breakdown: ModelCostBreakdown = Field(..., description="Cost breakdown")
 
     model_config = ConfigDict(from_attributes=True)
 

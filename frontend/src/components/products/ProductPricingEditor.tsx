@@ -80,7 +80,13 @@ type PricingFormValues = z.infer<typeof pricingFormSchema>
 interface ProductPricingEditorProps {
   productId: string
   pricing: ProductPricing[]
-  makeCost: number
+  /**
+   * The make-cost as the exact decimal string the API sent, not a float.
+   * This screen shows the same figure as the product list and the product
+   * detail page, and a float conversion on the way here is what used to let
+   * them disagree in the last cent.
+   */
+  makeCost: string
 }
 
 export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPricingEditorProps) {

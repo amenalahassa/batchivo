@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from app.models.model import Model
     from app.models.product import Product
 
-from app.schemas.model import CostBreakdown
+from app.schemas.model import ModelCostBreakdown
 from app.schemas.product import ProductCostBreakdown
 
 
@@ -36,38 +36,55 @@ class MaxDepthExceededError(Exception):
         )
 
 
-# Default labor rate (£10/hour)
-DEFAULT_LABOR_RATE = Decimal("10.00")
+# There is deliberately no default labor rate.
+#
+# A default here is what caused the defect this feature removes: every screen
+# costed labor at 10.00/hour while the operator's configured rate sat unread in
+# `Tenant.settings`. Constitution IV calls a hardcoded default that shadows a
+# tenant setting a defect, not a fallback -- so `labor_rate` is required, and a
+# caller that forgets it gets a TypeError rather than a plausible wrong number.
+#
+# The tenant's figure is resolved by `app/services/tenant_cost_settings.py`
+# (Tier 1 replaces that with the typed temporal policy table, research.md D2).
 
 # Maximum recursion depth for product cost calculation
 MAX_RECURSION_DEPTH = 20
 
 
 class CostingService:
-    """Service for calculating model and product costs."""
+    """The single authoritative implementation of model and product cost.
+
+    Constitution III: a domain calculation exists once. `Product.calculate_make_cost`
+    and `Product._calculate_model_cost` were a second, float-based implementation
+    with their own labor rate; they were deleted rather than kept in sync.
+    """
 
     @staticmethod
     def calculate_model_cost(
         model: "Model",
-        tenant_default_labor_rate: Optional[Decimal] = None,
-        tenant_default_overhead_pct: Optional[Decimal] = None,
-    ) -> CostBreakdown:
+        labor_rate: Decimal,
+        overhead_percentage: Optional[Decimal] = None,
+    ) -> ModelCostBreakdown:
         """
         Calculate total model (printed item) cost with breakdown.
 
         Args:
             model: Model instance with materials and components loaded
-            tenant_default_labor_rate: Default labor rate from tenant settings (£/hour)
-            tenant_default_overhead_pct: Default overhead percentage from tenant settings (0-100)
+            labor_rate: The tenant's configured hourly labor rate. Required --
+                see the note above on why there is no default.
+            overhead_percentage: The tenant's default overhead percentage (0-100),
+                used only for a model that sets none of its own. Zero here is the
+                absence of a tenant-level default, not a figure shadowing one.
 
         Returns:
-            CostBreakdown with material, component, labor, overhead, and total costs
+            ModelCostBreakdown with material, component, labor, overhead and total costs
         """
-        # Default values if not provided
-        if tenant_default_labor_rate is None:
-            tenant_default_labor_rate = DEFAULT_LABOR_RATE
-        if tenant_default_overhead_pct is None:
-            tenant_default_overhead_pct = Decimal("0")
+        # Convert through `str`: a value that arrived as a JSON float would
+        # otherwise carry the float's error into exact arithmetic.
+        labor_rate = Decimal(str(labor_rate))
+        overhead_percentage = (
+            Decimal("0") if overhead_percentage is None else Decimal(str(overhead_percentage))
+        )
 
         # Get prints per plate (for batch printing cost division)
         prints_per_plate = (
@@ -94,20 +111,22 @@ class CostingService:
                     str(component.unit_cost)
                 )
 
-        # 3. Calculate labor cost
-        labor_rate = (
+        # 3. Calculate labor cost. A model may override the tenant's rate; it
+        # is kept in its own name so the figure that was passed in stays
+        # readable in a traceback.
+        effective_labor_rate = (
             Decimal(str(model.labor_rate_override))
             if model.labor_rate_override is not None
-            else tenant_default_labor_rate
+            else labor_rate
         )
         labor_hours = Decimal(str(model.labor_hours)) if model.labor_hours else Decimal("0")
-        labor_cost = labor_hours * labor_rate
+        labor_cost = labor_hours * effective_labor_rate
 
         # 4. Calculate overhead cost (percentage of material + labor)
         overhead_pct = (
             Decimal(str(model.overhead_percentage))
             if model.overhead_percentage and model.overhead_percentage > 0
-            else tenant_default_overhead_pct
+            else overhead_percentage
         )
         overhead_base = material_cost + labor_cost
         overhead_cost = overhead_base * (overhead_pct / Decimal("100"))
@@ -115,7 +134,7 @@ class CostingService:
         # 5. Calculate total cost
         total_cost = material_cost + component_cost + labor_cost + overhead_cost
 
-        return CostBreakdown(
+        return ModelCostBreakdown(
             material_cost=material_cost.quantize(Decimal("0.001")),
             component_cost=component_cost.quantize(Decimal("0.001")),
             labor_cost=labor_cost.quantize(Decimal("0.001")),
@@ -126,7 +145,8 @@ class CostingService:
     @staticmethod
     def calculate_product_cost(
         product: "Product",
-        labor_rate: Optional[Decimal] = None,
+        labor_rate: Decimal,
+        overhead_percentage: Optional[Decimal] = None,
         _visited: Optional[set] = None,
         _depth: int = 0,
     ) -> ProductCostBreakdown:
@@ -138,7 +158,12 @@ class CostingService:
 
         Args:
             product: Product instance with product_models and child_products loaded
-            labor_rate: Labor rate (£/hour), defaults to DEFAULT_LABOR_RATE
+            labor_rate: The tenant's configured hourly labor rate. Required --
+                see the note above on why there is no default. It is forwarded to
+                every nested model and child product, so one product cost is
+                never built from two different labor rates.
+            overhead_percentage: The tenant's default overhead percentage (0-100),
+                forwarded to nested models that set none of their own.
             _visited: Internal set for cycle detection (do not pass manually)
             _depth: Internal recursion depth counter (do not pass manually)
 
@@ -150,8 +175,7 @@ class CostingService:
             CircularReferenceError: If a circular reference is detected in product hierarchy
             MaxDepthExceededError: If product hierarchy exceeds MAX_RECURSION_DEPTH
         """
-        if labor_rate is None:
-            labor_rate = DEFAULT_LABOR_RATE
+        labor_rate = Decimal(str(labor_rate))
 
         # Check recursion depth limit
         if _depth > MAX_RECURSION_DEPTH:
@@ -180,8 +204,15 @@ class CostingService:
         if hasattr(product, "product_models"):
             for pm in product.product_models:
                 if hasattr(pm, "model") and pm.model:
-                    # Calculate model's unit cost (BOM-based theoretical)
-                    model_cost = CostingService.calculate_model_cost(pm.model)
+                    # Calculate model's unit cost (BOM-based theoretical).
+                    # The rate is forwarded: a product cost built from the
+                    # tenant's rate for assembly and the engine's default for
+                    # its models is one figure with two labor rates in it.
+                    model_cost = CostingService.calculate_model_cost(
+                        pm.model,
+                        labor_rate=labor_rate,
+                        overhead_percentage=overhead_percentage,
+                    )
                     models_cost += Decimal(str(pm.quantity)) * model_cost.total_cost
 
                     # Track unique models for actual cost calculation
@@ -211,6 +242,7 @@ class CostingService:
                     child_cost = CostingService.calculate_product_cost(
                         pc.child_product,
                         labor_rate=labor_rate,
+                        overhead_percentage=overhead_percentage,
                         _visited=_visited,
                         _depth=_depth + 1,
                     )

@@ -96,8 +96,10 @@ class TestConsumableTypeStockValue:
         assert ConsumableType.stock_value.fget(obj) == 0.0
 
     def test_decimal_cost(self):
+        # Exact, with no tolerance: the property returns a Decimal now, so
+        # 3 x 1.99 is 5.97 and not 5.970000000000001 (Constitution IV).
         obj = make_consumable_type(quantity_on_hand=3, current_cost_per_unit=Decimal("1.99"))
-        assert abs(ConsumableType.stock_value.fget(obj) - 5.97) < 0.001
+        assert ConsumableType.stock_value.fget(obj) == Decimal("5.97")
 
 
 # ---------------------------------------------------------------------------
@@ -115,8 +117,10 @@ class TestConsumableUsageTotalCost:
         assert ConsumableUsage.total_cost.fget(obj) == 10.0
 
     def test_fractional_cost(self):
+        # 3 x 1.33 is 3.99 exactly in Decimal; in float it is 3.9899999999999998,
+        # which is why this assertion used to need a tolerance.
         obj = make_consumable_usage(quantity_used=3, cost_at_use=Decimal("1.33"))
-        assert abs(ConsumableUsage.total_cost.fget(obj) - 3.99) < 0.001
+        assert ConsumableUsage.total_cost.fget(obj) == Decimal("3.99")
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +165,10 @@ class TestModelComponentEffectiveUnitCost:
 
 class TestModelMaterialTotalCost:
     def test_basic_calculation(self):
+        # This figure feeds every make-cost in the system, so it is exact and
+        # asserted exactly (Constitution IV).
         obj = make_model_material(weight_grams=100, cost_per_gram=Decimal("0.03"))
-        assert abs(ModelMaterial.total_cost.fget(obj) - 3.0) < 0.001
+        assert ModelMaterial.total_cost.fget(obj) == Decimal("3.00")
 
     def test_zero_weight(self):
         obj = make_model_material(weight_grams=0, cost_per_gram=Decimal("0.05"))

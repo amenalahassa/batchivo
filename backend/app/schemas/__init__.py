@@ -19,6 +19,8 @@ from app.schemas.consumable import (
 )
 from app.schemas.model import (
     CostBreakdown,
+    CostLine,
+    ModelCostBreakdown,
     ModelBase,
     ModelComponentBase,
     ModelComponentCreate,
@@ -204,6 +206,8 @@ __all__ = [
     "ModelComponentResponse",
     # Model Cost schemas
     "CostBreakdown",
+    "CostLine",
+    "ModelCostBreakdown",
     # Printer schemas (3D printers)
     "PrinterBase",
     "PrinterCreate",

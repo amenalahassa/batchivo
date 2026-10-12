@@ -1,13 +1,33 @@
 """Unit tests for pure/static CostingService methods.
 
+Rewritten against the single authoritative implementation (task T017).
+
 Uses SimpleNamespace to construct model-like objects without SQLAlchemy overhead.
 Tests calculate_model_cost, calculate_profit, and calculate_cost_per_gram_from_spool.
+
+Every expected figure is recomputed from the inputs in the test, in one
+unrounded chain, rounded only for the assertion. The previous version asserted
+literals produced by an engine that costed labor at 10.00/hour -- a rate no
+operator chose -- so carrying those literals forward would have pinned the
+defect in place. The Constitution's Development Workflow section names a suite
+that turns green by restoring a defect a failed change.
 """
 
 from decimal import Decimal
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.costing import CostingService
+
+#: The engine has no default rate any more (Constitution IV): every call names
+#: one. This value is distinctive enough that a figure derived from it cannot be
+#: a coincidence.
+RATE = Decimal("25.00")
+
+MILLE = Decimal("0.001")
+CENT = Decimal("0.01")
+TEN_THOU = Decimal("0.0001")
 
 
 # ---------------------------------------------------------------------------
@@ -39,166 +59,313 @@ def make_model(**kwargs):
 
 
 # ---------------------------------------------------------------------------
-# CostingService.calculate_model_cost — material cost
+# The rate is required, not defaulted
+# ---------------------------------------------------------------------------
+
+
+class TestTheRateIsRequired:
+    """A caller that forgets the rate must fail loudly.
+
+    `DEFAULT_LABOR_RATE` is gone. A default that silently shadows the
+    operator's configured value is a defect, not a fallback (Constitution IV),
+    and this is the shape of the guarantee: there is nothing to fall back to.
+    """
+
+    def test_calculate_model_cost_requires_a_rate(self):
+        with pytest.raises(TypeError):
+            CostingService.calculate_model_cost(make_model())
+
+    def test_the_engine_exposes_no_default_rate(self):
+        from app.services import costing
+
+        assert not hasattr(costing, "DEFAULT_LABOR_RATE"), (
+            "a module-level default rate is back; the next caller to omit the "
+            "rate will silently get a figure the operator never chose"
+        )
+
+
+# ---------------------------------------------------------------------------
+# CostingService.calculate_model_cost -- material cost
 # ---------------------------------------------------------------------------
 
 
 class TestCalculateModelCostMaterials:
     def test_no_materials_zero_material_cost(self):
-        model = make_model()
-        result = CostingService.calculate_model_cost(model)
-        assert result.material_cost == Decimal("0.000")
+        result = CostingService.calculate_model_cost(make_model(), labor_rate=RATE)
+        assert result.material_cost == Decimal("0").quantize(MILLE)
 
     def test_single_material(self):
-        model = make_model(materials=[make_material(100, "0.03")])
-        result = CostingService.calculate_model_cost(model)
-        assert result.material_cost == Decimal("3.000")
+        grams, per_gram = Decimal("100"), Decimal("0.03")
+        model = make_model(materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.material_cost == (grams * per_gram).quantize(MILLE)
 
     def test_multiple_materials_summed(self):
+        first = (Decimal("100"), Decimal("0.02"))
+        second = (Decimal("50"), Decimal("0.04"))
         model = make_model(
-            materials=[
-                make_material(100, "0.02"),
-                make_material(50, "0.04"),
-            ]
+            materials=[make_material(*first), make_material(*second)],
         )
-        result = CostingService.calculate_model_cost(model)
-        # 100*0.02 + 50*0.04 = 2.00 + 2.00 = 4.00
-        assert result.material_cost == Decimal("4.000")
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        expected = first[0] * first[1] + second[0] * second[1]
+        assert result.material_cost == expected.quantize(MILLE)
 
     def test_material_cost_divided_by_prints_per_plate(self):
-        # 2 prints per plate — plate cost is divided between them
-        model = make_model(
-            prints_per_plate=2,
-            materials=[make_material(100, "0.04")],  # plate cost = 4.00
-        )
-        result = CostingService.calculate_model_cost(model)
-        assert result.material_cost == Decimal("2.000")
+        """The BOM weight is the whole plate; the cost is shared between prints."""
+        grams, per_gram, per_plate = Decimal("100"), Decimal("0.04"), 2
+        model = make_model(prints_per_plate=per_plate, materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.material_cost == (grams * per_gram / Decimal(per_plate)).quantize(MILLE)
 
     def test_zero_prints_per_plate_treated_as_one(self):
-        model = make_model(
-            prints_per_plate=0,
-            materials=[make_material(50, "0.02")],
-        )
-        result = CostingService.calculate_model_cost(model)
-        assert result.material_cost == Decimal("1.000")
+        """Rather than dividing by zero and failing every screen that shows a cost."""
+        grams, per_gram = Decimal("50"), Decimal("0.02")
+        model = make_model(prints_per_plate=0, materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.material_cost == (grams * per_gram).quantize(MILLE)
+
+    def test_a_missing_prints_per_plate_is_treated_as_one(self):
+        grams, per_gram = Decimal("50"), Decimal("0.02")
+        model = make_model(prints_per_plate=None, materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.material_cost == (grams * per_gram).quantize(MILLE)
+
+    def test_purge_and_waste_are_not_yet_costed(self):
+        """Documents the gap Tier 1 closes (tasks T036, T043).
+
+        The BOM weight is the filament that ends up in the part. Purge and
+        wiped material are consumed and not yet charged, so this figure is an
+        understatement by design until the waste line exists -- stated here so
+        the omission is on the record rather than mistaken for completeness.
+        """
+        grams, per_gram = Decimal("142"), Decimal("0.0310")
+        model = make_model(materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.material_cost == (grams * per_gram).quantize(MILLE)
 
 
 # ---------------------------------------------------------------------------
-# CostingService.calculate_model_cost — component cost
+# CostingService.calculate_model_cost -- component cost
 # ---------------------------------------------------------------------------
 
 
 class TestCalculateModelCostComponents:
     def test_no_components_zero_cost(self):
-        model = make_model()
-        result = CostingService.calculate_model_cost(model)
-        assert result.component_cost == Decimal("0.000")
+        result = CostingService.calculate_model_cost(make_model(), labor_rate=RATE)
+        assert result.component_cost == Decimal("0").quantize(MILLE)
 
     def test_single_component(self):
-        model = make_model(components=[make_component(3, "2.00")])
-        result = CostingService.calculate_model_cost(model)
-        assert result.component_cost == Decimal("6.000")
+        quantity, unit_cost = 3, Decimal("2.00")
+        model = make_model(components=[make_component(quantity, unit_cost)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.component_cost == (Decimal(quantity) * unit_cost).quantize(MILLE)
 
     def test_multiple_components_summed(self):
-        model = make_model(components=[make_component(2, "3.00"), make_component(5, "1.50")])
-        result = CostingService.calculate_model_cost(model)
-        # 6.00 + 7.50 = 13.50
-        assert result.component_cost == Decimal("13.500")
+        first, second = (2, Decimal("3.00")), (5, Decimal("1.50"))
+        model = make_model(
+            components=[make_component(*first), make_component(*second)],
+        )
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        expected = Decimal(first[0]) * first[1] + Decimal(second[0]) * second[1]
+        assert result.component_cost == expected.quantize(MILLE)
+
+    def test_components_are_per_part_not_per_plate(self):
+        """A screw per part is a screw per part, however many share a plate."""
+        quantity, unit_cost = 3, Decimal("2.00")
+        model = make_model(prints_per_plate=4, components=[make_component(quantity, unit_cost)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.component_cost == (Decimal(quantity) * unit_cost).quantize(MILLE)
 
 
 # ---------------------------------------------------------------------------
-# CostingService.calculate_model_cost — labor cost
+# CostingService.calculate_model_cost -- labor cost
 # ---------------------------------------------------------------------------
 
 
 class TestCalculateModelCostLabor:
     def test_no_labor_hours_zero_labor_cost(self):
-        model = make_model()
-        result = CostingService.calculate_model_cost(model)
-        assert result.labor_cost == Decimal("0.000")
+        result = CostingService.calculate_model_cost(make_model(), labor_rate=RATE)
+        assert result.labor_cost == Decimal("0").quantize(MILLE)
 
-    def test_labor_cost_with_default_rate(self):
-        # Default labor rate is £10/hour
-        model = make_model(labor_hours=Decimal("2"))
-        result = CostingService.calculate_model_cost(model)
-        assert result.labor_cost == Decimal("20.000")
+    def test_labor_cost_uses_the_rate_the_caller_passed(self):
+        hours = Decimal("2")
+        result = CostingService.calculate_model_cost(make_model(labor_hours=hours), labor_rate=RATE)
+        assert result.labor_cost == (hours * RATE).quantize(MILLE)
 
     def test_labor_cost_with_override_rate(self):
-        model = make_model(labor_hours=Decimal("1.5"), labor_rate_override=Decimal("15.00"))
-        result = CostingService.calculate_model_cost(model)
-        assert result.labor_cost == Decimal("22.500")
-
-    def test_tenant_default_labor_rate_used_when_no_override(self):
-        model = make_model(labor_hours=Decimal("1"))
+        hours, override = Decimal("1.5"), Decimal("15.00")
         result = CostingService.calculate_model_cost(
-            model, tenant_default_labor_rate=Decimal("12.00")
+            make_model(labor_hours=hours, labor_rate_override=override), labor_rate=RATE
         )
-        assert result.labor_cost == Decimal("12.000")
+        assert result.labor_cost == (hours * override).quantize(MILLE)
 
-    def test_model_override_takes_precedence_over_tenant_default(self):
-        model = make_model(labor_hours=Decimal("1"), labor_rate_override=Decimal("20.00"))
+    def test_tenant_rate_used_when_no_override(self):
+        hours, tenant_rate = Decimal("1"), Decimal("12.00")
         result = CostingService.calculate_model_cost(
-            model, tenant_default_labor_rate=Decimal("12.00")
+            make_model(labor_hours=hours), labor_rate=tenant_rate
         )
-        assert result.labor_cost == Decimal("20.000")
+        assert result.labor_cost == (hours * tenant_rate).quantize(MILLE)
+
+    def test_model_override_takes_precedence_over_the_tenant_rate(self):
+        hours, override, tenant_rate = Decimal("1"), Decimal("20.00"), Decimal("12.00")
+        result = CostingService.calculate_model_cost(
+            make_model(labor_hours=hours, labor_rate_override=override),
+            labor_rate=tenant_rate,
+        )
+        assert result.labor_cost == (hours * override).quantize(MILLE)
+
+    def test_a_distinctive_tenant_rate_reaches_the_figure(self):
+        """No plausible default could produce this number."""
+        hours, distinctive = Decimal("3"), Decimal("137.00")
+        result = CostingService.calculate_model_cost(
+            make_model(labor_hours=hours), labor_rate=distinctive
+        )
+        assert result.labor_cost == (hours * distinctive).quantize(MILLE)
+        assert result.labor_cost != (hours * Decimal("10.00")).quantize(MILLE)
+
+    def test_labor_is_not_divided_by_prints_per_plate(self):
+        """Documents the current treatment, which Tier 1 splits apart.
+
+        `labor_hours` is charged per item regardless of how many share a plate.
+        Tier 1 replaces it with an explicit plate/item and handling/finishing
+        split (tasks T036, T043), where only the plate portion is shared.
+        """
+        hours = Decimal("0.25")
+        result = CostingService.calculate_model_cost(
+            make_model(labor_hours=hours, prints_per_plate=4), labor_rate=RATE
+        )
+        assert result.labor_cost == (hours * RATE).quantize(MILLE)
 
 
 # ---------------------------------------------------------------------------
-# CostingService.calculate_model_cost — overhead cost
+# CostingService.calculate_model_cost -- overhead cost
 # ---------------------------------------------------------------------------
 
 
 class TestCalculateModelCostOverhead:
     def test_no_overhead_zero_overhead_cost(self):
         model = make_model(materials=[make_material(100, "0.02")])
-        result = CostingService.calculate_model_cost(model)
-        assert result.overhead_cost == Decimal("0.000")
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.overhead_cost == Decimal("0").quantize(MILLE)
 
     def test_overhead_percentage_applied_to_material_and_labor(self):
-        # material=2.00, labor=10.00, overhead=20% → 2.40
+        grams, per_gram = Decimal("100"), Decimal("0.02")
+        hours, pct = Decimal("1"), Decimal("20")
         model = make_model(
-            materials=[make_material(100, "0.02")],
-            labor_hours=Decimal("1"),
-            overhead_percentage=Decimal("20"),
+            materials=[make_material(grams, per_gram)],
+            labor_hours=hours,
+            overhead_percentage=pct,
         )
-        result = CostingService.calculate_model_cost(model)
-        assert result.overhead_cost == Decimal("2.400")
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        base = grams * per_gram + hours * RATE
+        assert result.overhead_cost == (base * pct / Decimal("100")).quantize(MILLE)
 
-    def test_tenant_default_overhead_used_when_no_model_override(self):
-        model = make_model(materials=[make_material(100, "0.02")])
-        result = CostingService.calculate_model_cost(
-            model, tenant_default_overhead_pct=Decimal("10")
+    def test_overhead_is_not_taken_on_components(self):
+        """Documents the base, which Tier 1 replaces with per-machine-hour absorption."""
+        grams, per_gram, pct = Decimal("100"), Decimal("0.02"), Decimal("20")
+        model = make_model(
+            materials=[make_material(grams, per_gram)],
+            components=[make_component(10, "5.00")],
+            overhead_percentage=pct,
         )
-        assert result.overhead_cost == Decimal("0.200")
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.overhead_cost == (grams * per_gram * pct / Decimal("100")).quantize(MILLE)
+
+    def test_tenant_default_overhead_used_when_the_model_sets_none(self):
+        grams, per_gram, tenant_pct = Decimal("100"), Decimal("0.02"), Decimal("10")
+        model = make_model(materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(
+            model, labor_rate=RATE, overhead_percentage=tenant_pct
+        )
+        assert result.overhead_cost == (grams * per_gram * tenant_pct / Decimal("100")).quantize(
+            MILLE
+        )
+
+    def test_the_model_percentage_wins_over_the_tenant_default(self):
+        grams, per_gram = Decimal("100"), Decimal("0.02")
+        model_pct, tenant_pct = Decimal("30"), Decimal("10")
+        model = make_model(
+            materials=[make_material(grams, per_gram)], overhead_percentage=model_pct
+        )
+        result = CostingService.calculate_model_cost(
+            model, labor_rate=RATE, overhead_percentage=tenant_pct
+        )
+        assert result.overhead_cost == (grams * per_gram * model_pct / Decimal("100")).quantize(
+            MILLE
+        )
+
+    def test_omitting_the_tenant_overhead_means_none_not_some(self):
+        """Zero here is the absence of a tenant default, not a figure shadowing one."""
+        grams, per_gram = Decimal("100"), Decimal("0.02")
+        model = make_model(materials=[make_material(grams, per_gram)])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.overhead_cost == Decimal("0").quantize(MILLE)
 
 
 # ---------------------------------------------------------------------------
-# CostingService.calculate_model_cost — total cost
+# CostingService.calculate_model_cost -- total cost
 # ---------------------------------------------------------------------------
 
 
 class TestCalculateModelCostTotal:
     def test_total_is_sum_of_all_components(self):
+        grams, per_gram = Decimal("100"), Decimal("0.02")
+        quantity, unit_cost = 1, Decimal("3.00")
+        hours, pct = Decimal("1"), Decimal("10")
         model = make_model(
-            materials=[make_material(100, "0.02")],
-            components=[make_component(1, "3.00")],
-            labor_hours=Decimal("1"),
-            overhead_percentage=Decimal("10"),
+            materials=[make_material(grams, per_gram)],
+            components=[make_component(quantity, unit_cost)],
+            labor_hours=hours,
+            overhead_percentage=pct,
         )
-        result = CostingService.calculate_model_cost(model)
-        # material=2.00, component=3.00, labor=10.00, overhead=1.20 → total=16.20
-        assert (
-            result.total_cost
-            == result.material_cost
-            + result.component_cost
-            + result.labor_cost
-            + result.overhead_cost
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+
+        expected_material = grams * per_gram
+        expected_component = Decimal(quantity) * unit_cost
+        expected_labor = hours * RATE
+        expected_overhead = (expected_material + expected_labor) * pct / Decimal("100")
+
+        assert result.material_cost == expected_material.quantize(MILLE)
+        assert result.component_cost == expected_component.quantize(MILLE)
+        assert result.labor_cost == expected_labor.quantize(MILLE)
+        assert result.overhead_cost == expected_overhead.quantize(MILLE)
+        assert result.total_cost == (
+            expected_material + expected_component + expected_labor + expected_overhead
+        ).quantize(MILLE)
+
+    def test_the_parts_add_up_to_the_whole(self):
+        model = make_model(
+            materials=[make_material(142, "0.0310")],
+            components=[make_component(4, "0.11")],
+            labor_hours=Decimal("0.25"),
+            overhead_percentage=Decimal("12"),
+        )
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.total_cost == (
+            result.material_cost + result.component_cost + result.labor_cost + result.overhead_cost
         )
 
     def test_empty_model_all_zeros(self):
-        model = make_model()
-        result = CostingService.calculate_model_cost(model)
-        assert result.total_cost == Decimal("0.000")
+        result = CostingService.calculate_model_cost(make_model(), labor_rate=RATE)
+        assert result.total_cost == Decimal("0").quantize(MILLE)
+
+    def test_every_figure_is_a_decimal(self):
+        """Constitution IV: no money figure may leave the engine as a float."""
+        model = make_model(materials=[make_material(142, "0.0310")], labor_hours=Decimal("1"))
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        for name, value in result.model_dump().items():
+            assert isinstance(value, Decimal), f"{name} came back as {type(value).__name__}"
+
+    def test_machine_time_is_not_yet_costed(self):
+        """Documents the largest gap in this figure (tasks T035, T043).
+
+        Nine and a half hours of machine occupancy currently add nothing. That
+        is why the feature exists; stating it here keeps a reader from taking
+        this total for a true make-cost.
+        """
+        model = make_model(materials=[make_material(142, "0.0310")])
+        result = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert result.total_cost == result.material_cost
 
 
 # ---------------------------------------------------------------------------
@@ -208,76 +375,94 @@ class TestCalculateModelCostTotal:
 
 class TestCalculateProfit:
     def test_basic_profit_no_fees(self):
-        result = CostingService.calculate_profit(
-            list_price=Decimal("20.00"),
-            make_cost=Decimal("5.00"),
+        price, cost = Decimal("20.00"), Decimal("5.00")
+        result = CostingService.calculate_profit(list_price=price, make_cost=cost)
+
+        assert result["platform_fee"] == Decimal("0").quantize(CENT)
+        assert result["net_revenue"] == price.quantize(CENT)
+        assert result["profit"] == (price - cost).quantize(CENT)
+        assert result["margin_percentage"] == ((price - cost) / price * Decimal("100")).quantize(
+            CENT
         )
-        assert result["platform_fee"] == Decimal("0.00")
-        assert result["net_revenue"] == Decimal("20.00")
-        assert result["profit"] == Decimal("15.00")
-        assert result["margin_percentage"] == Decimal("75.00")
 
     def test_percentage_fee_only(self):
+        price, cost, pct = Decimal("100.00"), Decimal("20.00"), Decimal("10")
         result = CostingService.calculate_profit(
-            list_price=Decimal("100.00"),
-            make_cost=Decimal("20.00"),
-            fee_percentage=Decimal("10"),
+            list_price=price, make_cost=cost, fee_percentage=pct
         )
-        assert result["platform_fee"] == Decimal("10.00")
-        assert result["net_revenue"] == Decimal("90.00")
-        assert result["profit"] == Decimal("70.00")
+
+        fee = price * pct / Decimal("100")
+        assert result["platform_fee"] == fee.quantize(CENT)
+        assert result["net_revenue"] == (price - fee).quantize(CENT)
+        assert result["profit"] == (price - fee - cost).quantize(CENT)
 
     def test_fixed_fee_only(self):
-        result = CostingService.calculate_profit(
-            list_price=Decimal("50.00"),
-            make_cost=Decimal("10.00"),
-            fee_fixed=Decimal("0.20"),
-        )
-        assert result["platform_fee"] == Decimal("0.20")
-        assert result["net_revenue"] == Decimal("49.80")
-        assert result["profit"] == Decimal("39.80")
+        price, cost, fixed = Decimal("50.00"), Decimal("10.00"), Decimal("0.20")
+        result = CostingService.calculate_profit(list_price=price, make_cost=cost, fee_fixed=fixed)
+
+        assert result["platform_fee"] == fixed.quantize(CENT)
+        assert result["net_revenue"] == (price - fixed).quantize(CENT)
+        assert result["profit"] == (price - fixed - cost).quantize(CENT)
 
     def test_both_fees_combined(self):
+        price, cost = Decimal("100.00"), Decimal("30.00")
+        pct, fixed = Decimal("5"), Decimal("0.30")
         result = CostingService.calculate_profit(
-            list_price=Decimal("100.00"),
-            make_cost=Decimal("30.00"),
-            fee_percentage=Decimal("5"),
-            fee_fixed=Decimal("0.30"),
+            list_price=price, make_cost=cost, fee_percentage=pct, fee_fixed=fixed
         )
-        assert result["platform_fee"] == Decimal("5.30")
-        assert result["net_revenue"] == Decimal("94.70")
-        assert result["profit"] == Decimal("64.70")
+
+        fee = price * pct / Decimal("100") + fixed
+        assert result["platform_fee"] == fee.quantize(CENT)
+        assert result["net_revenue"] == (price - fee).quantize(CENT)
+        assert result["profit"] == (price - fee - cost).quantize(CENT)
 
     def test_zero_list_price_margin_is_zero(self):
         result = CostingService.calculate_profit(
-            list_price=Decimal("0.00"),
-            make_cost=Decimal("5.00"),
+            list_price=Decimal("0.00"), make_cost=Decimal("5.00")
         )
-        assert result["margin_percentage"] == Decimal("0.00")
+        assert result["margin_percentage"] == Decimal("0").quantize(CENT)
 
     def test_negative_profit_when_cost_exceeds_revenue(self):
-        result = CostingService.calculate_profit(
-            list_price=Decimal("10.00"),
-            make_cost=Decimal("15.00"),
-        )
-        assert result["profit"] == Decimal("-5.00")
+        price, cost = Decimal("10.00"), Decimal("15.00")
+        result = CostingService.calculate_profit(list_price=price, make_cost=cost)
+        assert result["profit"] == (price - cost).quantize(CENT)
+        assert result["profit"] < 0
 
     def test_margin_percentage_calculated_correctly(self):
-        result = CostingService.calculate_profit(
-            list_price=Decimal("50.00"),
-            make_cost=Decimal("25.00"),
+        price, cost = Decimal("50.00"), Decimal("25.00")
+        result = CostingService.calculate_profit(list_price=price, make_cost=cost)
+        assert result["margin_percentage"] == ((price - cost) / price * Decimal("100")).quantize(
+            CENT
         )
-        # profit=25, margin=50%
-        assert result["margin_percentage"] == Decimal("50.00")
 
     def test_result_rounded_to_two_decimal_places(self):
         result = CostingService.calculate_profit(
-            list_price=Decimal("33.33"),
-            make_cost=Decimal("10.00"),
+            list_price=Decimal("33.33"), make_cost=Decimal("10.00")
         )
-        # All values should have exactly 2 decimal places
         for key in ("platform_fee", "net_revenue", "profit", "margin_percentage"):
-            assert result[key] == result[key].quantize(Decimal("0.01"))
+            assert result[key] == result[key].quantize(CENT)
+
+    def test_rounding_happens_only_at_the_end(self):
+        """An intermediate round would surface as a cent of drift here."""
+        price, pct = Decimal("33.33"), Decimal("6.5")
+        result = CostingService.calculate_profit(
+            list_price=price, make_cost=Decimal("0"), fee_percentage=pct
+        )
+        unrounded_fee = price * pct / Decimal("100")
+        assert result["platform_fee"] == unrounded_fee.quantize(CENT)
+        assert result["net_revenue"] == (price - unrounded_fee).quantize(CENT)
+
+    def test_the_margin_basis_is_not_yet_stated(self):
+        """Documents what FR-030 requires and Tier 2 delivers (task T072).
+
+        This margin is taken on price and is tax-inclusive, and the result says
+        so nowhere. A percentage without its basis is not comparable to anything,
+        which is why Tier 2 attaches the basis to every figure.
+        """
+        result = CostingService.calculate_profit(
+            list_price=Decimal("64.99"), make_cost=Decimal("20.30")
+        )
+        assert "margin_basis" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -287,44 +472,54 @@ class TestCalculateProfit:
 
 class TestCalculateCostPerGramFromSpool:
     def test_basic_calculation(self):
+        price, weight = Decimal("20.00"), Decimal("1000")
         result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=Decimal("20.00"),
-            initial_weight=Decimal("1000"),
+            purchase_price=price, initial_weight=weight
         )
-        assert result == Decimal("0.0200")
+        assert result == (price / weight).quantize(TEN_THOU)
 
     def test_none_purchase_price_returns_zero(self):
-        result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=None,
-            initial_weight=Decimal("1000"),
-        )
-        assert result == Decimal("0")
+        assert CostingService.calculate_cost_per_gram_from_spool(
+            purchase_price=None, initial_weight=Decimal("1000")
+        ) == Decimal("0")
 
     def test_zero_purchase_price_returns_zero(self):
-        result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=Decimal("0"),
-            initial_weight=Decimal("1000"),
-        )
-        assert result == Decimal("0")
+        assert CostingService.calculate_cost_per_gram_from_spool(
+            purchase_price=Decimal("0"), initial_weight=Decimal("1000")
+        ) == Decimal("0")
 
     def test_zero_initial_weight_returns_zero(self):
-        result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=Decimal("20.00"),
-            initial_weight=Decimal("0"),
-        )
-        assert result == Decimal("0")
+        """Rather than dividing by zero and failing every screen showing a cost."""
+        assert CostingService.calculate_cost_per_gram_from_spool(
+            purchase_price=Decimal("20.00"), initial_weight=Decimal("0")
+        ) == Decimal("0")
 
     def test_result_has_four_decimal_places(self):
+        price, weight = Decimal("15.00"), Decimal("750")
         result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=Decimal("15.00"),
-            initial_weight=Decimal("750"),
+            purchase_price=price, initial_weight=weight
         )
-        assert result == result.quantize(Decimal("0.0001"))
-        assert result == Decimal("0.0200")
+        assert result == result.quantize(TEN_THOU)
+        assert result == (price / weight).quantize(TEN_THOU)
 
-    def test_fractional_result(self):
+    def test_fractional_result_is_quantised_not_truncated(self):
+        price, weight = Decimal("17.99"), Decimal("1000")
         result = CostingService.calculate_cost_per_gram_from_spool(
-            purchase_price=Decimal("17.99"),
-            initial_weight=Decimal("1000"),
+            purchase_price=price, initial_weight=weight
         )
-        assert result == Decimal("0.0180")  # quantized to 4dp
+        assert result == (price / weight).quantize(TEN_THOU)
+
+    def test_the_divisor_is_the_nominal_weight_not_the_usable_weight(self):
+        """Documents the gap Tier 1 closes (tasks T039, T042).
+
+        Filament left on the core cannot be printed, so the true per-gram cost
+        divides by the usable weight. Dividing by the nominal weight understates
+        it, and the landed-cost service replaces this method.
+        """
+        price, nominal = Decimal("31.00"), Decimal("1000")
+        unusable = Decimal("25")
+        result = CostingService.calculate_cost_per_gram_from_spool(
+            purchase_price=price, initial_weight=nominal
+        )
+        assert result == (price / nominal).quantize(TEN_THOU)
+        assert result < (price / (nominal - unusable)).quantize(TEN_THOU)

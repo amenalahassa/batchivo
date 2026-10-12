@@ -1,6 +1,7 @@
 """Spool model for filament inventory tracking."""
 
 import uuid
+from decimal import Decimal
 from datetime import datetime
 from typing import Optional
 
@@ -47,19 +48,19 @@ class Spool(Base, UUIDMixin, TimestampMixin):
     )
 
     # Weight Tracking (in grams)
-    initial_weight: Mapped[float] = mapped_column(
+    initial_weight: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Initial filament weight in grams (e.g., 1000.00 for 1kg)",
     )
 
-    current_weight: Mapped[float] = mapped_column(
+    current_weight: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Current filament weight in grams",
     )
 
-    empty_spool_weight: Mapped[Optional[float]] = mapped_column(
+    empty_spool_weight: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Weight of empty spool in grams (for gross weight calculations)",
@@ -72,7 +73,7 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         comment="Date spool was purchased",
     )
 
-    purchase_price: Mapped[Optional[float]] = mapped_column(
+    purchase_price: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Purchase price in local currency",
@@ -141,10 +142,16 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         return (float(self.current_weight) / float(self.initial_weight)) * 100
 
     @property
-    def cost_per_gram(self) -> Optional[float]:
-        """Calculate cost per gram from purchase price and initial weight."""
+    def cost_per_gram(self) -> Optional[Decimal]:
+        """Calculate cost per gram from purchase price and initial weight.
+
+        Exact, because this figure seeds `ModelMaterial.cost_per_gram` and so
+        reaches every make-cost in the system (Constitution IV). It used to
+        divide two floats, which `app/services/production_run.py` then had to
+        wrap in `Decimal(str(...))` to put back into a Decimal column.
+        """
         if self.purchase_price is not None and self.initial_weight > 0:
-            return float(self.purchase_price) / float(self.initial_weight)
+            return Decimal(str(self.purchase_price)) / Decimal(str(self.initial_weight))
         return None
 
     @property

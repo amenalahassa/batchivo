@@ -1,6 +1,7 @@
 """SalesChannel model for marketplace/selling platform tracking."""
 
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import CheckConstraint, ForeignKey, Numeric, String, UniqueConstraint
@@ -45,7 +46,7 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
     )
 
     # Fee structure
-    fee_percentage: Mapped[float] = mapped_column(
+    fee_percentage: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=0,
@@ -53,7 +54,7 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
         comment="Platform percentage fee (e.g., 5.0 = 5%)",
     )
 
-    fee_fixed: Mapped[float] = mapped_column(
+    fee_fixed: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
@@ -61,7 +62,7 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
         comment="Fixed fee per transaction (e.g., £0.30)",
     )
 
-    monthly_cost: Mapped[float] = mapped_column(
+    monthly_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
@@ -97,7 +98,18 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
     def __repr__(self) -> str:
         return f"<SalesChannel(name={self.name}, platform={self.platform_type})>"
 
-    def calculate_platform_fee(self, list_price: float) -> float:
-        """Calculate total platform fee for a given list price."""
-        percentage_fee = list_price * (float(self.fee_percentage) / 100)
-        return percentage_fee + float(self.fee_fixed)
+    def calculate_platform_fee(self, list_price: Decimal) -> Decimal:
+        """Calculate total platform fee for a given list price.
+
+        Exact decimal arithmetic throughout, with no rounding here: rounding
+        between intermediate steps is what makes a fee stack drift from the
+        statement it is meant to predict (Constitution IV).
+
+        Superseded by the fee rules engine in Tier 2 (`app/services/fee_engine.py`,
+        task T070), which replaces this single percentage-plus-fixed model with
+        the real stack of ordered, dated rules. Until then this is the one place
+        a platform fee is computed.
+        """
+        price = Decimal(str(list_price))
+        percentage_fee = price * (Decimal(str(self.fee_percentage)) / Decimal("100"))
+        return percentage_fee + Decimal(str(self.fee_fixed))

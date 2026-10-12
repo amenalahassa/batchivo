@@ -2,7 +2,7 @@
 Tests for Model (3D print model) Pydantic schemas.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from app.schemas.model import (
     BOMSpoolSuggestion,
     CostBreakdown,
+    CostLine,
+    ModelCostBreakdown,
     ModelBase,
     ModelComponentBase,
     ModelCreate,
@@ -26,9 +28,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class TestCostBreakdown:
+class TestModelCostBreakdown:
     def test_valid(self):
-        c = CostBreakdown(
+        c = ModelCostBreakdown(
             material_cost=Decimal("2.50"),
             component_cost=Decimal("0.30"),
             labor_cost=Decimal("5.00"),
@@ -288,3 +290,102 @@ class TestModelListResponse:
     def test_paginated(self):
         r = ModelListResponse(models=[], total=100, skip=40, limit=20)
         assert r.skip == 40
+
+
+# ============================================================================
+# The structured cost breakdown (data-model.md, 'Cost breakdown shape')
+# ============================================================================
+
+
+def _line(**overrides) -> dict:
+    base = {
+        "key": "material",
+        "label": "Filament in the part",
+        "amount": Decimal("4.37"),
+        "risk_class": "at_risk",
+        "source": "observed",
+        "as_of": date(2026, 10, 1),
+    }
+    base.update(overrides)
+    return base
+
+
+def _breakdown(**overrides) -> dict:
+    base = {
+        "lines": [_line()],
+        "at_risk_subtotal": Decimal("4.37"),
+        "not_at_risk_subtotal": Decimal("0.92"),
+        "yield_applied": Decimal("0.92"),
+        "failure_mode": "per_part",
+        "failure_premium": Decimal("0.38"),
+        "total_make_cost": Decimal("5.67"),
+        "observed_share": Decimal("0.80"),
+        "assumed_share": Decimal("0.20"),
+        "incomplete_reasons": [],
+    }
+    base.update(overrides)
+    return base
+
+
+class TestCostLine:
+    def test_valid(self):
+        line = CostLine(**_line())
+        assert line.amount == Decimal("4.37")
+        assert line.risk_class == "at_risk"
+        assert line.source == "observed"
+
+    def test_as_of_is_optional_because_a_figure_may_never_have_been_recorded(self):
+        assert CostLine(**_line(as_of=None)).as_of is None
+
+    def test_unknown_risk_class_rejected(self):
+        with pytest.raises(ValidationError):
+            CostLine(**_line(risk_class="sometimes"))
+
+    def test_unknown_source_rejected(self):
+        with pytest.raises(ValidationError):
+            CostLine(**_line(source="vibes"))
+
+    def test_empty_key_rejected(self):
+        with pytest.raises(ValidationError):
+            CostLine(**_line(key=""))
+
+    def test_negative_amount_allowed_so_a_credit_can_be_expressed(self):
+        assert CostLine(**_line(amount=Decimal("-1.00"))).amount == Decimal("-1.00")
+
+
+class TestCostBreakdown:
+    def test_valid(self):
+        breakdown = CostBreakdown(**_breakdown())
+        assert breakdown.total_make_cost == Decimal("5.67")
+        assert breakdown.failure_mode == "per_part"
+        assert breakdown.incomplete_reasons == []
+
+    def test_a_yield_of_one_is_permitted(self):
+        assert CostBreakdown(**_breakdown(yield_applied=Decimal("1"))).yield_applied == Decimal("1")
+
+    def test_a_yield_of_zero_is_rejected_because_nothing_would_ever_ship(self):
+        with pytest.raises(ValidationError):
+            CostBreakdown(**_breakdown(yield_applied=Decimal("0")))
+
+    def test_a_yield_above_one_is_rejected(self):
+        with pytest.raises(ValidationError):
+            CostBreakdown(**_breakdown(yield_applied=Decimal("1.01")))
+
+    def test_shares_outside_zero_to_one_are_rejected(self):
+        with pytest.raises(ValidationError):
+            CostBreakdown(**_breakdown(observed_share=Decimal("1.5")))
+        with pytest.raises(ValidationError):
+            CostBreakdown(**_breakdown(assumed_share=Decimal("-0.1")))
+
+    def test_unknown_failure_mode_rejected(self):
+        with pytest.raises(ValidationError):
+            CostBreakdown(**_breakdown(failure_mode="per_week"))
+
+    def test_incomplete_reasons_carry_what_was_missing(self):
+        breakdown = CostBreakdown(**_breakdown(incomplete_reasons=["printer has no cost policy"]))
+        assert breakdown.incomplete_reasons == ["printer has no cost policy"]
+
+    def test_lines_default_to_empty_rather_than_none(self):
+        payload = _breakdown()
+        payload.pop("lines")
+        assert CostBreakdown(**payload).lines == []

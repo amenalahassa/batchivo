@@ -107,10 +107,10 @@ class ProductionRunService:
                     and material_data.spool_id in spools_by_id
                 ):
                     spool = spools_by_id[material_data.spool_id]
-                    # cost_per_gram is a property that returns Optional[float]
-                    material_data.cost_per_gram = (
-                        Decimal(str(spool.cost_per_gram)) if spool.cost_per_gram else Decimal("0")
-                    )
+                    # `Spool.cost_per_gram` returns Optional[Decimal], so no
+                    # round-trip through str is needed to get back to exact
+                    # arithmetic -- it never left it.
+                    material_data.cost_per_gram = spool.cost_per_gram or Decimal("0")
 
                 material = ProductionRunMaterial(
                     production_run_id=production_run.id,
