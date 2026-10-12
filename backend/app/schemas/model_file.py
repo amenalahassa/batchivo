@@ -161,9 +161,7 @@ class ThreeMFParseResponse(BaseModel):
     filament_weight_grams: Optional[float] = Field(
         None, description="Total filament weight in grams, from the selected plate"
     )
-    plate_count: Optional[int] = Field(
-        None, description="Total number of plates found in the file"
-    )
+    plate_count: Optional[int] = Field(None, description="Total number of plates found in the file")
     source_plate_index: Optional[int] = Field(
         None,
         description="1-based index of the plate print_time_minutes/filament_weight_grams were taken from",

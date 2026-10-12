@@ -15,10 +15,20 @@ export interface SalesChannel {
   tenant_id: string
   name: string
   platform_type: PlatformType
+  /** @deprecated superseded by the channel's fee rules (FR-020); still populated. */
   fee_percentage: string
+  /** @deprecated superseded by the channel's fee rules (FR-020); still populated. */
   fee_fixed: string
   monthly_cost: string
   is_active: boolean
+  // Channel economics (Tier 2)
+  tax_remitter: 'marketplace' | 'operator'
+  expected_discount_pct: string
+  expected_refund_pct: string
+  free_shipping_threshold: string | null
+  rounding_rule: string | null
+  currency_code: string
+  offsite_ads_opt_in: boolean
   created_at: string
   updated_at: string
 }
@@ -28,7 +38,17 @@ export interface SalesChannelListResponse {
   total: number
 }
 
-export interface SalesChannelCreateRequest {
+export interface SalesChannelEconomicsRequest {
+  tax_remitter?: 'marketplace' | 'operator'
+  expected_discount_pct?: string
+  expected_refund_pct?: string
+  free_shipping_threshold?: string | null
+  rounding_rule?: string | null
+  currency_code?: string
+  offsite_ads_opt_in?: boolean
+}
+
+export interface SalesChannelCreateRequest extends SalesChannelEconomicsRequest {
   name: string
   platform_type: PlatformType
   fee_percentage?: string
@@ -37,7 +57,7 @@ export interface SalesChannelCreateRequest {
   is_active?: boolean
 }
 
-export interface SalesChannelUpdateRequest {
+export interface SalesChannelUpdateRequest extends SalesChannelEconomicsRequest {
   name?: string
   platform_type?: PlatformType
   fee_percentage?: string

@@ -46,3 +46,73 @@ export function formatShare(fraction: Money | null | undefined): string {
   if (Number.isNaN(value)) return '—'
   return `${Math.round(value * 100)}%`
 }
+
+/**
+ * Render a percentage as a screen shows it: one decimal place.
+ *
+ * The API sends four decimals ("35.2693") so no precision is lost on the wire;
+ * a percentage is read, not added up, so one place is what a reader wants. The
+ * rounding is done in string space for the same reason as `formatMoney`.
+ *
+ * A null percentage is "undefined", not "0%". The net-revenue basis with fees
+ * consuming the whole amount has no percentage, and reporting that as zero
+ * would read as break-even on a sale that lost money.
+ */
+export function formatPercent(
+  value: Money | null | undefined,
+  { places = 1, undefinedLabel = 'undefined' }: { places?: number; undefinedLabel?: string } = {},
+): string {
+  if (value === null || value === undefined || value === '') return undefinedLabel
+
+  const trimmed = value.trim()
+  const negative = trimmed.startsWith('-')
+  const [whole, fraction = ''] = trimmed.replace(/^[-+]/, '').split('.')
+
+  if (places === 0) {
+    const rounded =
+      fraction.length > 0 && Number.parseInt(fraction[0], 10) >= 5
+        ? (Number.parseInt(whole || '0', 10) + 1).toString()
+        : whole || '0'
+    return `${negative ? '-' : ''}${rounded}%`
+  }
+
+  let kept = fraction.slice(0, places).padEnd(places, '0')
+  if (fraction.length > places && Number.parseInt(fraction[places], 10) >= 5) {
+    const bumped = (Number.parseInt(kept, 10) + 1).toString()
+    if (bumped.length > places) {
+      const carried = (Number.parseInt(whole || '0', 10) + 1).toString()
+      return `${negative ? '-' : ''}${carried}.${'0'.repeat(places)}%`
+    }
+    kept = bumped.padStart(places, '0')
+  }
+
+  return `${negative ? '-' : ''}${whole || '0'}.${kept}%`
+}
+
+/**
+ * The symbol for a currency code, for a figure that is not in the tenant's own
+ * currency.
+ *
+ * A sales channel carries its own `currency_code` (FR-020), so a tenant who
+ * reports in GBP may have a channel that settles in CAD. Rendering that
+ * channel's fees with the tenant's symbol would state an amount in the wrong
+ * currency, which is a worse error than an unfamiliar prefix. An unmapped code
+ * therefore falls back to the code itself: "CHF 20.30" is plainer than a
+ * guessed glyph, and unlike a glyph it cannot be wrong.
+ */
+const CURRENCY_SYMBOLS: Record<string, string> = {
+  GBP: '£',
+  USD: '$',
+  EUR: '€',
+  CAD: 'CA$',
+  AUD: 'A$',
+  NZD: 'NZ$',
+  JPY: '¥',
+}
+
+export function symbolForCurrency(code: string | null | undefined, fallback = '$'): string {
+  if (!code) return fallback
+  const upper = code.trim().toUpperCase()
+  if (upper === '') return fallback
+  return CURRENCY_SYMBOLS[upper] ?? `${upper} `
+}

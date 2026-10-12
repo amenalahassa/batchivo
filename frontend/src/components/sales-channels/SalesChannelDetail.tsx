@@ -15,6 +15,9 @@ import {
   getPlatformDisplayName,
   getPlatformColor,
 } from '@/lib/api/sales-channels'
+import { symbolForCurrency } from '@/lib/money'
+import { FeeRuleEditor } from './FeeRuleEditor'
+import { ChannelProfitabilityPanel } from './ChannelProfitabilityPanel'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CardContent, CardTitle, Card, CardDescription, CardHeader } from '@/components/ui/card'
@@ -115,6 +118,11 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
       </div>
     )
   }
+
+  // The channel settles in its own currency, which need not be the tenant's
+  // (FR-020). Its fees are rendered with its own symbol so an amount is never
+  // labelled with the wrong currency.
+  const channelSymbol = symbolForCurrency(channel.currency_code, '£')
 
   // Calculate example fee for a £20 sale
   const exampleSale = 20
@@ -294,15 +302,24 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
         </CardContent>
       </Card>
 
+      {/* The authoritative fee stack (FR-020, FR-021) */}
+      <FeeRuleEditor channelId={channelId} currencySymbol={channelSymbol} />
+
+      {/* Planned against recorded, over a period (FR-025, FR-041d) */}
+      <ChannelProfitabilityPanel channelId={channelId} currencySymbol={channelSymbol} />
+
       {/* Fee Calculator Card */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <DollarSign className="h-5 w-5" />
-            Fee Calculator
+            Fee Calculator (legacy single-rate)
           </CardTitle>
           <CardDescription>
-            See how fees affect different sale amounts
+            A rough estimate from the channel&rsquo;s single percentage and fixed
+            fee. The fee rules above are what the system actually charges
+            against a sale (FR-020); where the two disagree, the rules are
+            right and these figures are the old model kept for comparison.
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -31,6 +31,7 @@ in this module, and ``tests/unit/pricing/test_no_float_in_money_paths.py``
 fails the build if one ever does.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import date
@@ -43,11 +44,20 @@ if TYPE_CHECKING:
     from app.models.model_printer_config import ModelPrinterConfig
     from app.models.printer import Printer
     from app.models.product import Product
+    from app.models.sales_channel import SalesChannel
     from app.services.provenance import FieldOrigin
 
 from app.schemas.model import CostBreakdown, CostLine, ModelCostBreakdown
 from app.schemas.product import ProductCostBreakdown
+from app.services.fee_engine import (
+    FeeCharge,
+    FeeStack,
+    OrderContext,
+    TaxTreatment,
+)
 from app.services.pricing_policy import CostPolicy
+
+logger = logging.getLogger(__name__)
 
 
 class CircularReferenceError(Exception):
@@ -747,6 +757,147 @@ def _policy_from(
     )
 
 
+# ---------------------------------------------------------------------------
+# Margin (tasks T071, T072)
+# ---------------------------------------------------------------------------
+
+#: What a margin percentage is taken over (FR-031), and how to say so beside
+#: the figure (FR-031b). Two percentages must never be compared without
+#: knowing they share a basis, which is only possible if every figure carries
+#: its basis as data rather than as a convention.
+MARGIN_BASIS_LABELS: dict[str, str] = {
+    "customer_total": "of the total the customer paid",
+    "item_price": "of the item price",
+    "net_revenue": "of net revenue after fees",
+}
+
+#: The basis that reproduces the definition in use before this feature, so a
+#: tenant who changes nothing sees no percentage move (FR-031a).
+DEFAULT_MARGIN_BASIS = "customer_total"
+
+
+@dataclass(frozen=True)
+class RevenueDeduction:
+    """One amount taken off revenue that is not a fee and not a cost.
+
+    Expected discounts and an expected refund rate reduce *planned* net revenue
+    (FR-026). They are reserves against revenue the operator has not lost yet,
+    which is why they are neither a fee -- nobody charged them -- nor a cost:
+    nothing was consumed. Keeping them as their own kind of line is what lets
+    the reconciliation view compare planned fees against a statement without
+    the reserves polluting the comparison.
+    """
+
+    key: str
+    label: str
+    amount: Decimal
+    amount_exact: Decimal
+    rate_pct: Decimal
+    basis_amount: Decimal
+
+
+@dataclass(frozen=True)
+class MarginResult:
+    """What one unit earns on one channel at one price, and on what basis.
+
+    **Where the rounding happens.** Unlike :class:`CostBreakdown`, which sums
+    rounded lines so an operator can add them up, this is one arithmetic chain
+    whose end is a profit figure: the fees and reserves enter unrounded and the
+    profit is rounded once. The two conventions differ by half a cent on the
+    acceptance case, and which one each uses is pinned by its own test --
+    rounding the fee stack early moves the acceptance margin off the figure the
+    spec names, and summing the cost lines unrounded moves the make-cost off
+    the figure the spec names. Both are deliberate.
+    """
+
+    # What was charged and what was earned
+    list_price: Decimal
+    shipping_revenue: Decimal
+    make_cost: Decimal
+    postage_paid: Decimal
+
+    fees: list["FeeCharge"]
+    fee_total: Decimal
+    deductions: list[RevenueDeduction]
+    deduction_total: Decimal
+
+    #: Shipping revenue less postage paid, positive or negative. FR-024 makes
+    #: this its own line because on a channel advertising free shipping it is
+    #: usually the largest negative one, and netting it into either revenue or
+    #: cost is how it went unnoticed.
+    shipping_net: Decimal
+
+    net_revenue: Decimal
+    profit: Decimal
+
+    #: ``None`` when the basis is zero or negative -- net revenue after fees
+    #: with fees consuming the whole amount. Reported as undefined rather than
+    #: divided by zero (spec, Edge Cases).
+    margin_pct: Optional[Decimal]
+    margin_basis: str
+    margin_basis_label: str
+    margin_basis_amount: Decimal
+
+    # Tax: tracked, never revenue (FR-028c)
+    sales_tax_collected: Decimal
+    sales_tax_liability: Decimal
+    tax_remitter: str
+    #: True when the amounts handed in were tax-inclusive and the exclusive
+    #: figures below were derived here (FR-028e).
+    tax_exclusive_derived: bool
+    revenue_tax_exclusive: Decimal
+
+    observed_share: Optional[Decimal] = None
+    assumed_share: Optional[Decimal] = None
+    incomplete_reasons: list[str] = field(default_factory=list)
+
+    @property
+    def margin_pct_display(self) -> Optional[Decimal]:
+        """The percentage as a screen shows it: one decimal place."""
+        if self.margin_pct is None:
+            return None
+        return self.margin_pct.quantize(Decimal("0.1"))
+
+
+def resolve_margin_basis(
+    policy: Optional[CostPolicy] = None,
+    *,
+    override: Optional[str] = None,
+) -> str:
+    """Which basis a percentage should be taken over (T072).
+
+    ``override`` wins, and exists for exactly one caller: a settled order
+    reports the basis that was in effect when it sold, not the one in effect
+    now (FR-031d). Everything else reads the operator's policy, and a policy
+    naming an unknown basis falls back to the default with a warning rather
+    than raising -- a pricing screen that 500s because a string is misspelt is
+    worse than one that says which basis it used.
+    """
+    candidate = override or (policy.margin_basis if policy is not None else None)
+    if candidate in MARGIN_BASIS_LABELS:
+        return candidate
+    if candidate is not None:
+        logger.warning(
+            f"Unknown margin basis {candidate!r}; reporting on {DEFAULT_MARGIN_BASIS} instead"
+        )
+    return DEFAULT_MARGIN_BASIS
+
+
+def _basis_amount_for(
+    basis: str,
+    *,
+    item_price: Decimal,
+    customer_total: Decimal,
+    fee_total_exact: Decimal,
+) -> Decimal:
+    """The denominator each basis puts under the profit (FR-031)."""
+    if basis == "item_price":
+        return item_price
+    if basis == "net_revenue":
+        return customer_total - fee_total_exact
+    return customer_total
+
+
 class CostingService:
     """The single authoritative implementation of model and product cost."""
 
@@ -1140,6 +1291,148 @@ class CostingService:
             else None,
             models_with_actual_cost=models_with_actual_cost,
             models_total=models_total,
+        )
+
+    # ------------------------------------------------------------------
+    # Margin (tasks T071, T072)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def margin(
+        *,
+        context: OrderContext,
+        make_cost: Decimal,
+        channel: "SalesChannel",
+        fees: FeeStack,
+        policy: Optional[CostPolicy] = None,
+        tax: Optional[TaxTreatment] = None,
+        postage_paid: Decimal = ZERO,
+        margin_basis: Optional[str] = None,
+        observed_share: Optional[Decimal] = None,
+        assumed_share: Optional[Decimal] = None,
+        incomplete_reasons: Sequence[str] = (),
+    ) -> MarginResult:
+        """What one unit earns on ``channel`` at the price ``context`` carries.
+
+        ``context`` is the **tax-exclusive** order built by
+        :func:`app.services.fee_engine.exclusive_context`, and it is the same
+        object the fee stack was computed from. That is deliberate and it is
+        the one invariant this signature exists to enforce: a price cannot be
+        charged fees on one amount and divided by another. Margin is computed
+        on tax-exclusive amounts under every basis and on every channel
+        (FR-028a), so the tax comes out once, upstream, and ``tax`` carries
+        what was removed so the result can report it (FR-028e).
+
+        The rest of the chain, in the order the arithmetic runs:
+
+        1. **The fees, unrounded.** Shipping revenue is never netted before
+           them (FR-023).
+        2. **The reserves.** An expected discount and an expected refund rate
+           reduce planned net revenue (FR-026).
+        3. **What the sale cost**: the make-cost, and the postage the operator
+           paid -- a cost, not a reduction of revenue, whose difference from
+           shipping revenue is reported as its own line (FR-024).
+        4. **The basis the operator chose**, named beside the figure (FR-031b).
+
+        Nothing here is stored. A margin is recomputed on demand
+        (Constitution V); the one figure ever frozen is the snapshot written on
+        a settled order line at the moment of sale, and that path passes
+        ``margin_basis`` so the order keeps the basis it sold on (FR-031d).
+        """
+        treatment = tax if tax is not None else TaxTreatment()
+        item_price = Decimal(str(context.item_subtotal))
+        shipping = Decimal(str(context.shipping_revenue))
+        postage = Decimal(str(postage_paid))
+        cost = Decimal(str(make_cost))
+        collected = Decimal(str(treatment.collected))
+
+        customer_total = item_price + shipping
+        exclusive_total = customer_total
+        tax_exclusive_derived = treatment.derived_from_inclusive
+
+        # --- 1. Fees, unrounded (research.md D9) ---------------------------
+        fee_total_exact = fees.total_exact
+
+        # --- 2. Reserves against revenue (FR-026) --------------------------
+        deductions: list[RevenueDeduction] = []
+        for key, label, rate in (
+            (
+                "expected_discount",
+                "Expected discounts",
+                Decimal(str(getattr(channel, "expected_discount_pct", ZERO) or ZERO)),
+            ),
+            (
+                "expected_refund",
+                "Refund reserve",
+                Decimal(str(getattr(channel, "expected_refund_pct", ZERO) or ZERO)),
+            ),
+        ):
+            if rate == ZERO:
+                continue
+            amount = customer_total * rate / Decimal("100")
+            deductions.append(
+                RevenueDeduction(
+                    key=key,
+                    label=label,
+                    amount=amount.quantize(CENT),
+                    amount_exact=amount,
+                    rate_pct=rate,
+                    basis_amount=customer_total,
+                )
+            )
+        deduction_total_exact = sum((d.amount_exact for d in deductions), ZERO)
+
+        # --- 3. What the sale cost -----------------------------------------
+        net_revenue_exact = customer_total - fee_total_exact - deduction_total_exact
+        profit_exact = net_revenue_exact - cost - postage
+
+        # --- 4. The basis, and the percentage over it ----------------------
+        basis = resolve_margin_basis(policy, override=margin_basis)
+        basis_amount = _basis_amount_for(
+            basis,
+            item_price=item_price,
+            customer_total=customer_total,
+            fee_total_exact=fee_total_exact,
+        )
+        if basis_amount > ZERO:
+            margin_pct: Optional[Decimal] = (profit_exact / basis_amount * Decimal("100")).quantize(
+                Decimal("0.0001")
+            )
+        else:
+            # Net revenue after fees, with fees consuming the whole amount.
+            # Undefined is the honest answer; zero would read as break-even
+            # and a division would read as a crash.
+            margin_pct = None
+
+        # Who owes the tax. It is never revenue under either answer (FR-028c),
+        # and it is a liability only where the operator remits it (FR-028d).
+        remitter = getattr(channel, "tax_remitter", "operator") or "operator"
+        liability = collected if remitter == "operator" else ZERO
+
+        return MarginResult(
+            list_price=item_price.quantize(CENT),
+            shipping_revenue=shipping.quantize(CENT),
+            make_cost=cost.quantize(CENT),
+            postage_paid=postage.quantize(CENT),
+            fees=list(fees.charges),
+            fee_total=fee_total_exact.quantize(CENT),
+            deductions=deductions,
+            deduction_total=deduction_total_exact.quantize(CENT),
+            shipping_net=(shipping - postage).quantize(CENT),
+            net_revenue=net_revenue_exact.quantize(CENT),
+            profit=profit_exact.quantize(CENT),
+            margin_pct=margin_pct,
+            margin_basis=basis,
+            margin_basis_label=MARGIN_BASIS_LABELS[basis],
+            margin_basis_amount=basis_amount.quantize(CENT),
+            sales_tax_collected=collected.quantize(CENT),
+            sales_tax_liability=liability.quantize(CENT),
+            tax_remitter=remitter,
+            tax_exclusive_derived=tax_exclusive_derived,
+            revenue_tax_exclusive=exclusive_total.quantize(CENT),
+            observed_share=observed_share,
+            assumed_share=assumed_share,
+            incomplete_reasons=list(incomplete_reasons),
         )
 
     @staticmethod

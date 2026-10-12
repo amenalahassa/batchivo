@@ -255,3 +255,280 @@ export interface FilamentPurchaseListResponse {
   skip: number
   limit: number
 }
+
+/* ===========================================================================
+ * Channel economics: the real fee stack, shipping and tax (User Story 3)
+ * ======================================================================== */
+
+/**
+ * What a fee is charged on. Each is an amount or a count taken from the order
+ * and never another fee — there is no fee on a fee (research.md D9).
+ */
+export type FeeBasis =
+  | 'item_subtotal'
+  | 'item_plus_shipping'
+  | 'order_total'
+  | 'per_listing'
+  | 'per_order'
+  | 'per_unit_sold'
+  | 'per_month'
+
+/** Which clamp changed a fee's amount, if either did (FR-021c). */
+export type ClampApplied = 'min' | 'max'
+
+/** Who hands the sales tax to the revenue authority (FR-028b). */
+export type TaxRemitter = 'marketplace' | 'operator'
+
+/**
+ * One fee as charged, with everything behind it.
+ *
+ * `clamp_applied` is the field that stops a capped fee reading as a
+ * miscalculated one (FR-021c), and `is_expected` separates what a channel
+ * charges on average from what it charged here (FR-029). Both must reach the
+ * screen; a breakdown that hides them is a breakdown nobody can check.
+ */
+export interface FeeCharge {
+  name: string
+  basis: FeeBasis
+  amount: Money
+  clamp_applied: ClampApplied | null
+  is_expected: boolean
+  rate_pct: Percent
+  fixed_amount: Money
+  /** The amount or count the rate was applied to. */
+  basis_amount: Money
+  incidence_pct: Percent | null
+}
+
+/** One fee rule as the operator configures it. */
+export interface FeeRule {
+  id: string
+  tenant_id: string
+  sales_channel_id: string
+  name: string
+  basis: FeeBasis
+  rate_pct: Percent
+  fixed_amount: Money
+  min_amount: Money | null
+  max_amount: Money | null
+  incidence_pct: Percent | null
+  sort_order: number
+  applies_from: string
+  applies_to: string | null
+}
+
+export interface FeeRuleCreate {
+  name: string
+  basis: FeeBasis
+  rate_pct?: Percent
+  fixed_amount?: Money
+  min_amount?: Money | null
+  max_amount?: Money | null
+  incidence_pct?: Percent | null
+  sort_order?: number
+  applies_from: string
+  applies_to?: string | null
+}
+
+export type FeeRuleUpdate = Partial<FeeRuleCreate>
+
+export interface FeeRuleListResponse {
+  rules: FeeRule[]
+  total: number
+  as_of: string
+}
+
+/** A hypothetical order, for inspecting the stack without creating one. */
+export interface FeePreviewRequest {
+  item_subtotal: Money
+  shipping_revenue?: Money
+  extras?: Money
+  quantity?: number
+  listings?: number
+  sales_tax_collected?: Money
+  amounts_are_tax_inclusive?: boolean
+  as_of?: string
+}
+
+export interface FeePreviewResponse {
+  charges: FeeCharge[]
+  total: Money
+  /** Per-listing and per-month rules, absorbed over a period instead (FR-025). */
+  periodic: FeeCharge[]
+  periodic_total: Money
+  bound_clamps: string[]
+  as_of: string
+  revenue_tax_exclusive: Money
+  tax_exclusive_derived: boolean
+}
+
+/** Postage the operator pays, by zone and weight bracket (FR-024). */
+export interface ShippingProfile {
+  id: string
+  tenant_id: string
+  name: string
+  destination_zone: string
+  weight_bracket_min_grams: Money
+  weight_bracket_max_grams: Money | null
+  postage_cost: Money
+  carrier: string | null
+  effective_from: string
+}
+
+export interface ShippingProfileCreate {
+  name: string
+  destination_zone: string
+  weight_bracket_min_grams?: Money
+  weight_bracket_max_grams?: Money | null
+  postage_cost: Money
+  carrier?: string | null
+  effective_from: string
+}
+
+export type ShippingProfileUpdate = Partial<ShippingProfileCreate>
+
+export interface ShippingProfileListResponse {
+  profiles: ShippingProfile[]
+  total: number
+}
+
+/** A reserve held against revenue: neither a fee nor a cost (FR-026). */
+export interface RevenueDeduction {
+  key: string
+  label: string
+  amount: Money
+  rate_pct: Percent
+  basis_amount: Money
+}
+
+/**
+ * What one unit earns on one channel at the price in effect.
+ *
+ * `margin_pct` is null rather than zero where the basis is zero — net revenue
+ * after fees, with fees consuming the whole amount. Render that as undefined,
+ * never as break-even.
+ */
+export interface ProductMargin {
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+
+  list_price: Money
+  shipping_revenue: Money
+  postage_paid: Money
+  /** Shipping revenue less postage paid, positive or negative (FR-024). */
+  shipping_net: Money
+
+  make_cost: Money
+  fees: FeeCharge[]
+  fee_total: Money
+  deductions: RevenueDeduction[]
+  deduction_total: Money
+
+  net_revenue: Money
+  profit: Money
+  margin_pct: Percent | null
+  margin_basis: MarginBasis
+  margin_basis_label: string
+  margin_basis_amount: Money
+
+  sales_tax_collected: Money
+  sales_tax_liability: Money
+  tax_remitter: TaxRemitter
+  /** True when the exclusive amounts were derived from inclusive ones (FR-028e). */
+  tax_exclusive_derived: boolean
+  revenue_tax_exclusive: Money
+
+  observed_share: Money | null
+  assumed_share: Money | null
+  incomplete_reasons: string[]
+}
+
+/** A recorded fee: exactly one of a period scope or an order scope. */
+export interface FeeActualCreate {
+  sales_channel_id: string
+  fee_category: string
+  amount: Money
+  period_start?: string
+  period_end?: string
+  order_id?: string
+}
+
+export interface FeeActual {
+  id: string
+  tenant_id: string
+  sales_channel_id: string
+  fee_category: string
+  amount: Money
+  period_start: string | null
+  period_end: string | null
+  order_id: string | null
+  /** `entered` by a human, never presented as observed (FR-041e). */
+  source: string
+}
+
+/** Plan against statement for one fee category (FR-041d). */
+export interface CategoryReconciliation {
+  category: string
+  planned: Money
+  actual_period: Money | null
+  actual_order_scoped: Money
+  unallocated_remainder: Money | null
+  actual_total: Money | null
+  /** Null while nothing is recorded — which is not the same as agreeing. */
+  difference: Money | null
+  difference_pct_of_fee: Percent | null
+}
+
+/** A periodic cost spread over the period's order volume (FR-025). */
+export interface AbsorbedCost {
+  key: string
+  label: string
+  total: Money
+  order_count: number
+  /** Null when there were no orders to absorb it over. */
+  per_order: Money | null
+  is_unabsorbed: boolean
+}
+
+/** One channel over one period. */
+export interface ChannelPnL {
+  channel_id: string
+  period_start: string
+  period_end: string
+  order_count: number
+
+  revenue_tax_exclusive: Money
+  sales_tax_collected: Money
+  sales_tax_liability: Money
+
+  postage_paid: Money
+  shipping_revenue: Money
+  shipping_net: Money
+
+  planned_fee_total: Money
+  actual_fee_total: Money | null
+  unallocated_remainder: Money
+  fee_difference: Money | null
+  reconciliation: CategoryReconciliation[]
+
+  absorbed_costs: AbsorbedCost[]
+  unabsorbed_total: Money
+
+  make_cost_total: Money
+  profit: Money
+  margin_pct: Percent | null
+  margin_basis: MarginBasis
+  margin_basis_label: string
+}
+
+/** Channel economics as the sales-channel form edits them. */
+export interface ChannelEconomics {
+  tax_remitter: TaxRemitter
+  expected_discount_pct: Percent
+  expected_refund_pct: Percent
+  free_shipping_threshold: Money | null
+  rounding_rule: string | null
+  currency_code: string
+  offsite_ads_opt_in: boolean
+}

@@ -68,6 +68,7 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
+import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
 
 const pricingFormSchema = z.object({
   sales_channel_id: z.string().uuid('Must select a sales channel'),
@@ -404,18 +405,30 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Badge
-                      variant="outline"
-                      className={
-                        margin >= 30
-                          ? 'bg-green-500/10 text-green-600 border-green-200'
-                          : margin >= 15
-                            ? 'bg-yellow-500/10 text-yellow-600 border-yellow-200'
-                            : 'bg-red-500/10 text-red-600 border-red-200'
-                      }
-                    >
-                      {margin.toFixed(1)}%
-                    </Badge>
+                    {/* FR-031b: the basis travels with the percentage. These
+                        rows compute profit over the price the customer paid,
+                        so the basis is `customer_total` -- named rather than
+                        assumed, because the same sale reads differently on
+                        the other two bases. */}
+                    <div className="flex flex-col items-end gap-1">
+                      <Badge
+                        variant="outline"
+                        className={
+                          margin >= 30
+                            ? 'bg-green-500/10 text-green-600 border-green-200'
+                            : margin >= 15
+                              ? 'bg-yellow-500/10 text-yellow-600 border-yellow-200'
+                              : 'bg-red-500/10 text-red-600 border-red-200'
+                        }
+                      >
+                        {margin.toFixed(1)}%
+                      </Badge>
+                      <MarginBasisLabel
+                        basis="customer_total"
+                        short
+                        className="text-[10px] font-normal"
+                      />
+                    </div>
                   </TableCell>
                   <TableCell className="text-center">
                     <Switch

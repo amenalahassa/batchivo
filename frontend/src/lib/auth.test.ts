@@ -13,6 +13,10 @@ import {
   requestPasswordReset,
   resetPassword,
 } from './auth'
+import { config } from './config'
+
+// Auth requests are issued against the configured API base URL
+const authUrl = (path: string) => `${config.apiUrl}/api/v1/auth/${path}`
 
 // Mock sessionStorage
 const mockSessionStorage: Record<string, string> = {}
@@ -233,7 +237,7 @@ describe('Authentication Functions', () => {
       const result = await login({ email: 'test@example.com', password: 'password' })
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/auth/login',
+        authUrl('login'),
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ email: 'test@example.com', password: 'password' }),
@@ -268,7 +272,7 @@ describe('Authentication Functions', () => {
       await logout()
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/auth/logout',
+        authUrl('logout'),
         expect.objectContaining({
           method: 'POST',
           headers: { 'Authorization': 'Bearer test-access-token' },
@@ -313,7 +317,7 @@ describe('Authentication Functions', () => {
       })
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/auth/register',
+        authUrl('register'),
         expect.objectContaining({
           method: 'POST',
         })
@@ -389,7 +393,7 @@ describe('Authentication Functions', () => {
       await requestPasswordReset('user@example.com')
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/auth/forgot-password',
+        authUrl('forgot-password'),
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({ email: 'user@example.com' }),
@@ -415,7 +419,7 @@ describe('Authentication Functions', () => {
       await resetPassword('reset-token-123', 'newpassword')
 
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/v1/auth/reset-password',
+        authUrl('reset-password'),
         expect.objectContaining({
           method: 'POST',
           body: JSON.stringify({

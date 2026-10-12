@@ -141,7 +141,36 @@ class Order(Base, UUIDMixin, TimestampMixin):
         Numeric(10, 2),
         nullable=False,
         default=Decimal("0.00"),
-        comment="Shipping cost in GBP",
+        comment=(
+            "Shipping REVENUE charged to the customer -- not postage paid. "
+            "See postage_paid below; FR-024 keeps the two apart"
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # What the operator actually paid and actually owes (Tier 2)
+    #
+    # `shipping_cost` above is revenue: what the customer was charged. It was
+    # the only shipping figure the system held, which is why free shipping
+    # looked free. These two are the other side of that sale.
+    # ------------------------------------------------------------------
+    postage_paid: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
+        comment="What the operator paid to post this order; a cost, never netted off revenue",
+    )
+
+    sales_tax_collected: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default="0",
+        comment=(
+            "Sales tax taken from the customer. A liability where the operator "
+            "remits it, and never revenue or profit under either remitter (FR-028c, FR-028d)"
+        ),
     )
 
     # Order totals

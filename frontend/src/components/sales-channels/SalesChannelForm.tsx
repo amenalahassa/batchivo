@@ -70,6 +70,33 @@ const salesChannelFormSchema = z.object({
     .optional()
     .default('0'),
   is_active: z.boolean().optional().default(true),
+
+  // Channel economics (Tier 2). Each of these is an operator decision in the
+  // sense of FR-002 -- a reserve they choose to hold, a threshold they set --
+  // so none of them is ever written by an automated process.
+  tax_remitter: z.enum(['marketplace', 'operator']).optional().default('operator'),
+  expected_discount_pct: z
+    .string()
+    .regex(/^\d+(\.\d{1,4})?$/, 'Must be a valid percentage')
+    .optional()
+    .default('0'),
+  expected_refund_pct: z
+    .string()
+    .regex(/^\d+(\.\d{1,4})?$/, 'Must be a valid percentage')
+    .optional()
+    .default('0'),
+  free_shipping_threshold: z
+    .string()
+    .regex(/^\d*(\.\d{1,2})?$/, 'Must be a valid amount')
+    .optional()
+    .default(''),
+  rounding_rule: z.string().max(20).optional().default(''),
+  currency_code: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, 'Use a three-letter currency code')
+    .optional()
+    .default('GBP'),
+  offsite_ads_opt_in: z.boolean().optional().default(false),
 })
 
 type SalesChannelFormValues = z.infer<typeof salesChannelFormSchema>
@@ -92,6 +119,13 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
       fee_fixed: channel?.fee_fixed || '0',
       monthly_cost: channel?.monthly_cost || '0',
       is_active: channel?.is_active ?? true,
+      tax_remitter: channel?.tax_remitter ?? 'operator',
+      expected_discount_pct: channel?.expected_discount_pct || '0',
+      expected_refund_pct: channel?.expected_refund_pct || '0',
+      free_shipping_threshold: channel?.free_shipping_threshold ?? '',
+      rounding_rule: channel?.rounding_rule ?? '',
+      currency_code: channel?.currency_code || 'GBP',
+      offsite_ads_opt_in: channel?.offsite_ads_opt_in ?? false,
     },
   })
 
@@ -120,6 +154,17 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
       fee_fixed: values.fee_fixed || '0',
       monthly_cost: values.monthly_cost || '0',
       is_active: values.is_active,
+      tax_remitter: values.tax_remitter,
+      expected_discount_pct: values.expected_discount_pct || '0',
+      expected_refund_pct: values.expected_refund_pct || '0',
+      // An empty threshold is "no free shipping offered", which is null rather
+      // than zero: a threshold of zero would mean everything ships free.
+      free_shipping_threshold: values.free_shipping_threshold
+        ? values.free_shipping_threshold
+        : null,
+      rounding_rule: values.rounding_rule ? values.rounding_rule : null,
+      currency_code: (values.currency_code || 'GBP').toUpperCase(),
+      offsite_ads_opt_in: values.offsite_ads_opt_in,
     }
 
     if (mode === 'create') {
@@ -198,9 +243,12 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
         {/* Fee Structure */}
         <Card>
           <CardHeader>
-            <CardTitle>Fee Structure</CardTitle>
+            <CardTitle>Fee Structure (legacy)</CardTitle>
             <CardDescription>
-              Configure fees for this channel. Total fee = (sale × percentage) + fixed fee.
+              One percentage plus one fixed amount, kept while the migration settles.
+              A real marketplace charges several fees on different amounts — set those
+              up under Fee rules, which is what the margin is now computed from. These
+              two no longer feed it.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -269,6 +317,174 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
                 </div>
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Channel economics (Tier 2) */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Channel Economics</CardTitle>
+            <CardDescription>
+              The levers that decide what a sale on this channel is actually worth.
+              Every one of these is your decision and nothing automated will change
+              it.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="tax_remitter"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Who remits sales tax</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="marketplace">The marketplace</SelectItem>
+                        <SelectItem value="operator">You do</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      This does not change any margin — tax is never counted as revenue
+                      either way. It decides whether the tax collected is tracked as
+                      money you owe.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="currency_code"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Currency</FormLabel>
+                    <FormControl>
+                      <Input placeholder="GBP" maxLength={3} {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Three-letter code this channel displays prices in
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="expected_discount_pct"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Expected discount (%)</FormLabel>
+                    <FormControl>
+                      <Input type="number" step="0.01" min="0" max="100" placeholder="0" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Sales you expect to discount, averaged. Reduces planned revenue
+                      rather than cost.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="expected_refund_pct"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Refund reserve (%)</FormLabel>
+                    <FormControl>
+                      <Input type="number" step="0.01" min="0" max="100" placeholder="0" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Share of revenue held back against refunds. Held, not spent — it
+                      is not a cost.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="free_shipping_threshold"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Free shipping above</FormLabel>
+                    <FormControl>
+                      <Input type="number" step="0.01" min="0" placeholder="Leave blank for none" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Blank means you never ship free. Where you do, remember the
+                      postage is still yours to pay — it shows as its own margin line.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="rounding_rule"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Price rounding</FormLabel>
+                    <Select
+                      onValueChange={(value) =>
+                        field.onChange(value === 'none' ? '' : value)
+                      }
+                      value={field.value || 'none'}
+                    >
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="none">No rounding</SelectItem>
+                        <SelectItem value="psychological_99">End in .99</SelectItem>
+                        <SelectItem value="psychological_95">End in .95</SelectItem>
+                        <SelectItem value="whole">Whole units</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormDescription>
+                      Applied to a solved price, shown to you as an adjustment before
+                      anything is saved
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <FormField
+              control={form.control}
+              name="offsite_ads_opt_in"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+                  <div className="space-y-0.5 pr-4">
+                    <FormLabel className="text-base">Offsite advertising</FormLabel>
+                    <FormDescription>
+                      Whether you have opted into the marketplace advertising its
+                      listings for a share of the sale. Add the charge as a fee rule
+                      with a share of orders, so it is labelled an expectation rather
+                      than a certainty.
+                    </FormDescription>
+                  </div>
+                  <FormControl>
+                    <Switch checked={field.value} onCheckedChange={field.onChange} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
           </CardContent>
         </Card>
 

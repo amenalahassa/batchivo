@@ -255,8 +255,11 @@ describe('statsToCSV', () => {
 
   it('includes date range when provided', () => {
     const csv = statsToCSV(mockStats, {
-      start: new Date('2024-01-01'),
-      end: new Date('2024-12-31'),
+      // Local-time dates, as the dashboard's date presets produce — a
+      // date-only string would parse as UTC midnight and format a day early
+      // west of UTC.
+      start: new Date(2024, 0, 1),
+      end: new Date(2024, 11, 31),
     })
     expect(csv).toContain('2024-01-01')
     expect(csv).toContain('2024-12-31')

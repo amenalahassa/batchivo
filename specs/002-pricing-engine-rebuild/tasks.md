@@ -162,54 +162,54 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 ### Tests for User Story 3
 
-- [ ] T056 [P] [US3] Fee engine tests in `backend/tests/unit/pricing/test_fee_engine.py`: all seven bases; rules evaluate in `sort_order`; no fee is ever charged on another fee (research D9)
-- [ ] T057 [P] [US3] Clamp tests in `backend/tests/unit/pricing/test_fee_clamps.py`: a maximum binds and the itemised list says so; a minimum binds; a rule with `min_amount > max_amount` is rejected at save time
-- [ ] T058 [P] [US3] Basis arithmetic tests in `backend/tests/unit/pricing/test_fee_bases.py`: `per_unit_sold` charges three times on three units while `per_order` charges once; `item_plus_shipping` changes with shipping revenue and shipping revenue is never netted before fees
-- [ ] T059 [P] [US3] Tax tests in `backend/tests/unit/pricing/test_sales_tax.py`: two otherwise identical sales, one with `tax_remitter = 'marketplace'` and one with `'operator'`, report the same margin; tax collected appears as a liability and never as revenue or profit
-- [ ] T060 [P] [US3] Margin basis tests in `backend/tests/unit/pricing/test_margin_basis.py`: all three bases change only the percentage, the make-cost stays CA$20.30 and the profit stays CA$22.92, and every figure names its basis
-- [ ] T061 [P] [US3] Migration parity test in `backend/tests/integration/test_fee_migration_parity.py` asserting the converted rules reproduce each channel's previous fee amount — every channel, not a sample
-- [ ] T062 [P] [US3] Legacy profile test in `backend/tests/unit/pricing/test_legacy_profile.py` reproducing the superseded 66.4% through the override profile, with an assertion that no second cost implementation exists (research D7)
-- [ ] T063 [P] [US3] Golden margin test in `backend/tests/unit/pricing/test_golden_case.py` asserting **35.3%** at CA$64.99 on the default basis
-- [ ] T064 [P] [US3] Endpoint tests in `backend/tests/api/test_fee_rules.py` and `backend/tests/api/test_reconciliation.py` covering success, `403` by role, `422` validation, `404` not found, and `409` when an order-scoped actual would push the period remainder below zero; plus an assertion that planned fees and a recorded statement total agree within 1% of the fee amount once the entered rates match the schedule (SC-009)
+- [X] T056 [P] [US3] Fee engine tests in `backend/tests/unit/pricing/test_fee_engine.py`: all seven bases; rules evaluate in `sort_order`; no fee is ever charged on another fee (research D9)
+- [X] T057 [P] [US3] Clamp tests in `backend/tests/unit/pricing/test_fee_clamps.py`: a maximum binds and the itemised list says so; a minimum binds; a rule with `min_amount > max_amount` is rejected at save time
+- [X] T058 [P] [US3] Basis arithmetic tests in `backend/tests/unit/pricing/test_fee_bases.py`: `per_unit_sold` charges three times on three units while `per_order` charges once; `item_plus_shipping` changes with shipping revenue and shipping revenue is never netted before fees
+- [X] T059 [P] [US3] Tax tests in `backend/tests/unit/pricing/test_sales_tax.py`: two otherwise identical sales, one with `tax_remitter = 'marketplace'` and one with `'operator'`, report the same margin; tax collected appears as a liability and never as revenue or profit
+- [X] T060 [P] [US3] Margin basis tests in `backend/tests/unit/pricing/test_margin_basis.py`: all three bases change only the percentage, the make-cost stays CA$20.30 and the profit stays CA$22.92, and every figure names its basis
+- [X] T061 [P] [US3] Migration parity test in `backend/tests/integration/test_fee_migration_parity.py` asserting the converted rules reproduce each channel's previous fee amount — every channel, not a sample
+- [X] T062 [P] [US3] Legacy profile test in `backend/tests/unit/pricing/test_legacy_profile.py` reproducing the superseded 66.4% through the override profile, with an assertion that no second cost implementation exists (research D7)
+- [X] T063 [P] [US3] Golden margin test in `backend/tests/unit/pricing/test_golden_case.py` asserting **35.3%** at CA$64.99 on the default basis
+- [X] T064 [P] [US3] Endpoint tests in `backend/tests/api/test_fee_rules.py` and `backend/tests/api/test_reconciliation.py` covering success, `403` by role, `422` validation, `404` not found, and `409` when an order-scoped actual would push the period remainder below zero; plus an assertion that planned fees and a recorded statement total agree within 1% of the fee amount once the entered rates match the schedule (SC-009)
 
 ### Models for User Story 3
 
-- [ ] T065 [P] [US3] Create `backend/app/models/fee_rule.py` with `basis` CHECK-constrained to `item_subtotal | item_plus_shipping | order_total | per_listing | per_order | per_unit_sold | per_month`, `rate_pct Numeric(7,4)`, `fixed_amount Numeric(10,2)`, nullable `min_amount` and `max_amount` with a CHECK that `min_amount <= max_amount` when both are present, nullable `incidence_pct`, `sort_order Integer`, `applies_from Date`, `applies_to Date` nullable
-- [ ] T066 [P] [US3] Create `backend/app/models/fee_actual.py` with a CHECK enforcing exactly one of a period scope (`period_start`, `period_end`) or an order scope (`order_id`), and `source` recorded as entered
-- [ ] T067 [P] [US3] Create `backend/app/models/shipping_profile.py` with `destination_zone`, `weight_bracket_min_grams`, `weight_bracket_max_grams`, `postage_cost`, `carrier`, `effective_from` — packaging stays on the product and does not appear here
-- [ ] T068 [P] [US3] Extend `backend/app/models/sales_channel.py` with `tax_remitter String(12)` CHECK-constrained to `marketplace | operator`, `expected_discount_pct`, `expected_refund_pct`, `free_shipping_threshold` nullable, `rounding_rule String(20)` nullable, `currency_code String(3)`, `offsite_ads_opt_in Boolean` default false; mark `fee_percentage` and `fee_fixed` deprecated while keeping them populated
-- [ ] T069 [P] [US3] Extend `backend/app/models/order.py` with `postage_paid Numeric(10,2)` and `sales_tax_collected Numeric(10,2)` — and leave `shipping_cost` alone, since it is revenue charged, not cost
+- [X] T065 [P] [US3] Create `backend/app/models/fee_rule.py` with `basis` CHECK-constrained to `item_subtotal | item_plus_shipping | order_total | per_listing | per_order | per_unit_sold | per_month`, `rate_pct Numeric(7,4)`, `fixed_amount Numeric(10,2)`, nullable `min_amount` and `max_amount` with a CHECK that `min_amount <= max_amount` when both are present, nullable `incidence_pct`, `sort_order Integer`, `applies_from Date`, `applies_to Date` nullable
+- [X] T066 [P] [US3] Create `backend/app/models/fee_actual.py` with a CHECK enforcing exactly one of a period scope (`period_start`, `period_end`) or an order scope (`order_id`), and `source` recorded as entered
+- [X] T067 [P] [US3] Create `backend/app/models/shipping_profile.py` with `destination_zone`, `weight_bracket_min_grams`, `weight_bracket_max_grams`, `postage_cost`, `carrier`, `effective_from` — packaging stays on the product and does not appear here
+- [X] T068 [P] [US3] Extend `backend/app/models/sales_channel.py` with `tax_remitter String(12)` CHECK-constrained to `marketplace | operator`, `expected_discount_pct`, `expected_refund_pct`, `free_shipping_threshold` nullable, `rounding_rule String(20)` nullable, `currency_code String(3)`, `offsite_ads_opt_in Boolean` default false; mark `fee_percentage` and `fee_fixed` deprecated while keeping them populated
+- [X] T069 [P] [US3] Extend `backend/app/models/order.py` with `postage_paid Numeric(10,2)` and `sales_tax_collected Numeric(10,2)` — and leave `shipping_cost` alone, since it is revenue charged, not cost
 
 ### Services for User Story 3
 
-- [ ] T070 [US3] Implement `backend/app/services/fee_engine.py` with `compute(channel, order_context, as_of)` returning an itemised list, each entry carrying `name`, `basis`, `amount`, `clamp_applied` and `is_expected`; `incidence_pct` scales planning figures only and never a recorded actual
-- [ ] T071 [US3] Implement tax-exclusive margin and liability tracking in `backend/app/services/costing.py` and the margin path, deriving and exposing the tax-exclusive amount when a recorded figure was tax-inclusive (FR-028e)
-- [ ] T072 [US3] Implement margin basis resolution from policy, and attach the basis label to every percentage, in `backend/app/services/costing.py`
-- [ ] T073 [US3] Implement `backend/app/services/channel_pnl.py` absorbing periodic and per-listing costs over actual order volume, reporting unabsorbed cost rather than dividing by zero, and reconciling planned against recorded actual fees with the unallocated remainder
-- [ ] T074 [US3] Implement the legacy override profile as a fixture in `backend/tests/fixtures/legacy_profile.py` — machine rate zero, yield 1.0, waste zero, nominal spool weight, overhead by percentage, no shipping, no reserves, fees reduced to the two migrated rules
+- [X] T070 [US3] Implement `backend/app/services/fee_engine.py` with `compute(channel, order_context, as_of)` returning an itemised list, each entry carrying `name`, `basis`, `amount`, `clamp_applied` and `is_expected`; `incidence_pct` scales planning figures only and never a recorded actual
+- [X] T071 [US3] Implement tax-exclusive margin and liability tracking in `backend/app/services/costing.py` and the margin path, deriving and exposing the tax-exclusive amount when a recorded figure was tax-inclusive (FR-028e)
+- [X] T072 [US3] Implement margin basis resolution from policy, and attach the basis label to every percentage, in `backend/app/services/costing.py`
+- [X] T073 [US3] Implement `backend/app/services/channel_pnl.py` absorbing periodic and per-listing costs over actual order volume, reporting unabsorbed cost rather than dividing by zero, and reconciling planned against recorded actual fees with the unallocated remainder
+- [X] T074 [US3] Implement the legacy override profile as a fixture in `backend/tests/fixtures/legacy_profile.py` — machine rate zero, yield 1.0, waste zero, nominal spool weight, overhead by percentage, no shipping, no reserves, fees reduced to the two migrated rules
 
 ### Migration for User Story 3
 
-- [ ] T075 [US3] Write the Tier 2 migration in `backend/alembic/versions/`: fee rules, fee actuals and shipping profiles with RLS; the new channel and order columns; and the data migration converting each channel's `fee_percentage` and `fee_fixed` into equivalent dated `fee_rule` rows
-- [ ] T075a [US3] Run the same delta report for the Tier 2 migration into `specs/002-pricing-engine-rebuild/delta-tier2.md`, attributing each change to the fee rules, shipping, tax treatment or margin basis
+- [X] T075 [US3] Write the Tier 2 migration in `backend/alembic/versions/`: fee rules, fee actuals and shipping profiles with RLS; the new channel and order columns; and the data migration converting each channel's `fee_percentage` and `fee_fixed` into equivalent dated `fee_rule` rows
+- [X] T075a [US3] Run the same delta report for the Tier 2 migration into `specs/002-pricing-engine-rebuild/delta-tier2.md`, attributing each change to the fee rules, shipping, tax treatment or margin basis
 
 ### Endpoints for User Story 3
 
-- [ ] T076 [P] [US3] Create `backend/app/api/v1/fee_rules.py` with list, create, update, delete scoped to a channel (admin or owner for writes) and `POST .../preview` taking a hypothetical order context (member)
-- [ ] T077 [P] [US3] Create `backend/app/api/v1/reconciliation.py` with `POST /reconciliation/fee-actuals` and `GET /reconciliation/channel-pnl`
-- [ ] T078 [P] [US3] Create `backend/app/api/v1/shipping_profiles.py` with CRUD
-- [ ] T078a [P] [US3] API tests for shipping profiles in `backend/tests/api/test_shipping_profiles.py` covering `200`/`201`, `401`, `422`, `404`
-- [ ] T079 [US3] Update the margin endpoint in `backend/app/api/v1/products.py` to return itemised fees, the margin basis, reserves, postage paid and shipping revenue, and the observed share
-- [ ] T080 [US3] Register the new routers in `backend/app/main.py`
+- [X] T076 [P] [US3] Create `backend/app/api/v1/fee_rules.py` with list, create, update, delete scoped to a channel (admin or owner for writes) and `POST .../preview` taking a hypothetical order context (member)
+- [X] T077 [P] [US3] Create `backend/app/api/v1/reconciliation.py` with `POST /reconciliation/fee-actuals` and `GET /reconciliation/channel-pnl`
+- [X] T078 [P] [US3] Create `backend/app/api/v1/shipping_profiles.py` with CRUD
+- [X] T078a [P] [US3] API tests for shipping profiles in `backend/tests/api/test_shipping_profiles.py` covering `200`/`201`, `401`, `422`, `404`
+- [X] T079 [US3] Update the margin endpoint in `backend/app/api/v1/products.py` to return itemised fees, the margin basis, reserves, postage paid and shipping revenue, and the observed share
+- [X] T080 [US3] Register the new routers in `backend/app/main.py`
 
 ### Frontend for User Story 3
 
-- [ ] T081 [P] [US3] Build `frontend/src/components/sales-channels/FeeRuleEditor.tsx` and extend `SalesChannelForm.tsx` with the tax remitter, reserves, threshold and rounding rule
-- [ ] T082 [P] [US3] Build `frontend/src/components/pricing/FeeBreakdownTable.tsx` showing each fee with its basis, whether a clamp bound, and whether it is an expectation
-- [ ] T083 [P] [US3] Build `frontend/src/components/pricing/MarginBasisLabel.tsx` and place it beside every margin percentage in `ProductPricingEditor.tsx` and `ProductDetail.tsx`
-- [ ] T084 [P] [US3] Build the reconciliation and channel P&L screen in `frontend/src/components/pricing/ChannelReconciliation.tsx`
-- [ ] T085 [US3] Add `frontend/src/lib/api/feeRules.ts` and `frontend/src/hooks/useFeeRules.ts`
-- [ ] T085a [P] [US3] Vitest tests for the fee table and basis label — clamp flag, expected-incidence flag, basis named beside every percentage — in `frontend/src/components/pricing/FeeBreakdownTable.test.tsx`
+- [X] T081 [P] [US3] Build `frontend/src/components/sales-channels/FeeRuleEditor.tsx` and extend `SalesChannelForm.tsx` with the tax remitter, reserves, threshold and rounding rule
+- [X] T082 [P] [US3] Build `frontend/src/components/pricing/FeeBreakdownTable.tsx` showing each fee with its basis, whether a clamp bound, and whether it is an expectation
+- [X] T083 [P] [US3] Build `frontend/src/components/pricing/MarginBasisLabel.tsx` and place it beside every margin percentage in `ProductPricingEditor.tsx` and `ProductDetail.tsx`
+- [X] T084 [P] [US3] Build the reconciliation and channel P&L screen in `frontend/src/components/pricing/ChannelReconciliation.tsx`
+- [X] T085 [US3] Add `frontend/src/lib/api/feeRules.ts` and `frontend/src/hooks/useFeeRules.ts`
+- [X] T085a [P] [US3] Vitest tests for the fee table and basis label — clamp flag, expected-incidence flag, basis named beside every percentage — in `frontend/src/components/pricing/FeeBreakdownTable.test.tsx`
 
 **Checkpoint**: 35.3% at CA$64.99; basis switching changes only the percentage; the superseded 66.4% is reproducible as data.
 

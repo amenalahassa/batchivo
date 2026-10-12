@@ -290,6 +290,39 @@ describe('FilamentPurchaseForm', () => {
     })
   })
 
+  it('does not raise the handled failure as an unhandled rejection', async () => {
+    // `mutateAsync` rejects, and awaiting it inside react-hook-form's submit
+    // handler used to let that rejection escape: the message below appeared
+    // *and* the browser reported an unhandled rejection, which would have
+    // reached Sentry as an uncaught error on a failure the UI had handled.
+    const user = userEvent.setup()
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    mocked.createFilamentPurchase.mockRejectedValue(new Error('Validation failed'))
+
+    try {
+      const onSaved = vi.fn()
+      renderForm(<FilamentPurchaseForm onSaved={onSaved} />)
+
+      await user.type(screen.getByLabelText('Purchase date'), '2026-03-01')
+      await user.click(screen.getByRole('button', { name: /Record purchase/ }))
+
+      await waitFor(() => {
+        expect(screen.getByText('Validation failed')).toBeInTheDocument()
+      })
+
+      // The save did not happen, so nothing downstream may be told it did.
+      expect(onSaved).not.toHaveBeenCalled()
+      // And the operator's input survives for another attempt.
+      expect(screen.getByLabelText('Purchase date')).toHaveValue('2026-03-01')
+
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+  })
+
   it('reports a failed load instead of an empty form', async () => {
     mocked.getFilamentPurchase.mockRejectedValue(new Error('boom'))
     renderForm(<FilamentPurchaseForm purchaseId={PURCHASE_ID} />)

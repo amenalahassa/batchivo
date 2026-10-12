@@ -1,6 +1,7 @@
 """Product catalog API endpoints (sellable items composed of models)."""
 
 import re
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -26,6 +27,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.database import get_db
 from app.models.designer import Designer
+from app.models.fee_rule import FeeRule
 from app.models.model import Model
 from app.models.product import Product
 from app.models.product_component import ProductComponent
@@ -34,7 +36,13 @@ from app.models.product_model import ProductModel
 from app.models.product_pricing import ProductPricing
 from app.models.product_variant import ProductVariant
 from app.models.sales_channel import SalesChannel
+from app.models.shipping_profile import ShippingProfile
 from app.models.tenant import Tenant
+from app.schemas.fee_rule import (
+    FeeChargeResponse,
+    ProductMarginResponse,
+    RevenueDeductionResponse,
+)
 from app.schemas.model import CostBreakdown
 from app.schemas.product import (
     ProductComponentCreate,
@@ -60,6 +68,7 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
+from app.services import fee_engine
 from app.services.cost_resolution import product_cost_breakdown
 from app.services.costing import (
     CircularReferenceError,
@@ -654,6 +663,213 @@ async def get_product_cost(
                 "max_depth": exc.max_depth,
             },
         ) from exc
+
+
+@router.get(
+    "/{product_id}/pricing/{channel_id}/margin",
+    response_model=ProductMarginResponse,
+)
+async def get_product_margin(
+    product_id: UUID,
+    channel_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+    as_of: Optional[date] = Query(
+        None, description="Read the fee rules and policy in effect on this date"
+    ),
+    quantity: int = Query(1, ge=1, description="Units on the hypothetical line"),
+) -> ProductMarginResponse:
+    """What one unit earns on one channel at the price in effect (task T079).
+
+    Everything behind the figure is returned, because a margin an operator
+    cannot explain is a margin they cannot act on (FR-018): the itemised fees
+    with their bases and clamps, the reserves, postage paid against shipping
+    revenue, the margin basis that produced the percentage (FR-031b), and the
+    share of the make-cost resting on observation rather than assumption.
+
+    A product that is not priced on this channel is a ``404``, not a zero
+    margin. A zero looks like a real figure, and a product nobody has priced is
+    not earning nothing -- it is not for sale.
+    """
+    reference = as_of or date.today()
+
+    product = (
+        await db.execute(
+            select(Product)
+            .where(
+                Product.id == product_id,
+                Product.tenant_id == tenant.id,
+                Product.is_active.is_(True),
+            )
+            .options(*_get_product_load_options())
+        )
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    channel = (
+        await db.execute(
+            select(SalesChannel).where(
+                SalesChannel.id == channel_id,
+                SalesChannel.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sales channel not found",
+        )
+
+    # `ProductPricing` carries no tenant_id of its own; it is scoped through
+    # the product and the channel, both of which were already checked against
+    # the tenant above.
+    pricing = (
+        await db.execute(
+            select(ProductPricing).where(
+                ProductPricing.product_id == product.id,
+                ProductPricing.sales_channel_id == channel.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not pricing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                "This product is not priced on that channel, so it has no "
+                "margin there -- which is not the same as a margin of zero"
+            ),
+        )
+
+    policy = await resolve_cost_policy(db, tenant, reference)
+    try:
+        breakdown = await product_cost_breakdown(db, tenant, product, policy=policy)
+    except CircularReferenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "circular_reference", "message": str(exc)},
+        ) from exc
+    except MaxDepthExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "max_depth_exceeded", "message": str(exc)},
+        ) from exc
+
+    rules = list(
+        (
+            await db.execute(
+                select(FeeRule).where(
+                    FeeRule.sales_channel_id == channel.id,
+                    FeeRule.tenant_id == tenant.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # Shipping revenue is what this channel charges the customer. Until an
+    # order exists there is none to read, so a planned margin is computed at
+    # zero shipping revenue -- which is the free-shipping case FR-024 exists
+    # for, and the case the acceptance scenario uses.
+    context, treatment = fee_engine.exclusive_context(
+        item_subtotal=Decimal(str(pricing.list_price)),
+        quantity=quantity,
+    )
+    stack = fee_engine.compute(channel, context, reference, rules=rules)
+
+    postage = await _postage_for(db, tenant, product)
+
+    result = CostingService.margin(
+        context=context,
+        make_cost=breakdown.total_make_cost,
+        channel=channel,
+        fees=stack,
+        policy=policy,
+        tax=treatment,
+        postage_paid=postage,
+        observed_share=breakdown.observed_share,
+        assumed_share=breakdown.assumed_share,
+        incomplete_reasons=breakdown.incomplete_reasons,
+    )
+
+    return ProductMarginResponse(
+        product_id=product.id,
+        sales_channel_id=channel.id,
+        as_of=reference,
+        list_price=result.list_price,
+        shipping_revenue=result.shipping_revenue,
+        postage_paid=result.postage_paid,
+        shipping_net=result.shipping_net,
+        make_cost=result.make_cost,
+        fees=[FeeChargeResponse.model_validate(charge) for charge in result.fees],
+        fee_total=result.fee_total,
+        deductions=[
+            RevenueDeductionResponse(
+                key=deduction.key,
+                label=deduction.label,
+                amount=deduction.amount,
+                rate_pct=deduction.rate_pct,
+                basis_amount=deduction.basis_amount,
+            )
+            for deduction in result.deductions
+        ],
+        deduction_total=result.deduction_total,
+        net_revenue=result.net_revenue,
+        profit=result.profit,
+        margin_pct=result.margin_pct,
+        margin_basis=result.margin_basis,
+        margin_basis_label=result.margin_basis_label,
+        margin_basis_amount=result.margin_basis_amount,
+        sales_tax_collected=result.sales_tax_collected,
+        sales_tax_liability=result.sales_tax_liability,
+        tax_remitter=result.tax_remitter,
+        tax_exclusive_derived=result.tax_exclusive_derived,
+        revenue_tax_exclusive=result.revenue_tax_exclusive,
+        observed_share=result.observed_share,
+        assumed_share=result.assumed_share,
+        incomplete_reasons=result.incomplete_reasons,
+    )
+
+
+async def _postage_for(
+    db: AsyncSession,
+    tenant: Tenant,
+    product: Product,
+) -> Decimal:
+    """Postage for one parcel of this product, from the shipping profiles.
+
+    Falls back to zero when the operator has recorded no profile covering the
+    product's weight, or no weight at all. That is a gap rather than a figure,
+    and it is reported through the breakdown's own incomplete reasons rather
+    than guessed at here: inventing postage would put a number on a screen that
+    no carrier ever quoted.
+    """
+    grams = getattr(product, "weight_grams", None)
+    if grams is None:
+        return Decimal("0")
+
+    profiles = (
+        (
+            await db.execute(
+                select(ShippingProfile)
+                .where(ShippingProfile.tenant_id == tenant.id)
+                .order_by(ShippingProfile.weight_bracket_min_grams)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    weight = Decimal(str(grams))
+    for profile in profiles:
+        if profile.covers(weight):
+            return Decimal(str(profile.postage_cost))
+    return Decimal("0")
 
 
 @router.put("/{product_id}", response_model=ProductDetailResponse)

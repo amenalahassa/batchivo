@@ -214,6 +214,39 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
             ("fee_percentage", "DEPRECATED (Tier 2): blended percentage fee"),
             ("fee_fixed", "DEPRECATED (Tier 2): fixed fee per transaction"),
             ("monthly_cost", "Periodic channel cost, absorbed over order volume"),
+            # Channel economics (Tier 2). Every one of these is an operator
+            # decision in the sense of FR-002 -- a reserve the operator chooses
+            # to hold, a threshold they set -- so each is `policy` and none is
+            # learnable: no observation may move a decision (FR-042g).
+            ("expected_discount_pct", "Expected discount share, reducing planned net revenue"),
+            ("expected_refund_pct", "Refund reserve held against planned revenue"),
+            ("free_shipping_threshold", "Order value at which the operator ships free"),
+        )
+    ),
+    # Fee rules (Tier 2). A rule's figures are entered from a published fee
+    # schedule, which is a decision about what the channel charges rather than
+    # an estimate to be refined: `policy`, and never learnable. What a
+    # statement actually charged is a separate record (`fee_actuals`), and
+    # FR-041e keeps that labelled as entered rather than observed.
+    *(
+        _entry("fee_rule", field, description, default_source="policy", learnable=False)
+        for field, description in (
+            ("rate_pct", "Percentage of the basis this rule charges"),
+            ("fixed_amount", "Amount this rule adds once the rate is applied"),
+            ("min_amount", "Floor on the amount this rule charges"),
+            ("max_amount", "Cap on the amount this rule charges"),
+            ("incidence_pct", "Share of orders this fee lands on, for planning only"),
+        )
+    ),
+    # Shipping profiles (Tier 2). Postage is a published carrier price the
+    # operator transcribes, so it is `policy`; it is learnable because a
+    # recorded label cost is a direct observation of the same figure.
+    *(
+        _entry("shipping_profile", field, description, default_source="policy")
+        for field, description in (
+            ("postage_cost", "What the operator pays to post one parcel in this bracket"),
+            ("weight_bracket_min_grams", "Lowest parcel weight in this bracket"),
+            ("weight_bracket_max_grams", "Highest parcel weight in this bracket"),
         )
     ),
 )

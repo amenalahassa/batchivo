@@ -26,6 +26,7 @@ that difference explicitly, so nobody later "fixes" one figure into the other
 without noticing which of the two the rest of the spec depends on.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -269,3 +270,194 @@ class TestVaryingPrintHoursAlone:
         assert "machine" not in keys
         assert "overhead" not in keys
         assert any("print time" in reason for reason in breakdown.incomplete_reasons)
+
+
+# ===========================================================================
+# The golden margin (task T063)
+# ===========================================================================
+
+
+class TestTheGoldenMargin:
+    """SC-002: 35.3% at CA$64.99 on the default basis.
+
+    Same discipline as the make-cost above. Not one figure here is copied from
+    the spec: the channel's aggregate rate and fixed amount are recomputed from
+    the fee rules in the fixture, the fees from those rules, and the margin from
+    the fees -- so changing a rate fails the case that depends on it rather than
+    quietly moving the answer.
+
+    research.md D10 pins the aggregate the rest of the spec rests on: a variable
+    rate of 12.5%, a 2.5% refund reserve, CA$2.52 of fixed fees, and costs of
+    CA$29.80 -- the CA$20.30 make-cost plus CA$9.50 of postage the operator pays
+    because the channel advertises free shipping.
+    """
+
+    @pytest.fixture
+    def margin(self, breakdown):
+        from app.services import fee_engine
+        from tests.unit.pricing.conftest import make_channel
+
+        channel = make_channel()
+        context, treatment = fee_engine.exclusive_context(
+            item_subtotal=golden.LIST_PRICE,
+            shipping_revenue=golden.CHANNEL_SHIPPING_REVENUE,
+        )
+        return CostingService.margin(
+            context=context,
+            make_cost=breakdown.total_make_cost,
+            channel=channel,
+            fees=fee_engine.compute(channel, context, date(2026, 6, 1)),
+            policy=make_policy(),
+            tax=treatment,
+            postage_paid=golden.POSTAGE_PAID,
+        )
+
+    def test_the_channel_charges_the_aggregate_research_pinned(self) -> None:
+        """The decomposition must still add up to the case the spec rests on."""
+        from tests.unit.pricing.conftest import golden_fixed_fee_total, golden_variable_rate_pct
+
+        assert golden_variable_rate_pct() == Decimal("12.5")
+        assert golden_fixed_fee_total() == Decimal("2.52")
+        assert golden.CHANNEL_EXPECTED_REFUND_PCT == Decimal("2.5")
+
+    def test_the_costs_the_solver_works_against_are_the_figure_research_names(
+        self, breakdown
+    ) -> None:
+        """CA$29.80: the make-cost plus the postage free shipping costs."""
+        assert breakdown.total_make_cost + golden.POSTAGE_PAID == Decimal("29.80")
+
+    def test_the_margin_is_the_figure_the_spec_names(self, margin) -> None:
+        assert margin.margin_pct_display == Decimal("35.3")
+
+    def test_the_profit_is_the_figure_the_spec_names(self, margin) -> None:
+        """SC-002a names CA$22.92, and every basis must keep it."""
+        assert margin.profit == Decimal("22.92")
+
+    def test_the_margin_is_the_profit_over_the_customer_total(self, margin) -> None:
+        expected = (
+            margin.profit / (golden.LIST_PRICE + golden.CHANNEL_SHIPPING_REVENUE) * Decimal("100")
+        )
+        assert margin.margin_pct_display == expected.quantize(Decimal("0.1"))
+
+    def test_the_default_basis_is_named_beside_the_figure(self, margin) -> None:
+        """FR-031a and FR-031b together."""
+        assert margin.margin_basis == "customer_total"
+        assert margin.margin_basis_label
+
+    def test_the_itemised_list_names_every_fee_the_channel_charges(self, margin) -> None:
+        """US3 scenario 1: each fee with the amount it contributed."""
+        charged = {charge.name for charge in margin.fees}
+        configured = {
+            name for name, basis, _, _, _ in golden.CHANNEL_FEE_RULES if basis != "per_listing"
+        }
+        assert charged == configured
+        for charge in margin.fees:
+            assert charge.amount > Decimal("0")
+            assert charge.basis
+
+    def test_each_fee_is_recomputable_from_its_own_inputs(self, margin) -> None:
+        for charge in margin.fees:
+            if charge.basis == "per_order":
+                expected = charge.fixed_amount
+            else:
+                expected = (
+                    charge.basis_amount * charge.rate_pct / Decimal("100") + charge.fixed_amount
+                )
+            assert charge.amount_exact == expected, f"{charge.name} does not match its inputs"
+
+    def test_no_clamp_bound_and_no_fee_is_an_expectation(self, margin) -> None:
+        """The golden case is deliberately plain, so the figures are readable."""
+        assert [c.name for c in margin.fees if c.clamp_bound] == []
+        assert [c.name for c in margin.fees if c.is_expected] == []
+
+    def test_the_refund_reserve_reduces_net_revenue(self, margin) -> None:
+        """FR-026."""
+        reserve = next(d for d in margin.deductions if d.key == "expected_refund")
+
+        assert reserve.rate_pct == golden.CHANNEL_EXPECTED_REFUND_PCT
+        assert reserve.amount_exact == (
+            golden.LIST_PRICE * golden.CHANNEL_EXPECTED_REFUND_PCT / Decimal("100")
+        )
+
+    def test_free_shipping_is_reported_as_a_negative_shipping_line(self, margin) -> None:
+        """FR-024: the postage is visible, not buried in the make-cost."""
+        assert margin.shipping_revenue == Decimal("0.00")
+        assert margin.shipping_net == -golden.POSTAGE_PAID
+        assert margin.postage_paid == golden.POSTAGE_PAID
+
+    def test_the_whole_chain_reconciles_to_the_profit(self, margin) -> None:
+        """An operator must be able to follow the arithmetic to the answer.
+
+        Reading the *rounded* lines off the screen and subtracting them gives
+        CA$22.93; the reported profit is CA$22.92. The cent between them is the
+        price of the rounding boundary this chain uses, and it is pinned in
+        ``test_the_rounded_lines_read_a_cent_high`` below rather than hidden
+        behind a loose tolerance here.
+        """
+        chain = (
+            golden.LIST_PRICE
+            + golden.CHANNEL_SHIPPING_REVENUE
+            - margin.fee_total
+            - margin.deduction_total
+            - margin.make_cost
+            - margin.postage_paid
+        )
+        assert abs(chain - margin.profit) <= Decimal("0.01")
+
+    def test_the_rounded_lines_read_a_cent_high(self, margin) -> None:
+        """Pin the cent, so neither figure is quietly turned into the other.
+
+        This is the margin chain's counterpart to
+        ``test_the_unrounded_chain_differs_by_half_a_cent``, and it records
+        *why* the chain rounds once at the end. The fees total CA$10.64375 and
+        the reserve CA$1.62475: each rounds down on its own, so subtracting the
+        rounded pair leaves a cent more profit than subtracting the exact pair.
+
+        CA$22.92 is the figure SC-002a names and the one the 35.3% margin, the
+        CA$2.41 per machine-hour and the CA$64.64 solved price are all derived
+        from, so CA$22.92 is what the engine reports. If this ever fails, an
+        input changed and the choice of boundary has to be re-argued rather
+        than re-derived.
+        """
+        from_rounded = (
+            golden.LIST_PRICE
+            + golden.CHANNEL_SHIPPING_REVENUE
+            - margin.fee_total
+            - margin.deduction_total
+            - margin.make_cost
+            - margin.postage_paid
+        )
+
+        assert from_rounded == Decimal("22.93")
+        assert margin.profit == Decimal("22.92")
+        assert from_rounded - margin.profit == Decimal("0.01")
+
+    def test_rounding_the_fee_stack_early_would_move_the_reported_margin(self) -> None:
+        """Why the margin reads ``total_exact`` and not ``total``.
+
+        Not an assertion about behaviour: a demonstration that the choice is
+        load-bearing. Summing the rounded fees instead reports 35.3% still but
+        CA$22.93 of profit, which contradicts the figure the rest of the spec
+        is derived from.
+        """
+        from app.services import fee_engine
+        from tests.unit.pricing.conftest import make_channel
+
+        channel = make_channel()
+        context, _ = fee_engine.exclusive_context(item_subtotal=golden.LIST_PRICE)
+        stack = fee_engine.compute(channel, context, date(2026, 6, 1))
+
+        rounded_each = sum((charge.amount for charge in stack.charges), Decimal("0"))
+        reserve_rounded = (
+            golden.LIST_PRICE * golden.CHANNEL_EXPECTED_REFUND_PCT / Decimal("100")
+        ).quantize(Decimal("0.01"))
+
+        naive_profit = (
+            golden.LIST_PRICE
+            - rounded_each
+            - reserve_rounded
+            - Decimal("20.30")
+            - golden.POSTAGE_PAID
+        )
+        assert naive_profit == Decimal("22.93")
+        assert naive_profit != Decimal("22.92")

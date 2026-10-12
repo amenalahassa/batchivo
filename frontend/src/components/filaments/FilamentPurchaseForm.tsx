@@ -232,9 +232,21 @@ export function FilamentPurchaseForm({
       notes: values.notes || null,
     }
 
-    const saved = purchaseId
-      ? await updatePurchaseAsync({ purchaseId, data: payload })
-      : await createPurchaseAsync(payload)
+    let saved
+    try {
+      saved = purchaseId
+        ? await updatePurchaseAsync({ purchaseId, data: payload })
+        : await createPurchaseAsync(payload)
+    } catch {
+      // The mutation's own `error` state drives the message the operator sees,
+      // so there is nothing to report here. What this catch is for is stopping
+      // the rejection propagating out of react-hook-form's submit handler,
+      // where it becomes an unhandled rejection: the UI has handled the
+      // failure, and an unhandled rejection would still reach the window
+      // handler and Sentry as though it had not. The form is deliberately
+      // *not* reset, so the operator's input survives for another attempt.
+      return
+    }
 
     form.reset({ ...values })
     onSaved?.(saved)

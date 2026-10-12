@@ -59,6 +59,12 @@ PROVENANCE_ENTITY_TYPES = (
     "filament_purchase",
     "tenant_pricing_policy",
     "sales_channel",
+    # Channel economics (Tier 2). `fee_actuals` is deliberately absent: a
+    # recorded actual is not an input to an estimate, and its origin lives in
+    # its own `source` column, which FR-041e keeps as 'entered' rather than
+    # letting it be presented as observed.
+    "fee_rule",
+    "shipping_profile",
 )
 
 
@@ -145,7 +151,8 @@ class PricingInputProvenance(Base, UUIDMixin, TimestampMixin):
             "entity_type IN ("
             "'model', 'model_material', 'model_component', 'model_printer_config', "
             "'product', 'printer', 'spool', 'filament_purchase', "
-            "'tenant_pricing_policy', 'sales_channel'"
+            "'tenant_pricing_policy', 'sales_channel', "
+            "'fee_rule', 'shipping_profile'"
             ")",
             name="check_pricing_input_provenance_entity_type",
         ),

@@ -16,15 +16,19 @@ so every field the engine reads is set explicitly here. A ``None`` that the
 engine happens to treat as zero is not the same as a tested default.
 """
 
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
+from app.models.fee_rule import COUNT_BASES, FeeRule
 from app.models.model import Model
 from app.models.model_material import ModelMaterial
 from app.models.printer import Printer
 from app.models.product import Product
+from app.models.sales_channel import SalesChannel
+from app.services.fee_engine import OrderContext
 from app.services.pricing_policy import CostPolicy
 from tests.fixtures import golden_case as golden
 
@@ -179,3 +183,135 @@ def golden_model() -> Model:
 @pytest.fixture
 def golden_product(golden_model: Model) -> Product:
     return make_product(golden_model)
+
+
+# ---------------------------------------------------------------------------
+# The channel side (User Story 3)
+# ---------------------------------------------------------------------------
+
+
+def make_fee_rule(
+    name: str,
+    basis: str,
+    *,
+    rate_pct: Decimal = Decimal("0"),
+    fixed_amount: Decimal = Decimal("0"),
+    sort_order: int = 0,
+    min_amount: Decimal | None = None,
+    max_amount: Decimal | None = None,
+    incidence_pct: Decimal | None = None,
+    applies_from: date | None = None,
+    applies_to: date | None = None,
+    **overrides,
+) -> FeeRule:
+    """One unsaved fee rule.
+
+    Dates default to a rule that has always applied and still does, because
+    almost every test is about arithmetic rather than about effective periods;
+    the ones that are about periods pass them explicitly.
+    """
+    defaults = dict(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        sales_channel_id=uuid4(),
+        name=name,
+        basis=basis,
+        rate_pct=rate_pct,
+        fixed_amount=fixed_amount,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        incidence_pct=incidence_pct,
+        sort_order=sort_order,
+        applies_from=applies_from or date(2020, 1, 1),
+        applies_to=applies_to,
+    )
+    defaults.update(overrides)
+    return FeeRule(**defaults)
+
+
+def golden_fee_rules() -> list[FeeRule]:
+    """The golden channel's fee stack, built from the fixture's rows."""
+    return [
+        make_fee_rule(
+            name,
+            basis,
+            rate_pct=rate,
+            fixed_amount=fixed,
+            sort_order=order,
+        )
+        for name, basis, rate, fixed, order in golden.CHANNEL_FEE_RULES
+    ]
+
+
+def golden_variable_rate_pct() -> Decimal:
+    """The aggregate percentage the golden channel charges, from its rules.
+
+    research.md D10 names 12.5%. It is recomputed here rather than asserted as
+    a constant, so changing one rule's rate fails the case that depends on the
+    aggregate instead of quietly moving it.
+    """
+    return sum(
+        (rate for _, basis, rate, _, _ in golden.CHANNEL_FEE_RULES if basis not in COUNT_BASES),
+        Decimal("0"),
+    )
+
+
+def golden_fixed_fee_total() -> Decimal:
+    """The aggregate fixed amount the golden channel charges, from its rules."""
+    return sum((fixed for _, _, _, fixed, _ in golden.CHANNEL_FEE_RULES), Decimal("0"))
+
+
+def make_channel(**overrides) -> SalesChannel:
+    """The golden case's channel, with its economics complete.
+
+    Every lever is set explicitly: column defaults are applied by the database
+    at flush, not by the constructor, so an unsaved instance carries ``None``
+    where the schema would carry a default, and a ``None`` the engine happens
+    to treat as zero is not the same as a tested default.
+    """
+    rules = overrides.pop("fee_rules", None)
+    defaults = dict(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        name="Golden Marketplace",
+        platform_type="etsy",
+        fee_percentage=Decimal("0"),
+        fee_fixed=Decimal("0"),
+        monthly_cost=Decimal("0"),
+        tax_remitter=golden.CHANNEL_TAX_REMITTER,
+        expected_discount_pct=golden.CHANNEL_EXPECTED_DISCOUNT_PCT,
+        expected_refund_pct=golden.CHANNEL_EXPECTED_REFUND_PCT,
+        free_shipping_threshold=None,
+        rounding_rule=None,
+        currency_code=golden.CHANNEL_CURRENCY_CODE,
+        offsite_ads_opt_in=False,
+        is_active=True,
+    )
+    defaults.update(overrides)
+    channel = SalesChannel(**defaults)
+    channel.fee_rules = golden_fee_rules() if rules is None else list(rules)
+    for rule in channel.fee_rules:
+        rule.sales_channel_id = channel.id
+        rule.tenant_id = channel.tenant_id
+    return channel
+
+
+def golden_order_context(**overrides) -> OrderContext:
+    """The golden sale: one unit at CA$64.99 with free shipping."""
+    defaults = dict(
+        item_subtotal=golden.LIST_PRICE,
+        shipping_revenue=golden.CHANNEL_SHIPPING_REVENUE,
+        quantity=1,
+    )
+    defaults.update(overrides)
+    return OrderContext(**defaults)
+
+
+@pytest.fixture
+def golden_channel() -> SalesChannel:
+    return make_channel()
+
+
+@pytest.fixture
+def golden_context() -> OrderContext:
+    return golden_order_context()

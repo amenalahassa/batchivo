@@ -126,3 +126,56 @@ GOLDEN_CASE_INPUTS: Final[dict[str, Decimal | int]] = {
     "list_price": LIST_PRICE,
     "target_margin_pct": TARGET_MARGIN_PCT,
 }
+
+
+# --------------------------------------------------------------------------
+# The channel the golden case sells on (User Story 3)
+#
+# research.md D10 pins this side of the case by its aggregate: a variable rate
+# of 12.5%, a 2.5% refund reserve, CA$2.52 of fixed fees, free shipping, and
+# costs of CA$29.80 -- which is the CA$20.30 make-cost plus CA$9.50 of postage
+# the operator pays because the shipping is free. That aggregate is what makes
+# the margin 35.3% at CA$64.99 and the solved price CA$64.64.
+#
+# The rules below decompose it into the four fees a marketplace of this shape
+# actually charges. The decomposition is an input like any other and the
+# aggregate is derived from it in the tests, never the other way round: a test
+# recomputes 12.5% and CA$2.52 from these rows and fails if an edit to one rate
+# silently changes the case the rest of the spec depends on.
+#
+# No per-listing or per-month rule appears here, deliberately. Those are
+# absorbed over a period's actual order volume (FR-025) and are not charged on
+# a single sale, so putting one here would double-count it.
+# --------------------------------------------------------------------------
+
+#: Each entry is (name, basis, rate_pct, fixed_amount, sort_order).
+CHANNEL_FEE_RULES: Final[tuple[tuple[str, str, Decimal, Decimal, int], ...]] = (
+    # Charged on the item plus the shipping the customer paid (FR-023).
+    ("transaction", "item_plus_shipping", Decimal("6.5"), Decimal("0.00"), 10),
+    # A payment processor charges the whole order, including shipping.
+    ("payment_processing", "order_total", Decimal("3.0"), Decimal("0.30"), 20),
+    # A regulatory operating fee lands on the item alone.
+    ("regulatory_operating", "item_subtotal", Decimal("3.0"), Decimal("0.22"), 30),
+    # A flat charge once per order, whatever the order contains.
+    ("order_handling", "per_order", Decimal("0"), Decimal("2.00"), 40),
+)
+
+#: Reserve held against revenue for refunds (FR-026).
+CHANNEL_EXPECTED_REFUND_PCT: Final = Decimal("2.5")
+
+#: No discount is expected on the golden case, so the lever is exercised
+#: elsewhere and its absence here is explicit rather than unset.
+CHANNEL_EXPECTED_DISCOUNT_PCT: Final = Decimal("0")
+
+#: The channel advertises free shipping, so the customer pays nothing for it
+#: and the operator pays the postage below. This is the case FR-024 exists for.
+CHANNEL_SHIPPING_REVENUE: Final = Decimal("0.00")
+
+#: What the label actually costs the operator.
+POSTAGE_PAID: Final = Decimal("9.50")
+
+#: Who hands the sales tax to the revenue authority (FR-028b). The golden
+#: figures carry no tax, which is the point: margin is the same either way.
+CHANNEL_TAX_REMITTER: Final = "marketplace"
+
+CHANNEL_CURRENCY_CODE: Final = "CAD"

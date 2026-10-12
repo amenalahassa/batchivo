@@ -210,6 +210,7 @@ from app.api.v1 import (
     designers,
     discounts,
     exports,
+    fee_rules,
     forecasting,
     model_files,
     models,
@@ -227,10 +228,12 @@ from app.api.v1 import (
     printers,
     products,
     production_runs,
+    reconciliation,
     returns,
     reviews,
     sales_channels,
     settings as settings_api,
+    shipping_profiles,
     shopify_webhooks,
     shipping,
     shop,
@@ -295,6 +298,23 @@ app.include_router(
     sales_channels.router,
     prefix=f"{settings.api_v1_prefix}/sales-channels",
     tags=["sales-channels"],
+)
+# Fee rules hang off a channel, so they share its prefix: a rule has no
+# meaning apart from the channel that charges it (FR-020).
+app.include_router(
+    fee_rules.router,
+    prefix=f"{settings.api_v1_prefix}/sales-channels",
+    tags=["fee-rules"],
+)
+app.include_router(
+    reconciliation.router,
+    prefix=f"{settings.api_v1_prefix}/reconciliation",
+    tags=["reconciliation"],
+)
+app.include_router(
+    shipping_profiles.router,
+    prefix=f"{settings.api_v1_prefix}/shipping-profiles",
+    tags=["shipping-profiles"],
 )
 app.include_router(
     production_runs.router,

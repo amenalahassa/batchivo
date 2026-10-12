@@ -120,7 +120,6 @@ def upgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
     uuid_type = postgresql.UUID(as_uuid=True) if is_postgres else sa.Uuid()
-    jsonb = postgresql.JSONB() if is_postgres else sa.JSON()
     now = sa.func.now()
 
     # ------------------------------------------------------------------
@@ -147,14 +146,10 @@ def upgrade() -> None:
         sa.Column("overhead_monthly_pool", sa.Numeric(12, 4), nullable=True),
         sa.Column("expected_monthly_machine_hours", sa.Numeric(12, 4), nullable=True),
         sa.Column("electricity_rate_per_kwh", sa.Numeric(8, 4), nullable=True),
-        sa.Column(
-            "margin_basis", sa.String(20), nullable=False, server_default="customer_total"
-        ),
+        sa.Column("margin_basis", sa.String(20), nullable=False, server_default="customer_total"),
         sa.Column("default_target_margin_pct", sa.Numeric(7, 4), nullable=True),
         sa.Column("rounding_rule", sa.String(20), nullable=True),
-        sa.Column(
-            "sales_tax_recoverable", sa.Boolean(), nullable=False, server_default="false"
-        ),
+        sa.Column("sales_tax_recoverable", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("staleness_threshold_days", sa.Integer(), nullable=False, server_default="180"),
         sa.Column(
             "margin_alert_threshold_pct", sa.Numeric(7, 4), nullable=False, server_default="5"
@@ -199,9 +194,7 @@ def upgrade() -> None:
         ),
         comment="Operator monetary policy, one row per effective period (research.md D2)",
     )
-    op.create_index(
-        "ix_tenant_pricing_policy_tenant_id", "tenant_pricing_policy", ["tenant_id"]
-    )
+    op.create_index("ix_tenant_pricing_policy_tenant_id", "tenant_pricing_policy", ["tenant_id"])
     # Exactly one current policy per tenant, said in the schema rather than
     # left to whoever writes the next update path.
     op.create_index(
@@ -284,9 +277,7 @@ def upgrade() -> None:
         ),
         sa.Column("supplier", sa.String(200), nullable=True),
         sa.Column("purchase_date", sa.Date(), nullable=False),
-        sa.Column(
-            "inbound_shipping_cost", sa.Numeric(10, 2), nullable=False, server_default="0"
-        ),
+        sa.Column("inbound_shipping_cost", sa.Numeric(10, 2), nullable=False, server_default="0"),
         sa.Column("tax_amount", sa.Numeric(10, 2), nullable=False, server_default="0"),
         sa.Column("tax_recoverable", sa.Boolean(), nullable=False, server_default="false"),
         sa.Column("order_reference", sa.String(100), nullable=True),
@@ -360,9 +351,7 @@ def upgrade() -> None:
 
     # The deprecated single figure is copied, not moved: a rollback must not
     # lose the only labor figure a model ever had.
-    op.execute(
-        "UPDATE models SET labor_hours_per_item = labor_hours WHERE labor_hours IS NOT NULL"
-    )
+    op.execute("UPDATE models SET labor_hours_per_item = labor_hours WHERE labor_hours IS NOT NULL")
 
     # ------------------------------------------------------------------
     # Spools: a parent purchase, and the remainder that can never be printed
@@ -376,9 +365,7 @@ def upgrade() -> None:
             nullable=True,
         ),
     )
-    op.add_column(
-        "spools", sa.Column("unusable_remainder_grams", sa.Numeric(8, 2), nullable=True)
-    )
+    op.add_column("spools", sa.Column("unusable_remainder_grams", sa.Numeric(8, 2), nullable=True))
     op.create_index("ix_spools_filament_purchase_id", "spools", ["filament_purchase_id"])
     op.create_check_constraint(
         "check_spool_unusable_remainder_non_negative",
@@ -481,9 +468,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "check_spool_unusable_remainder_non_negative", "spools", type_="check"
-    )
+    op.drop_constraint("check_spool_unusable_remainder_non_negative", "spools", type_="check")
     op.drop_index("ix_spools_filament_purchase_id", table_name="spools")
     op.drop_column("spools", "unusable_remainder_grams")
     op.drop_column("spools", "filament_purchase_id")
@@ -501,9 +486,7 @@ def downgrade() -> None:
     ):
         op.drop_column("models", column)
 
-    op.drop_constraint(
-        "check_printer_lifetime_positive_when_priced", "printers", type_="check"
-    )
+    op.drop_constraint("check_printer_lifetime_positive_when_priced", "printers", type_="check")
     for column in (
         "electricity_rate_per_kwh",
         "measured_watts",

@@ -62,6 +62,7 @@ import { makeCostOf, makeCostNumber } from '@/lib/pricing/makeCost'
 import { ProductImagesEditor } from './ProductImagesEditor'
 import { ProductCategoriesEditor } from './ProductCategoriesEditor'
 import { ProductionHistoryTable } from './ProductionHistoryTable'
+import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
 
 interface ProductDetailProps {
   productId: string
@@ -75,7 +76,8 @@ function StatCard({
 }: {
   label: string
   value: string
-  subValue?: string
+  /** A node rather than a string, so a margin can carry its basis badge. */
+  subValue?: React.ReactNode
   icon?: React.ElementType
 }) {
   return (
@@ -332,10 +334,16 @@ export function ProductDetail({ productId }: ProductDetailProps) {
             value={formatCurrency(bestPricing.profit || '0')}
             subValue="After all costs"
           />
+          {/* FR-031b: a percentage never appears without the basis that
+              produced it. This figure is profit over the price the customer
+              paid, which is the `customer_total` basis -- stated as data
+              rather than left for the reader to assume. */}
           <StatCard
             label="Margin"
             value={`${parseFloat(bestPricing.margin_percentage || '0').toFixed(1)}%`}
-            subValue="Profit margin"
+            subValue={
+              <MarginBasisLabel basis="customer_total" short className="font-normal" />
+            }
           />
         </div>
       )}

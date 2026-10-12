@@ -104,6 +104,11 @@ from app.models.tenant_pricing_policy import (
     TenantPricingPolicy,
 )
 
+# Channel economics (Tier 2)
+from app.models.fee_actual import FEE_ACTUAL_SOURCES, FeeActual
+from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES, FeeRule
+from app.models.shipping_profile import ShippingProfile
+
 # Multi-tenancy
 from app.models.tenant import Tenant
 from app.models.tenant_module import TenantModule
@@ -213,6 +218,14 @@ __all__ = [
     "PricingInputProvenance",
     "PROVENANCE_SOURCES",
     "PROVENANCE_ENTITY_TYPES",
+    # Channel economics
+    "FeeRule",
+    "FEE_BASES",
+    "COUNT_BASES",
+    "PERIODIC_BASES",
+    "FeeActual",
+    "FEE_ACTUAL_SOURCES",
+    "ShippingProfile",
     # Multi-tenancy
     "Tenant",
     "TenantModule",
