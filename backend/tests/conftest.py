@@ -113,6 +113,20 @@ async def db_engine():
         **extra_kwargs,
     )
 
+    if _IS_SQLITE:
+        # SQLite ignores foreign keys unless asked, per connection. Without
+        # this, an endpoint that relies on an IntegrityError to reject a
+        # dangling reference silently succeeds locally and fails in CI, where
+        # PostgreSQL does enforce it -- so the local suite is weaker than the
+        # one that gates the merge, in a way nothing announces.
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
     # Drop any existing tables first (important for PostgreSQL persistence)
     async with engine.begin() as conn:
         await _drop_all_tables(conn, _IS_SQLITE)
