@@ -4,7 +4,17 @@ import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 from decimal import Decimal
-from sqlalchemy import Boolean, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -142,6 +152,44 @@ class Printer(Base, UUIDMixin, TimestampMixin):
         post_update=True,  # Avoid circular dependency issues
     )
 
+    # ------------------------------------------------------------------
+    # Machine cost policy (Tier 1, FR-010, FR-011)
+    #
+    # Every column is nullable, and that is the point: a printer whose policy
+    # the operator has not entered yields *no* machine rate and marks the item
+    # incompletely costed (FR-019). A zero rate would read like a real figure
+    # and make a 40-hour print look free.
+    # ------------------------------------------------------------------
+    purchase_price: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="All-in acquisition cost, the numerator of depreciation",
+    )
+
+    expected_lifetime_hours: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Expected printing hours over the machine's life; the depreciation denominator",
+    )
+
+    maintenance_reserve_total: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Nozzles, belts, plates and AMS parts expected over the whole life",
+    )
+
+    measured_watts: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 2),
+        nullable=True,
+        comment="Measured draw at the wall while printing, not the nameplate rating",
+    )
+
+    electricity_rate_per_kwh: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 4),
+        nullable=True,
+        comment="Per-printer electricity rate; falls back to the tenant pricing policy",
+    )
+
     # Notes
     notes: Mapped[Optional[str]] = mapped_column(
         Text,
@@ -201,6 +249,13 @@ class Printer(Base, UUIDMixin, TimestampMixin):
     # Constraints
     __table_args__ = (
         UniqueConstraint("tenant_id", "name", name="uq_printer_tenant_name"),
+        # A purchase price with no life to spread it over is a division by zero
+        # waiting to happen, so it is refused at save time (contracts: 422).
+        CheckConstraint(
+            "purchase_price IS NULL"
+            " OR (expected_lifetime_hours IS NOT NULL AND expected_lifetime_hours > 0)",
+            name="check_printer_lifetime_hours_positive_when_priced",
+        ),
         {"comment": "3D printers available for production runs"},
     )
 
@@ -210,6 +265,76 @@ class Printer(Base, UUIDMixin, TimestampMixin):
         if self.bed_size_x_mm and self.bed_size_y_mm and self.bed_size_z_mm:
             return f"{self.bed_size_x_mm}x{self.bed_size_y_mm}x{self.bed_size_z_mm}"
         return None
+
+    # ------------------------------------------------------------------
+    # Derived machine rate (Constitution V: derived, never stored)
+    # ------------------------------------------------------------------
+
+    def machine_rate_components(
+        self,
+        electricity_rate_per_kwh: Optional[Decimal] = None,
+    ) -> dict[str, Any]:
+        """Break the hourly occupancy rate into the parts it is made of.
+
+        FR-010 defines the rate as depreciation over expected life, plus a
+        maintenance reserve over the same life, plus measured power draw at the
+        operator's electricity rate. Each part is reported separately because
+        FR-018 requires a figure to be explainable without recomputing it.
+
+        ``electricity_rate_per_kwh`` is the tenant policy fallback used when
+        the printer carries no rate of its own (FR-011). Any part whose inputs
+        are missing is omitted and named in ``missing``; the total is ``None``
+        only when *nothing* could be derived, since a printer with a known
+        purchase price but unmeasured power still has a real depreciation cost.
+        """
+        components: dict[str, Decimal] = {}
+        missing: list[str] = []
+
+        lifetime = self.expected_lifetime_hours
+        if lifetime and lifetime > 0:
+            if self.purchase_price is not None:
+                components["depreciation_per_hour"] = Decimal(str(self.purchase_price)) / Decimal(
+                    lifetime
+                )
+            else:
+                missing.append("purchase_price")
+            if self.maintenance_reserve_total is not None:
+                components["maintenance_per_hour"] = Decimal(
+                    str(self.maintenance_reserve_total)
+                ) / Decimal(lifetime)
+            else:
+                missing.append("maintenance_reserve_total")
+        else:
+            missing.append("expected_lifetime_hours")
+            if self.purchase_price is None:
+                missing.append("purchase_price")
+
+        rate = self.electricity_rate_per_kwh
+        if rate is None:
+            rate = electricity_rate_per_kwh
+        if self.measured_watts is not None and rate is not None:
+            components["power_per_hour"] = (
+                Decimal(str(self.measured_watts)) / Decimal("1000")
+            ) * Decimal(str(rate))
+        else:
+            if self.measured_watts is None:
+                missing.append("measured_watts")
+            if rate is None:
+                missing.append("electricity_rate_per_kwh")
+
+        total = sum(components.values(), Decimal("0")) if components else None
+        return {"components": components, "total": total, "missing": missing}
+
+    @property
+    def machine_rate_per_hour(self) -> Optional[Decimal]:
+        """Hourly cost of occupying this machine, or ``None`` if unknowable.
+
+        Uses only this printer's own electricity rate; the caller that holds
+        the tenant policy passes its fallback to
+        :meth:`machine_rate_components` instead.
+        """
+        derived: Optional[Decimal] = self.machine_rate_components()["total"]
+        return derived
 
     def __repr__(self) -> str:
         return f"<Printer(name={self.name}, manufacturer={self.manufacturer})>"

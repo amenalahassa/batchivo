@@ -49,6 +49,7 @@ from app.models.production_run import ProductionRun, ProductionRunItem, Producti
 from app.models.production_run_plate import ProductionRunPlate
 
 # Inventory
+from app.models.filament_purchase import FilamentPurchase
 from app.models.filament_type import FilamentType
 from app.models.spool import Spool
 from app.models.inventory_transaction import InventoryTransaction, TransactionType
@@ -89,6 +90,18 @@ from app.models.webhook_event import (
     WebhookEvent,
     WebhookEventSource,
     WebhookEventStatus,
+)
+
+# Pricing policy and provenance (Tier 1)
+from app.models.pricing_input_provenance import (
+    PROVENANCE_ENTITY_TYPES,
+    PROVENANCE_SOURCES,
+    PricingInputProvenance,
+)
+from app.models.tenant_pricing_policy import (
+    MARGIN_BASES,
+    OVERHEAD_METHODS,
+    TenantPricingPolicy,
 )
 
 # Multi-tenancy
@@ -153,6 +166,7 @@ __all__ = [
     "ProductionRunMaterial",
     "ProductionRunPlate",
     # Inventory
+    "FilamentPurchase",
     "FilamentType",
     "Spool",
     "InventoryTransaction",
@@ -192,6 +206,13 @@ __all__ = [
     "WebhookEvent",
     "WebhookEventSource",
     "WebhookEventStatus",
+    # Pricing policy and provenance
+    "TenantPricingPolicy",
+    "MARGIN_BASES",
+    "OVERHEAD_METHODS",
+    "PricingInputProvenance",
+    "PROVENANCE_SOURCES",
+    "PROVENANCE_ENTITY_TYPES",
     # Multi-tenancy
     "Tenant",
     "TenantModule",

@@ -22,10 +22,21 @@ from app.models.spool import Spool
 
 
 def make_spool(**kwargs):
+    """A stand-in for a Spool, carrying the fields its cost property reads.
+
+    `cost_per_gram` now derives from `spool_landed_cost`, which also reads the
+    unusable remainder and the parent purchase, so the fake carries both. They
+    default to the pre-Tier-1 shape -- no remainder and no purchase -- which is
+    exactly what FR-008e says such a spool costs from: its own price.
+    """
     defaults = dict(
+        id=None,
         current_weight=Decimal("500"),
         initial_weight=Decimal("1000"),
         purchase_price=None,
+        unusable_remainder_grams=None,
+        filament_purchase_id=None,
+        filament_purchase=None,
     )
     return SimpleNamespace(**{**defaults, **kwargs})
 

@@ -1,14 +1,17 @@
 """Printer management API endpoints."""
 
+import logging
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.database import get_db
 from app.schemas.printer import (
+    PrinterCostPolicyResponse,
+    PrinterCostPolicyUpdate,
     PrinterCreate,
     PrinterListResponse,
     PrinterModelResponse,
@@ -16,6 +19,8 @@ from app.schemas.printer import (
     PrinterUpdate,
 )
 from app.services.printer_service import PrinterService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -153,3 +158,101 @@ async def delete_printer(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Printer not found",
         )
+
+
+# ============================================================================
+# Machine cost policy (task T046)
+# ============================================================================
+
+
+async def _cost_policy_response(
+    printer,
+    db: AsyncSession,
+    tenant,
+) -> PrinterCostPolicyResponse:
+    """Derive the machine rate, with the tenant policy as the rate fallback."""
+    from app.services.pricing_policy import resolve_cost_policy
+
+    policy = await resolve_cost_policy(db, tenant)
+    derived = printer.machine_rate_components(policy.electricity_rate_per_kwh)
+
+    effective_rate = printer.electricity_rate_per_kwh
+    if effective_rate is None:
+        effective_rate = policy.electricity_rate_per_kwh
+
+    return PrinterCostPolicyResponse(
+        printer_id=printer.id,
+        purchase_price=printer.purchase_price,
+        expected_lifetime_hours=printer.expected_lifetime_hours,
+        maintenance_reserve_total=printer.maintenance_reserve_total,
+        measured_watts=printer.measured_watts,
+        electricity_rate_per_kwh=printer.electricity_rate_per_kwh,
+        effective_electricity_rate_per_kwh=effective_rate,
+        machine_rate_per_hour=derived["total"],
+        components=derived["components"],
+        missing=derived["missing"],
+    )
+
+
+@router.get("/{printer_id}/cost-policy", response_model=PrinterCostPolicyResponse)
+async def get_printer_cost_policy(
+    printer_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+) -> PrinterCostPolicyResponse:
+    """This printer's machine cost policy and the hourly rate it implies.
+
+    Readable by every role: a figure nobody can see is a figure nobody can
+    check. The response carries the rate's component parts so it can be
+    explained without being recomputed (FR-018), and names any input the
+    operator has not supplied rather than costing it at zero (FR-019).
+    """
+    service = PrinterService(db, tenant, user)
+    printer = await service.get_printer(printer_id)
+
+    if not printer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Printer not found",
+        )
+
+    return await _cost_policy_response(printer, db, tenant)
+
+
+@router.put("/{printer_id}/cost-policy", response_model=PrinterCostPolicyResponse)
+async def update_printer_cost_policy(
+    printer_id: UUID,
+    policy_data: PrinterCostPolicyUpdate,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    _admin: RequireAdmin,
+    db: TenantDB,
+) -> PrinterCostPolicyResponse:
+    """Set this printer's machine cost policy. Requires admin or owner.
+
+    Fields the body does not name are left alone, so entering the power draw
+    later does not erase the purchase price entered today.
+    """
+    service = PrinterService(db, tenant, user)
+    printer = await service.get_printer(printer_id)
+
+    if not printer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Printer not found",
+        )
+
+    changes = policy_data.model_dump(exclude_none=True)
+    for field, value in changes.items():
+        setattr(printer, field, value)
+
+    db.add(printer)
+    await db.commit()
+    await db.refresh(printer)
+    logger.info(
+        f"Updated cost policy for printer {printer.id} "
+        f"(fields: {', '.join(sorted(changes)) or 'none'})"
+    )
+
+    return await _cost_policy_response(printer, db, tenant)

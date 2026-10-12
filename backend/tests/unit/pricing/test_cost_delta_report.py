@@ -122,6 +122,100 @@ class TestNewLineAttribution:
         assert report._explain_new_line("waste", before, after) is not None
 
 
+class TestSeveralNewLinesTogether:
+    """Tier 1 introduces machine, waste, overhead and the premium at once.
+
+    No single line equals the delta then, and the report still has to say
+    which line moved by how much rather than shrug.
+    """
+
+    def test_two_declared_lines_summing_to_the_delta_are_attributed(self):
+        before = _row(total_make_cost="10.44", lines={})
+        after = _row(total_make_cost="13.03", lines={"machine": "2.00", "waste": "0.59"})
+        explanation = report._explain_new_lines_together(["machine", "waste"], before, after)
+        assert explanation is not None
+        assert "machine" in explanation and "waste" in explanation
+
+    def test_each_line_is_named_with_its_own_contribution(self):
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(total_make_cost="13.00", lines={"machine": "2.00", "waste": "1.00"})
+        explanation = report._explain_new_lines_together(["machine", "waste"], before, after)
+        assert "machine +2.00" in explanation
+        assert "waste +1.00" in explanation
+
+    def test_an_undeclared_line_leaves_a_residue_and_is_not_attributed(self):
+        """A line nobody declared, moving by a cent or more, is unexplained."""
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(
+            total_make_cost="14.00",
+            lines={"machine": "2.00", "waste": "1.00", "overhead": "1.00"},
+        )
+        assert report._explain_new_lines_together(["machine", "waste"], before, after) is None
+
+    def test_the_per_line_rounding_residue_is_allowed_and_named(self):
+        """Rounded lines cannot always sum to an unrounded total."""
+        before = _row(total_make_cost="10.44", lines={})
+        after = _row(
+            total_make_cost="18.52",
+            lines={
+                "machine": "2.21",
+                "waste": "0.10",
+                "overhead": "2.85",
+                "labor_packing": "1.66",
+                "failure_premium": "1.28",
+            },
+        )
+        explanation = report._explain_new_lines_together(
+            ["machine", "waste", "overhead", "labor_packing", "failure_premium"],
+            before,
+            after,
+        )
+        assert explanation is not None, (
+            "the Tier 1 delta is 8.08 while its five rounded lines sum to 8.10; "
+            "half a cent per line is exactly what rounding can produce"
+        )
+        assert "rounding -0.02" in explanation
+
+    def test_a_residue_beyond_half_a_cent_per_line_is_refused(self):
+        """The tolerance is the arithmetic's, not a convenience."""
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(
+            total_make_cost="13.00",
+            lines={"machine": "2.00", "waste": "1.06"},
+        )
+        assert report._explain_new_lines_together(["machine", "waste"], before, after) is None
+
+    def test_one_declared_line_is_left_to_the_single_line_check(self):
+        """With one cause there is nothing to combine, and no second chance."""
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(total_make_cost="13.00", lines={"machine": "2.00"})
+        assert report._explain_new_lines_together(["machine"], before, after) is None
+
+    def test_lines_that_did_not_move_are_not_listed(self):
+        before = _row(total_make_cost="10.00", lines={"waste": "1.00"})
+        after = _row(total_make_cost="12.00", lines={"machine": "2.00", "waste": "1.00"})
+        explanation = report._explain_new_lines_together(["machine", "waste"], before, after)
+        assert explanation == "machine +2.00"
+
+    def test_a_delta_with_no_declared_movement_at_all_is_not_attributed(self):
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(total_make_cost="13.00", lines={})
+        assert report._explain_new_lines_together(["machine", "waste"], before, after) is None
+
+    def test_attribute_falls_back_to_the_combination(self):
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(total_make_cost="13.00", lines={"machine": "2.00", "waste": "1.00"})
+        explanation = report.attribute(before, after, ["new-line:machine", "new-line:waste"])
+        assert explanation.startswith("new lines")
+
+    def test_a_single_line_explanation_is_preferred_over_the_combination(self):
+        """The more precise claim wins when it holds."""
+        before = _row(total_make_cost="10.00", lines={})
+        after = _row(total_make_cost="12.00", lines={"machine": "2.00", "waste": "0.00"})
+        explanation = report.attribute(before, after, ["new-line:machine", "new-line:waste"])
+        assert explanation.startswith("new-line:machine")
+
+
 # ---------------------------------------------------------------------------
 # the cause registry
 # ---------------------------------------------------------------------------

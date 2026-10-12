@@ -26,6 +26,8 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from tests.integration.migration_support import alembic_against
+
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = BACKEND_ROOT / "alembic.ini"
 VERSIONS_DIR = BACKEND_ROOT / "alembic" / "versions"
@@ -133,13 +135,12 @@ class TestAFreshDatabaseReachesHead:
             async with admin.connect() as conn:
                 await conn.execute(text(f'CREATE DATABASE "{scratch}"'))
 
-            config = Config(str(ALEMBIC_INI))
-            config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
-            config.set_main_option(
-                "sqlalchemy.url",
-                scratch_url.replace("+asyncpg", "").replace("+psycopg", ""),
-            )
-            command.upgrade(config, "head")
+            # Through `alembic_against`, not a bare Config: `env.py` overrides
+            # `sqlalchemy.url` from the application settings, so a Config handed
+            # its own URL would migrate whatever DATABASE_URL points at --
+            # the developer's own database rather than this scratch one.
+            with alembic_against(scratch_url) as config:
+                command.upgrade(config, "head")
 
             engine = create_async_engine(scratch_url)
             try:

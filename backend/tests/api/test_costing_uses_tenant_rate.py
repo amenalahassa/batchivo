@@ -285,7 +285,15 @@ RATE_BEARING_METHODS = {"calculate_product_cost", "calculate_model_cost"}
 
 #: Argument names that supply the rate. Positional is not accepted: these are
 #: keyword-only in spirit and a bare positional is how the bug got in.
-RATE_ARGUMENTS = {"labor_rate", "tenant_default_labor_rate"}
+#:
+#: `policy` is accepted from Tier 1 on, where a call site hands the engine a
+#: resolved `CostPolicy` instead of a loose rate. That is a stronger guarantee
+#: rather than a weaker one -- the snapshot carries both labor rates, the
+#: machine rate and the overhead method together, so a figure cannot be built
+#: from one tenant's rate and another's overhead method. Whether the policy
+#: holds the *configured* rate is what the HTTP cases above check; this scan
+#: only proves no call site leaves the engine to invent one.
+RATE_ARGUMENTS = {"labor_rate", "tenant_default_labor_rate", "policy"}
 
 
 def _costing_calls(path: Path) -> list[tuple[int, str, set[str]]]:
@@ -326,7 +334,7 @@ def test_the_engine_propagates_the_rate_into_nested_model_costs() -> None:
     """A product cost must not mix two labor rates in one figure."""
     path = BACKEND_ROOT / "app" / "services" / "costing.py"
     missing = [
-        f"costing.py:{lineno} {method}() passes no rate"
+        f"costing.py:{lineno} {method}() passes neither a rate nor a policy"
         for lineno, method, keywords in _costing_calls(path)
         if not (keywords & RATE_ARGUMENTS)
     ]

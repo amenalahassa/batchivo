@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.database import get_db
 from app.models.designer import Designer
 from app.models.model import Model
@@ -35,6 +35,7 @@ from app.models.product_pricing import ProductPricing
 from app.models.product_variant import ProductVariant
 from app.models.sales_channel import SalesChannel
 from app.models.tenant import Tenant
+from app.schemas.model import CostBreakdown
 from app.schemas.product import (
     ProductComponentCreate,
     ProductComponentResponse,
@@ -59,8 +60,13 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
-from app.services.costing import CostingService
-from app.services.tenant_cost_settings import tenant_labor_rate, tenant_overhead_percentage
+from app.services.cost_resolution import product_cost_breakdown
+from app.services.costing import (
+    CircularReferenceError,
+    CostingService,
+    MaxDepthExceededError,
+)
+from app.services.pricing_policy import resolve_cost_policy
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
 from app.services.shopify_sync import (
     ShopifySyncService,
@@ -140,26 +146,19 @@ def _get_product_load_options():
 async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) -> dict:
     """Convert Product model to response dict with cost breakdown.
 
-    The tenant is required, not optional: every figure below is built from the
-    labor rate and overhead default this operator configured, resolved once so
-    that no two figures in one response can disagree (Constitution III, IV).
+    The policy is resolved from the database once per response, so no two
+    figures in one payload can disagree, and the flat total here is built from
+    the same snapshot `GET /products/{id}/cost` itemises (Constitution III).
     """
-    labor_rate = tenant_labor_rate(tenant)
-    overhead_percentage = tenant_overhead_percentage(tenant)
+    policy = await resolve_cost_policy(db, tenant)
 
-    cost_breakdown = CostingService.calculate_product_cost(
-        product, labor_rate=labor_rate, overhead_percentage=overhead_percentage
-    )
+    cost_breakdown = CostingService.calculate_product_cost(product, policy=policy)
 
     # Build model responses with details
     model_responses = []
     for pm in product.product_models:
         model_cost = (
-            CostingService.calculate_model_cost(
-                pm.model, labor_rate=labor_rate, overhead_percentage=overhead_percentage
-            )
-            if pm.model
-            else None
+            CostingService.calculate_model_cost(pm.model, policy=policy) if pm.model else None
         )
         model_responses.append(
             {
@@ -179,9 +178,7 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
     for pc in getattr(product, "child_products", []):
         child = pc.child_product
         if child:
-            child_cost = CostingService.calculate_product_cost(
-                child, labor_rate=labor_rate, overhead_percentage=overhead_percentage
-            )
+            child_cost = CostingService.calculate_product_cost(child, policy=policy)
             child_product_responses.append(
                 {
                     "id": pc.id,
@@ -410,18 +407,17 @@ async def list_products(
                 products_with_rels.get(p.id, p) for p in products if p.id in products_with_rels
             ]
 
-        # Resolve the operator's figures once per request, not once per row: a
-        # rejected setting would otherwise log a warning for every product.
-        labor_rate = tenant_labor_rate(tenant)
-        overhead_percentage = tenant_overhead_percentage(tenant)
+        # Resolve the operator's policy once per request, not once per row: a
+        # rejected setting would otherwise log a warning for every product, and
+        # two rows in one list must never be costed at two different rates.
+        policy = await resolve_cost_policy(db, tenant)
 
         # Build response with calculated costs
         product_responses = []
         for product in products:
             cost_breakdown = CostingService.calculate_product_cost(
                 product,
-                labor_rate=labor_rate,
-                overhead_percentage=overhead_percentage,
+                policy=policy,
             )
             total_make_cost = cost_breakdown.total_make_cost
             suggested_price = total_make_cost * Decimal("2.5")
@@ -501,10 +497,10 @@ async def list_products(
     result = await db.execute(query)
     products = result.scalars().all()
 
-    # Resolve the operator's figures once per request, not once per row: a
-    # rejected setting would otherwise log a warning for every product.
-    labor_rate = tenant_labor_rate(tenant)
-    overhead_percentage = tenant_overhead_percentage(tenant)
+    # Resolve the operator's policy once per request, not once per row: a
+    # rejected setting would otherwise log a warning for every product, and two
+    # rows in one list must never be costed at two different rates.
+    policy = await resolve_cost_policy(db, tenant)
 
     # Build response with calculated costs
     product_responses = []
@@ -512,8 +508,7 @@ async def list_products(
         # Calculate cost breakdown
         cost_breakdown = CostingService.calculate_product_cost(
             product,
-            labor_rate=labor_rate,
-            overhead_percentage=overhead_percentage,
+            policy=policy,
         )
         total_make_cost = cost_breakdown.total_make_cost
         suggested_price = total_make_cost * Decimal("2.5")  # 2.5x markup
@@ -603,6 +598,62 @@ async def get_product(
         )
 
     return ProductDetailResponse(**await product_with_cost(product, db, tenant))
+
+
+@router.get("/{product_id}/cost", response_model=CostBreakdown)
+async def get_product_cost(
+    product_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+) -> CostBreakdown:
+    """The itemised make-cost of one sellable unit (task T049).
+
+    Bundles cost recursively. A cycle in the operator's own bill of materials
+    is a 409 naming the chain it found, and so is a hierarchy deeper than the
+    engine will walk: both are data the operator can fix, and neither is a
+    figure worth serving (FR-017).
+    """
+    query = (
+        select(Product)
+        .where(
+            Product.id == product_id,
+            Product.tenant_id == tenant.id,
+            Product.is_active.is_(True),
+        )
+        .options(*_get_product_load_options())
+    )
+    result = await db.execute(query)
+    product = result.scalar_one_or_none()
+
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    try:
+        return await product_cost_breakdown(db, tenant, product)
+    except CircularReferenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "circular_reference",
+                "message": str(exc),
+                "product_id": str(exc.product_id),
+                "chain": [str(visited) for visited in exc.visited],
+            },
+        ) from exc
+    except MaxDepthExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "max_depth_exceeded",
+                "message": str(exc),
+                "depth": exc.depth,
+                "max_depth": exc.max_depth,
+            },
+        ) from exc
 
 
 @router.put("/{product_id}", response_model=ProductDetailResponse)
@@ -780,8 +831,7 @@ async def add_product_model(
     # Calculate model cost
     model_cost = CostingService.calculate_model_cost(
         model,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
 
     return ProductModelResponse(
@@ -835,8 +885,7 @@ async def update_product_model(
 
     model_cost = CostingService.calculate_model_cost(
         product_model.model,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
 
     return ProductModelResponse(
@@ -965,8 +1014,7 @@ async def add_product_pricing(
     # Calculate profit
     cost_breakdown = CostingService.calculate_product_cost(
         product,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
     profit_data = CostingService.calculate_profit(
         list_price=Decimal(str(pricing.list_price)),
@@ -1041,8 +1089,7 @@ async def update_product_pricing(
     # Calculate profit
     cost_breakdown = CostingService.calculate_product_cost(
         pricing.product,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
     channel = pricing.sales_channel
     profit_data = CostingService.calculate_profit(
@@ -1226,8 +1273,7 @@ async def add_product_component(
 
     child_cost = CostingService.calculate_product_cost(
         child_product_loaded,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
 
     return ProductComponentResponse(
@@ -1293,8 +1339,7 @@ async def update_product_component(
 
     child_cost = CostingService.calculate_product_cost(
         child_product_loaded,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
+        policy=await resolve_cost_policy(db, tenant),
     )
 
     return ProductComponentResponse(

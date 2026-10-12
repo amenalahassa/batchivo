@@ -1,0 +1,197 @@
+/**
+ * CostBreakdownPanel tests (task T055a).
+ *
+ * The panel's job is to make a figure checkable, so the tests assert the
+ * things a reader needs rather than the markup: each line's amount, its risk
+ * class, where it came from and when, what is missing, and — the one that
+ * matters most — that a missing figure is never rendered as zero.
+ */
+import { describe, expect, it } from 'vitest'
+import { render, screen, within } from '@testing-library/react'
+import { CostBreakdownPanel } from './CostBreakdownPanel'
+import type { CostBreakdown, CostLine } from '@/types/pricing'
+
+function line(overrides: Partial<CostLine> = {}): CostLine {
+  return {
+    key: 'material',
+    label: 'Filament in the part',
+    amount: '4.52',
+    risk_class: 'at_risk',
+    source: 'observed',
+    as_of: '2026-03-01',
+    ...overrides,
+  }
+}
+
+/** The golden case: a make cost of CA$20.30 at a 92% yield. */
+function breakdown(overrides: Partial<CostBreakdown> = {}): CostBreakdown {
+  return {
+    lines: [
+      line(),
+      line({
+        key: 'machine',
+        label: 'Machine occupancy',
+        amount: '2.21',
+        source: 'measured',
+        as_of: '2026-02-14',
+      }),
+      line({
+        key: 'packaging',
+        label: 'Packaging materials',
+        amount: '0.92',
+        risk_class: 'not_at_risk',
+        source: 'assumed',
+        as_of: null,
+      }),
+    ],
+    at_risk_subtotal: '19.38',
+    not_at_risk_subtotal: '0.92',
+    yield_applied: '0.9200',
+    failure_mode: 'per_part',
+    failure_premium: '1.68',
+    total_make_cost: '20.30',
+    observed_share: '0.70',
+    assumed_share: '0.30',
+    incomplete_reasons: [],
+    ...overrides,
+  }
+}
+
+describe('CostBreakdownPanel', () => {
+  it('renders the total make cost exactly as sent, cents and all', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+    expect(screen.getByTestId('total-make-cost')).toHaveTextContent('$20.30')
+  })
+
+  it('renders every line with its amount', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(within(screen.getByTestId('cost-line-material')).getByText('$4.52')).toBeInTheDocument()
+    expect(within(screen.getByTestId('cost-line-machine')).getByText('$2.21')).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('cost-line-packaging')).getByText('$0.92'),
+    ).toBeInTheDocument()
+  })
+
+  it('names the risk class of each line', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(within(screen.getByTestId('cost-line-material')).getByText('At risk')).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('cost-line-packaging')).getByText('Not at risk'),
+    ).toBeInTheDocument()
+  })
+
+  it('names where each line came from', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(within(screen.getByTestId('cost-line-material')).getByText('Observed')).toBeInTheDocument()
+    expect(within(screen.getByTestId('cost-line-machine')).getByText('Measured')).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('cost-line-packaging')).getByText('Assumed'),
+    ).toBeInTheDocument()
+  })
+
+  it('dates each line, and says so plainly when it has no date', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(
+      within(screen.getByTestId('cost-line-material')).getByText('as of 2026-03-01'),
+    ).toBeInTheDocument()
+    expect(
+      within(screen.getByTestId('cost-line-packaging')).getByText('never recorded'),
+    ).toBeInTheDocument()
+  })
+
+  it('states the observed and assumed shares', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+    expect(screen.getByText(/70% of this cost rests on observed/)).toBeInTheDocument()
+    expect(screen.getByText(/30% is still assumed/)).toBeInTheDocument()
+  })
+
+  it('reports the subtotals and the failure premium', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(screen.getByTestId('at-risk-subtotal')).toHaveTextContent('$19.38')
+    expect(screen.getByTestId('not-at-risk-subtotal')).toHaveTextContent('$0.92')
+    expect(screen.getByTestId('failure-premium')).toHaveTextContent('$1.68')
+    expect(screen.getByText(/92% yield/)).toBeInTheDocument()
+  })
+
+  it('names the failure mode, since per-plate and per-part differ', () => {
+    render(<CostBreakdownPanel breakdown={breakdown({ failure_mode: 'per_plate' })} />)
+    expect(screen.getByText('(per plate)')).toBeInTheDocument()
+  })
+
+  describe('an incompletely costed item', () => {
+    const incomplete = breakdown({
+      lines: [line()],
+      incomplete_reasons: [
+        'this printer has no cost policy, so no machine rate could be derived',
+        'the item has no print time, so machine occupancy is unknown',
+      ],
+    })
+
+    it('says it is incomplete rather than showing a total as if it were whole', () => {
+      render(<CostBreakdownPanel breakdown={incomplete} />)
+
+      const warning = screen.getByTestId('incomplete-costing')
+      expect(warning).toBeInTheDocument()
+      expect(warning).toHaveTextContent('Incompletely costed')
+    })
+
+    it('lists every reason, in the words the engine used', () => {
+      render(<CostBreakdownPanel breakdown={incomplete} />)
+
+      const warning = screen.getByTestId('incomplete-costing')
+      expect(warning).toHaveTextContent(
+        'this printer has no cost policy, so no machine rate could be derived',
+      )
+      expect(warning).toHaveTextContent('the item has no print time, so machine occupancy is unknown')
+    })
+
+    it('does not invent a machine line to fill the gap', () => {
+      render(<CostBreakdownPanel breakdown={incomplete} />)
+      expect(screen.queryByTestId('cost-line-machine')).not.toBeInTheDocument()
+    })
+
+    it('carries the warning as an alert, so it is announced', () => {
+      render(<CostBreakdownPanel breakdown={incomplete} />)
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+    })
+  })
+
+  it('shows no warning when nothing is missing', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+    expect(screen.queryByTestId('incomplete-costing')).not.toBeInTheDocument()
+  })
+
+  it('says a perfect yield adds nothing rather than leaving a bare zero', () => {
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({ yield_applied: '1', failure_premium: '0' })}
+      />,
+    )
+    expect(screen.getByText(/costed at a perfect yield/)).toBeInTheDocument()
+  })
+
+  it('says so when an item has no costed line at all', () => {
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({
+          lines: [],
+          at_risk_subtotal: '0',
+          not_at_risk_subtotal: '0',
+          failure_premium: '0',
+          total_make_cost: '0',
+        })}
+      />,
+    )
+    expect(screen.getByTestId('no-cost-lines')).toBeInTheDocument()
+  })
+
+  it('honours the currency symbol it is given', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} currencySymbol="CA$" />)
+    expect(screen.getByTestId('total-make-cost')).toHaveTextContent('CA$20.30')
+  })
+})

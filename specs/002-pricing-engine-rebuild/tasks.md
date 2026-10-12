@@ -100,53 +100,53 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 ### Tests for User Story 2
 
-- [ ] T027 [P] [US2] Golden-case test in `backend/tests/unit/pricing/test_golden_case.py` asserting a make-cost of **CA$20.30**, with the expected value computed from the fixture's inputs in one unrounded chain and rounded only for the assertion
-- [ ] T028 [P] [US2] Failure-mode tests in `backend/tests/unit/pricing/test_yield_modes.py`: yield 1.0 is a no-op under both modes; `per_part` and `per_plate` agree exactly at one print per plate; at four per plate with the same yield figure `per_plate` is strictly higher (divisor `y` versus `y^N`, research D3)
-- [ ] T029 [P] [US2] At-risk boundary test in `backend/tests/unit/pricing/test_at_risk_split.py`: the premium touches material, waste, machine, overhead, handling and finishing, and leaves packaging materials and packing labor untouched
-- [ ] T030 [P] [US2] Landed-cost tests in `backend/tests/unit/pricing/test_landed_cost.py`: four equal spools split shipping evenly and land at CA$31.00 each; one 250 g spool with three 1 kg spools allocates shipping by weight, with the expected per-spool amount computed from the fixture's own inputs rather than approximated; recoverable tax excluded and non-recoverable included; unknown weights fall back to an even split and say so
-- [ ] T031 [P] [US2] Incomplete-costing tests in `backend/tests/unit/pricing/test_incomplete_costing.py`: a printer with no cost policy and an item with no print time are both reported incompletely costed, never costed at zero
-- [ ] T032 [P] [US2] Provenance registry coverage test in `backend/tests/unit/pricing/test_provenance_registry.py` asserting every numeric input reachable by the cost engine has a registry entry (research D1 — this test is the enforcement the database cannot give)
-- [ ] T033 [P] [US2] Policy resolution tests in `backend/tests/unit/pricing/test_pricing_policy.py`: an as-of read returns the row in effect; a write creates a new effective row and never updates in place
-- [ ] T034 [P] [US2] Endpoint tests in `backend/tests/api/test_pricing_policy_api.py` and `backend/tests/api/test_printer_cost_policy.py` covering success, `403` for member and viewer with the figure left untouched, `422` validation, `404` not found
+- [X] T027 [P] [US2] Golden-case test in `backend/tests/unit/pricing/test_golden_case.py` asserting a make-cost of **CA$20.30**, with the expected value computed from the fixture's inputs in one unrounded chain and rounded only for the assertion
+- [X] T028 [P] [US2] Failure-mode tests in `backend/tests/unit/pricing/test_yield_modes.py`: yield 1.0 is a no-op under both modes; `per_part` and `per_plate` agree exactly at one print per plate; at four per plate with the same yield figure `per_plate` is strictly higher (divisor `y` versus `y^N`, research D3)
+- [X] T029 [P] [US2] At-risk boundary test in `backend/tests/unit/pricing/test_at_risk_split.py`: the premium touches material, waste, machine, overhead, handling and finishing, and leaves packaging materials and packing labor untouched
+- [X] T030 [P] [US2] Landed-cost tests in `backend/tests/unit/pricing/test_landed_cost.py`: four equal spools split shipping evenly and land at CA$31.00 each; one 250 g spool with three 1 kg spools allocates shipping by weight, with the expected per-spool amount computed from the fixture's own inputs rather than approximated; recoverable tax excluded and non-recoverable included; unknown weights fall back to an even split and say so
+- [X] T031 [P] [US2] Incomplete-costing tests in `backend/tests/unit/pricing/test_incomplete_costing.py`: a printer with no cost policy and an item with no print time are both reported incompletely costed, never costed at zero
+- [X] T032 [P] [US2] Provenance registry coverage test in `backend/tests/unit/pricing/test_provenance_registry.py` asserting every numeric input reachable by the cost engine has a registry entry (research D1 — this test is the enforcement the database cannot give)
+- [X] T033 [P] [US2] Policy resolution tests in `backend/tests/unit/pricing/test_pricing_policy.py`: an as-of read returns the row in effect; a write creates a new effective row and never updates in place
+- [X] T034 [P] [US2] Endpoint tests in `backend/tests/api/test_pricing_policy_api.py` and `backend/tests/api/test_printer_cost_policy.py` covering success, `403` for member and viewer with the figure left untouched, `422` validation, `404` not found
 
 ### Models for User Story 2
 
-- [ ] T035 [P] [US2] Extend `backend/app/models/printer.py` with `purchase_price Numeric(10,2)` nullable, `expected_lifetime_hours Integer` nullable, `maintenance_reserve_total Numeric(10,2)` nullable, `measured_watts Numeric(8,2)` nullable, `electricity_rate_per_kwh Numeric(8,4)` nullable, plus a derived `machine_rate_per_hour` property and a CHECK that `expected_lifetime_hours > 0` where `purchase_price` is set
-- [ ] T036 [P] [US2] Extend `backend/app/models/model.py` with `waste_grams Numeric(8,2)` default 0, `expected_yield Numeric(5,4)` default 1.0 with a CHECK restricting it to `(0, 1]`, `failure_mode String(10)` default `'per_part'` with a CHECK of `per_part` or `per_plate`, and `labor_hours_per_plate`, `labor_hours_per_item`, `finishing_hours_per_item`, `packing_hours_per_item` each `Numeric(8,3)` default 0. Retain and deprecate `labor_hours`; do not add a print-time field
-- [ ] T037 [P] [US2] Create `backend/app/models/tenant_pricing_policy.py` with the typed temporal columns listed in data-model.md including `default_machine_rate_per_hour Numeric(10,4)` nullable as the FR-011 fallback, a partial unique index on `(tenant_id) WHERE effective_to IS NULL`, and a CHECK that `expected_monthly_machine_hours > 0` when `overhead_method = 'per_machine_hour'`
-- [ ] T038 [P] [US2] Create `backend/app/models/pricing_input_provenance.py` with `source` CHECK-constrained to `policy | observed | measured | assumed`, unique on `(tenant_id, entity_type, entity_id, field_name)` and an index on `(tenant_id, source)`
-- [ ] T039 [P] [US2] Create `backend/app/models/filament_purchase.py` and extend `backend/app/models/spool.py` with `filament_purchase_id` nullable FK and `unusable_remainder_grams Numeric(8,2)` nullable — a spool with no parent purchase must stay valid (FR-008e)
+- [X] T035 [P] [US2] Extend `backend/app/models/printer.py` with `purchase_price Numeric(10,2)` nullable, `expected_lifetime_hours Integer` nullable, `maintenance_reserve_total Numeric(10,2)` nullable, `measured_watts Numeric(8,2)` nullable, `electricity_rate_per_kwh Numeric(8,4)` nullable, plus a derived `machine_rate_per_hour` property and a CHECK that `expected_lifetime_hours > 0` where `purchase_price` is set
+- [X] T036 [P] [US2] Extend `backend/app/models/model.py` with `waste_grams Numeric(8,2)` default 0, `expected_yield Numeric(5,4)` default 1.0 with a CHECK restricting it to `(0, 1]`, `failure_mode String(10)` default `'per_part'` with a CHECK of `per_part` or `per_plate`, and `labor_hours_per_plate`, `labor_hours_per_item`, `finishing_hours_per_item`, `packing_hours_per_item` each `Numeric(8,3)` default 0. Retain and deprecate `labor_hours`; do not add a print-time field
+- [X] T037 [P] [US2] Create `backend/app/models/tenant_pricing_policy.py` with the typed temporal columns listed in data-model.md including `default_machine_rate_per_hour Numeric(10,4)` nullable as the FR-011 fallback, a partial unique index on `(tenant_id) WHERE effective_to IS NULL`, and a CHECK that `expected_monthly_machine_hours > 0` when `overhead_method = 'per_machine_hour'`
+- [X] T038 [P] [US2] Create `backend/app/models/pricing_input_provenance.py` with `source` CHECK-constrained to `policy | observed | measured | assumed`, unique on `(tenant_id, entity_type, entity_id, field_name)` and an index on `(tenant_id, source)`
+- [X] T039 [P] [US2] Create `backend/app/models/filament_purchase.py` and extend `backend/app/models/spool.py` with `filament_purchase_id` nullable FK and `unusable_remainder_grams Numeric(8,2)` nullable — a spool with no parent purchase must stay valid (FR-008e)
 
 ### Services for User Story 2
 
-- [ ] T040 [US2] Implement `backend/app/services/provenance.py`: the `(entity_type, field_name)` registry, batched reads keyed on `(entity_type, entity_id) IN (...)`, writes, and observed-share computation from a breakdown's own lines
-- [ ] T041 [US2] Implement `backend/app/services/pricing_policy.py` resolving policy as-of a date and writing a new effective row per change
-- [ ] T042 [US2] Implement `backend/app/services/landed_cost.py`: shipping allocated by weight, tax recoverability, usable weight after the unusable remainder, even-split fallback flag, and the derivation trace FR-008f requires
-- [ ] T043 [US2] Rewrite `backend/app/services/costing.py` to emit the structured breakdown: machine line from the machine rate, overhead per machine-hour with the percentage method retained as an option, the four labor components, the at-risk and not-at-risk split, the failure premium per mode, packaging as not-at-risk, and the existing recursion with cycle detection and depth limit preserved
-- [ ] T044 [US2] Make the per-printer configuration win over the model-level figure in `backend/app/services/costing.py` — `model_printer_configs.print_time_minutes` and `material_weight_grams` take precedence when a config row exists, falling back to `models.print_time_minutes`
+- [X] T040 [US2] Implement `backend/app/services/provenance.py`: the `(entity_type, field_name)` registry, batched reads keyed on `(entity_type, entity_id) IN (...)`, writes, and observed-share computation from a breakdown's own lines
+- [X] T041 [US2] Implement `backend/app/services/pricing_policy.py` resolving policy as-of a date and writing a new effective row per change
+- [X] T042 [US2] Implement `backend/app/services/landed_cost.py`: shipping allocated by weight, tax recoverability, usable weight after the unusable remainder, even-split fallback flag, and the derivation trace FR-008f requires
+- [X] T043 [US2] Rewrite `backend/app/services/costing.py` to emit the structured breakdown: machine line from the machine rate, overhead per machine-hour with the percentage method retained as an option, the four labor components, the at-risk and not-at-risk split, the failure premium per mode, packaging as not-at-risk, and the existing recursion with cycle detection and depth limit preserved
+- [X] T044 [US2] Make the per-printer configuration win over the model-level figure in `backend/app/services/costing.py` — `model_printer_configs.print_time_minutes` and `material_weight_grams` take precedence when a config row exists, falling back to `models.print_time_minutes`
 
 ### Migration for User Story 2
 
-- [ ] T045 [US2] Write the Tier 1 migration in `backend/alembic/versions/`, chained onto `commerce_handover_v1`: new tables and columns, RLS policies on each new table, `labor_hours` copied into `labor_hours_per_item`, one `tenant_pricing_policy` row seeded per tenant from `Tenant.settings["default_labor_rate"]` with `effective_from = tenant.created_at`, and a provenance row of `source = 'assumed'`, `as_of = created_at` for every existing numeric input
-- [ ] T045a [US2] Run `backend/scripts/cost_delta_report.py` against the Tier 1 migration and commit the output to `specs/002-pricing-engine-rebuild/delta-tier1.md`, attributing every changed cost to a specific newly introduced line (machine, waste, yield, overhead method, landed cost) with no unattributed change
+- [X] T045 [US2] Write the Tier 1 migration in `backend/alembic/versions/`, chained onto `commerce_handover_v1`: new tables and columns, RLS policies on each new table, `labor_hours` copied into `labor_hours_per_item`, one `tenant_pricing_policy` row seeded per tenant from `Tenant.settings["default_labor_rate"]` with `effective_from = tenant.created_at`, and a provenance row of `source = 'assumed'`, `as_of = created_at` for every existing numeric input
+- [X] T045a [US2] Run `backend/scripts/cost_delta_report.py` against the Tier 1 migration and commit the output to `specs/002-pricing-engine-rebuild/delta-tier1.md`, attributing every changed cost to a specific newly introduced line (machine, waste, yield, overhead method, landed cost) with no unattributed change
 
 ### Endpoints for User Story 2
 
-- [ ] T046 [P] [US2] Add `GET` and `PUT /printers/{printer_id}/cost-policy` in `backend/app/api/v1/printers.py`, admin or owner for the write, returning the derived rate with its component parts
-- [ ] T047 [P] [US2] Create `backend/app/api/v1/pricing_policy.py` with `GET /settings/pricing-policy` (all roles) and `PUT` (admin or owner, writing a new effective row)
-- [ ] T048 [P] [US2] Create `backend/app/api/v1/filament_purchases.py` with CRUD and the allocation shown per spool
-- [ ] T048a [P] [US2] API tests for filament purchases in `backend/tests/api/test_filament_purchases.py` covering `201` on create, `401` unauthenticated, `422` validation, `404` not found, and the per-spool allocation in the response
-- [ ] T049 [US2] Update `GET /models/{id}/cost` and `GET /products/{id}/cost` in `backend/app/api/v1/models.py` and `products.py` to the new breakdown, returning `409` with the offending chain on a circular reference and `409` on depth exceeded
-- [ ] T050 [US2] Register the new routers in `backend/app/main.py`
+- [X] T046 [P] [US2] Add `GET` and `PUT /printers/{printer_id}/cost-policy` in `backend/app/api/v1/printers.py`, admin or owner for the write, returning the derived rate with its component parts
+- [X] T047 [P] [US2] Create `backend/app/api/v1/pricing_policy.py` with `GET /settings/pricing-policy` (all roles) and `PUT` (admin or owner, writing a new effective row)
+- [X] T048 [P] [US2] Create `backend/app/api/v1/filament_purchases.py` with CRUD and the allocation shown per spool
+- [X] T048a [P] [US2] API tests for filament purchases in `backend/tests/api/test_filament_purchases.py` covering `201` on create, `401` unauthenticated, `422` validation, `404` not found, and the per-spool allocation in the response
+- [X] T049 [US2] Update `GET /models/{id}/cost` and `GET /products/{id}/cost` in `backend/app/api/v1/models.py` and `products.py` to the new breakdown, returning `409` with the offending chain on a circular reference and `409` on depth exceeded
+- [X] T050 [US2] Register the new routers in `backend/app/main.py`
 
 ### Frontend for User Story 2
 
-- [ ] T051 [P] [US2] Build `frontend/src/components/pricing/CostBreakdownPanel.tsx` showing each line with its amount, risk class, origin and date, plus `incomplete_reasons`
-- [ ] T052 [P] [US2] Build the machine cost policy form in `frontend/src/components/printers/PrinterCostPolicyForm.tsx`
-- [ ] T053 [P] [US2] Build the pricing policy screen in `frontend/src/components/settings/PricingPolicySettings.tsx`
-- [ ] T054 [P] [US2] Build the filament purchase UI showing the per-spool allocation in `frontend/src/components/filaments/FilamentPurchaseForm.tsx`
-- [ ] T055 [US2] Add `frontend/src/lib/api/pricing.ts` and `frontend/src/hooks/usePricing.ts`, and extend `frontend/src/types/pricing.ts`
-- [ ] T055a [P] [US2] Vitest tests for the cost breakdown — lines, risk class, origin, date, incomplete reasons — in `frontend/src/components/pricing/CostBreakdownPanel.test.tsx`
+- [X] T051 [P] [US2] Build `frontend/src/components/pricing/CostBreakdownPanel.tsx` showing each line with its amount, risk class, origin and date, plus `incomplete_reasons`
+- [X] T052 [P] [US2] Build the machine cost policy form in `frontend/src/components/printers/PrinterCostPolicyForm.tsx`
+- [X] T053 [P] [US2] Build the pricing policy screen in `frontend/src/components/settings/PricingPolicySettings.tsx`
+- [X] T054 [P] [US2] Build the filament purchase UI showing the per-spool allocation in `frontend/src/components/filaments/FilamentPurchaseForm.tsx`
+- [X] T055 [US2] Add `frontend/src/lib/api/pricing.ts` and `frontend/src/hooks/usePricing.ts`, and extend `frontend/src/types/pricing.ts`
+- [X] T055a [P] [US2] Vitest tests for the cost breakdown — lines, risk class, origin, date, incomplete reasons — in `frontend/src/components/pricing/CostBreakdownPanel.test.tsx`
 
 **Checkpoint**: the golden case reports CA$20.30 from its own inputs; the two failure modes agree at one per plate and diverge above it.
 

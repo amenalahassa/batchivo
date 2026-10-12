@@ -6,7 +6,16 @@ from typing import TYPE_CHECKING, Optional
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -76,12 +85,91 @@ class Model(Base, UUIDMixin, TimestampMixin):
     )
 
     # Labor Costing
+    #
+    # DEPRECATED by the Tier 1 labor split below. The migration copies this
+    # figure into `labor_hours_per_item`; the engine reads it only when the new
+    # column is absent or zero, which is what keeps a record created before the
+    # migration costing the same as it did. The column is dropped once no read
+    # path remains.
     labor_hours: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
         server_default="0",
-        comment="Labor hours required (post-processing, assembly, etc.)",
+        comment=(
+            "DEPRECATED (Tier 1): superseded by labor_hours_per_item. "
+            "Labor hours required (post-processing, assembly, etc.)"
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # Item cost profile (Tier 1)
+    #
+    # Labor is split four ways because the four behave differently: per-plate
+    # work is divided across the plate's output (FR-013), per-item work is not,
+    # finishing may carry its own rate (FR-012), and packing happens on a part
+    # already known good so the failure premium must never reach it (FR-015).
+    # ------------------------------------------------------------------
+    waste_grams: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment=(
+            "Purge, priming and colour-change filament for one plate — consumed, "
+            "never sold, and costed as its own line (FR-009)"
+        ),
+    )
+
+    expected_yield: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4),
+        nullable=False,
+        default=Decimal("1.0"),
+        server_default="1.0",
+        comment="Per-part success probability in (0, 1]; 1.0 means no failure premium",
+    )
+
+    failure_mode: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default="per_part",
+        server_default="per_part",
+        comment=(
+            "How the yield figure is read: 'per_part' (parts fail independently) "
+            "or 'per_plate' (one failure condemns the plate)"
+        ),
+    )
+
+    labor_hours_per_plate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Preparation a plate needs once, divided across its output (FR-013)",
+    )
+
+    labor_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Handling per item, never divided across a plate (FR-013)",
+    )
+
+    finishing_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Finishing per item, charged at the finishing rate (FR-012)",
+    )
+
+    packing_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Packing per item — NOT at risk of print failure (FR-015, FR-016)",
     )
 
     labor_rate_override: Mapped[Optional[Decimal]] = mapped_column(
@@ -235,6 +323,17 @@ class Model(Base, UUIDMixin, TimestampMixin):
     # Constraints
     __table_args__ = (
         UniqueConstraint("tenant_id", "sku", name="uq_model_tenant_sku"),
+        # A yield of zero would divide the at-risk cost by nothing and report an
+        # infinite cost; it is a configuration error, not a number (spec edge
+        # case "Yield of zero or 100%").
+        CheckConstraint(
+            "expected_yield > 0 AND expected_yield <= 1",
+            name="check_model_expected_yield_in_unit_interval",
+        ),
+        CheckConstraint(
+            "failure_mode IN ('per_part', 'per_plate')",
+            name="check_model_failure_mode",
+        ),
         {"comment": "3D printed model/part with Bill of Materials and cost tracking"},
     )
 

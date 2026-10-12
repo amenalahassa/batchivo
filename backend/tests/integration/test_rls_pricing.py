@@ -124,31 +124,52 @@ def _dependency_functions(route: APIRoute) -> set:
     return seen
 
 
+def _handler_dependency_functions(route: APIRoute) -> set:
+    """The dependencies the *handler itself* declares, not their children.
+
+    The distinction matters for the session check below. Authentication cannot
+    run on the RLS session: `get_current_user` has to resolve the bearer token
+    before any tenant is known, so it necessarily takes `get_db`, and every
+    authenticated route therefore reaches `get_db` transitively. Asserting over
+    the transitive set would be unsatisfiable for every route in this feature.
+
+    What the Constitution requires is that the handler's *own* queries run with
+    `SET LOCAL app.current_tenant_id` in force, which is a claim about the
+    session the handler was handed.
+    """
+    return {
+        dependant.call for dependant in route.dependant.dependencies if dependant.call is not None
+    }
+
+
 @pytest.mark.parametrize(
     ("method", "path", "task"),
     FEATURE_ROUTES,
     ids=[f"{m} {p}" for m, p, _ in FEATURE_ROUTES],
 )
 def test_route_uses_the_rls_session_dependency(method: str, path: str, task: str) -> None:
-    """A pricing route must take ``get_tenant_db``, never ``get_db``.
+    """A pricing route's handler must take ``get_tenant_db``, never ``get_db``.
 
     RLS engages only through ``get_tenant_db``, which issues
     ``SET LOCAL app.current_tenant_id``. A handler on ``get_db`` has
     application-level filtering as its only protection, which the Constitution
     rules out as a sole belt.
+
+    Only the handler's own dependencies are examined; see
+    :func:`_handler_dependency_functions` for why the transitive set cannot be.
     """
     route = _registered().get((method, path))
     if route is None:
         pytest.skip(f"{method} {path} arrives with task {task}")
 
-    functions = _dependency_functions(route)
+    functions = _handler_dependency_functions(route)
     assert get_tenant_db in functions, (
         f"{method} {path} does not depend on get_tenant_db, so row-level "
         f"security never engages for it (Constitution I)"
     )
     assert get_db not in functions, (
-        f"{method} {path} depends on get_db; a tenant-scoped route must use "
-        f"get_tenant_db so RLS engages"
+        f"{method} {path} takes get_db directly; a tenant-scoped handler must "
+        f"query on get_tenant_db so RLS engages"
     )
 
 
@@ -322,6 +343,31 @@ class TestTheHarnessItselfIsWired:
             "dependency inspection found no session dependency on a route that "
             "certainly has one, so the assertions above prove nothing"
         )
+
+    def test_the_handler_level_inspector_is_narrower_than_the_transitive_one(
+        self,
+    ) -> None:
+        """Prove the shallow inspector really is shallow.
+
+        If it quietly returned the transitive set, the session assertion would
+        be unsatisfiable again and every pricing route would fail; if it
+        returned nothing, the assertion would pass vacuously. A route whose
+        auth chain reaches `get_db` below the surface shows it does neither.
+        """
+        route = _registered().get(("GET", f"{API}/settings/pricing-policy"))
+        assert route is not None, (
+            "the pricing policy route was not found; this check proves nothing"
+        )
+        shallow = _handler_dependency_functions(route)
+        transitive = _dependency_functions(route)
+
+        assert shallow, "the handler-level inspector found no dependencies at all"
+        assert get_db in transitive, (
+            "authentication no longer reaches get_db, so this route cannot show "
+            "the difference between the two inspectors -- pick another"
+        )
+        assert get_db not in shallow
+        assert shallow < transitive
 
     def test_the_prefix_map_matches_the_app(self) -> None:
         """Every path the harness believes in must be one the app publishes.

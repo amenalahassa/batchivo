@@ -29,7 +29,11 @@ Causes
                       cost exactly.
     new-line:<key>    a newly introduced breakdown line (machine, waste, yield,
                       overhead, landed_cost, ...) accounts for the delta;
-                      verified by comparing the delta against that line.
+                      verified by comparing the delta against that line. Where
+                      several such causes are declared and no single one
+                      explains the delta, their movements are checked together
+                      and each is named with its own contribution -- their sum
+                      must equal the delta to the cent.
 
 ``--emit-costs`` is the internal mode the script runs in when invoked inside the
 before-ref worktree. It prints JSON on stdout and nothing else.
@@ -97,6 +101,14 @@ async def _collect_costs() -> list[dict[str, Any]]:
         tenant_labor_rate = None  # type: ignore[assignment]
         tenant_overhead_percentage = None  # type: ignore[assignment]
 
+    # Tier 1 onwards the engine takes a resolved policy and can emit an
+    # itemised breakdown. Both are absent on an earlier ref, where the import
+    # simply fails and the flat shape is all there is to report.
+    try:
+        from app.services.pricing_policy import resolve_cost_policy
+    except ImportError:  # pragma: no cover - only on a pre-Tier-1 ref
+        resolve_cost_policy = None  # type: ignore[assignment]
+
     engine_default_rate = str(getattr(costing_module, "DEFAULT_LABOR_RATE", "") or "")
 
     rows: list[dict[str, Any]] = []
@@ -127,9 +139,18 @@ async def _collect_costs() -> list[dict[str, Any]]:
                 rate = tenant_labor_rate(tenant)
                 overhead = tenant_overhead_percentage(tenant)
 
+            policy = None
+            if resolve_cost_policy is not None:
+                policy = await resolve_cost_policy(db, tenant)
+                # Report the rate the engine will really use, which from Tier 1
+                # is the policy's and not the settings blob's.
+                rate = policy.print_labor_rate
+
             for product in products:
                 kwargs: dict[str, Any] = {}
-                if rate is not None:
+                if policy is not None:
+                    kwargs["policy"] = policy
+                elif rate is not None:
                     kwargs["labor_rate"] = rate
 
                 try:
@@ -145,17 +166,25 @@ async def _collect_costs() -> list[dict[str, Any]]:
                     )
                     continue
 
+                # The flat fields, plus -- from Tier 1 -- the itemised lines.
+                # Attribution works per line, so a tier that introduces machine
+                # occupancy or purge waste is only explainable if those keys
+                # reach the report at all.
+                lines = {
+                    key: str(value)
+                    for key, value in breakdown.model_dump().items()
+                    if isinstance(value, Decimal)
+                }
+                itemised = _itemised_lines(CostingService, product, kwargs)
+                lines.update(itemised)
+
                 rows.append(
                     {
                         "tenant": tenant.slug,
                         "product_id": str(product.id),
                         "sku": product.sku,
                         "total_make_cost": str(breakdown.total_make_cost),
-                        "lines": {
-                            key: str(value)
-                            for key, value in breakdown.model_dump().items()
-                            if isinstance(value, Decimal)
-                        },
+                        "lines": lines,
                         "labor_rate_used": str(rate) if rate is not None else engine_default_rate,
                         "overhead_pct_used": str(overhead) if overhead is not None else "",
                         "engine_default_labor_rate": engine_default_rate,
@@ -163,6 +192,33 @@ async def _collect_costs() -> list[dict[str, Any]]:
                 )
 
     return rows
+
+
+def _itemised_lines(costing_service: Any, product: Any, kwargs: dict[str, Any]) -> dict[str, str]:
+    """The structured breakdown's lines, keyed by line key, or nothing.
+
+    Returns an empty mapping on a ref whose engine has no structured breakdown,
+    and on any failure: this is a reporting enrichment, and a report that
+    crashes is worse than one that falls back to the flat shape it already had.
+    """
+    breakdown_method = getattr(costing_service, "product_breakdown", None)
+    if breakdown_method is None:
+        return {}
+    try:
+        structured = breakdown_method(product, **kwargs)
+    except Exception:  # pragma: no cover - a cycle is already reported above
+        return {}
+
+    lines: dict[str, str] = {}
+    for line in getattr(structured, "lines", []) or []:
+        # Several child items can contribute to one key; the report wants the
+        # total movement of that key, not the last contributor's share.
+        existing = Decimal(lines.get(line.key, "0"))
+        lines[line.key] = str(existing + Decimal(str(line.amount)))
+    premium = getattr(structured, "failure_premium", None)
+    if premium is not None:
+        lines["failure_premium"] = str(premium)
+    return lines
 
 
 def _settings_for_subprocess() -> dict[str, str]:
@@ -276,8 +332,62 @@ def _explain_new_line(key: str, before: dict[str, Any], after: dict[str, Any]) -
     return None
 
 
+def _explain_new_lines_together(
+    keys: list[str], before: dict[str, Any], after: dict[str, Any]
+) -> str | None:
+    """Verify the delta is accounted for by the declared new lines *together*.
+
+    A tier that introduces one line at a time is explained by
+    :func:`_explain_new_line`. Tier 1 introduces several at once -- machine
+    occupancy, purge waste, overhead per machine-hour and the failure premium
+    all appear in the same change -- and no single line equals the delta.
+
+    This is still attribution per line, not a blanket excuse: every declared
+    line's own movement is named, and their sum must equal the delta but for
+    the per-line rounding residue, which is named too. A line nobody declared,
+    moving by a cent or more, leaves the product unattributed.
+    """
+    if len(keys) < 2:
+        return None
+
+    after_lines = after.get("lines", {})
+    before_lines = before.get("lines", {})
+    delta = Decimal(after["total_make_cost"]) - Decimal(before["total_make_cost"])
+
+    parts: list[str] = []
+    accounted = Decimal("0")
+    for key in keys:
+        moved = Decimal(after_lines.get(key, "0")) - Decimal(before_lines.get(key, "0"))
+        if moved == 0:
+            continue
+        accounted += moved
+        parts.append(f"{key} {moved:+}")
+
+    if not parts:
+        return None
+
+    residue = accounted - delta
+    if residue != 0:
+        # Each line is presented rounded to the cent while the total is
+        # computed unrounded, so the sum of n rounded lines can differ from the
+        # total by up to half a cent per line. That is the only discrepancy
+        # allowed, it is bounded by the arithmetic rather than by taste, and it
+        # is named in the explanation instead of being quietly absorbed.
+        allowed = Decimal("0.005") * len(parts)
+        if abs(residue) > allowed:
+            return None
+        parts.append(f"rounding {-residue:+}")
+
+    return "; ".join(parts)
+
+
 def attribute(before: dict[str, Any], after: dict[str, Any], causes: list[str]) -> str:
-    """Return the verified explanation for one product's delta."""
+    """Return the verified explanation for one product's delta.
+
+    A single cause that explains the whole delta is preferred: it is the more
+    precise claim. Only when none does are the declared new lines checked
+    together, which is the shape a multi-line tier actually has.
+    """
     for cause in causes:
         if cause == "labor-rate":
             found = _explain_labor_rate(before, after)
@@ -287,6 +397,12 @@ def attribute(before: dict[str, Any], after: dict[str, Any], causes: list[str]) 
             raise SystemExit(f"unknown cause '{cause}'. Known causes: labor-rate, new-line:<key>")
         if found:
             return f"{cause} ({found})"
+
+    keys = [cause.split(":", 1)[1] for cause in causes if cause.startswith("new-line:")]
+    together = _explain_new_lines_together(keys, before, after)
+    if together:
+        return f"new lines ({together})"
+
     raise Unattributed(after["sku"])
 
 

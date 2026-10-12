@@ -9,16 +9,18 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
 from app.database import get_db
 from app.models.model import Model
 from app.models.model_component import ModelComponent
 from app.models.model_material import ModelMaterial
+from app.models.printer import Printer
 from app.models.spool import Spool
 from app.models.tenant import Tenant
 from app.models.filament_type import FilamentType
 from app.schemas.model import (
     BOMSpoolSuggestion,
+    CostBreakdown,
     ModelComponentCreate,
     ModelComponentResponse,
     ModelCreate,
@@ -30,8 +32,9 @@ from app.schemas.model import (
     ModelResponse,
     ModelUpdate,
 )
+from app.services.cost_resolution import model_cost_breakdown
 from app.services.costing import CostingService
-from app.services.tenant_cost_settings import tenant_labor_rate, tenant_overhead_percentage
+from app.services.pricing_policy import resolve_cost_policy
 from app.utils.csv_handler import (
     CSVImportError,
     generate_csv_export,
@@ -44,17 +47,16 @@ router = APIRouter()
 
 
 # Helper function to calculate and attach cost breakdown
-async def model_with_cost(model: Model, tenant: Tenant) -> dict:
+async def model_with_cost(model: Model, tenant: Tenant, db: AsyncSession) -> dict:
     """Convert Model to response dict with cost breakdown.
 
-    The tenant is required, not optional: the labor rate and overhead default
-    come from what this operator configured (Constitution IV).
+    The policy is resolved from the database rather than read out of the
+    tenant settings blob: it is the same snapshot `GET /models/{id}/cost`
+    builds its structured breakdown from, so the flat total here and the
+    itemised total there cannot disagree (Constitution III).
     """
-    cost_breakdown = CostingService.calculate_model_cost(
-        model,
-        labor_rate=tenant_labor_rate(tenant),
-        overhead_percentage=tenant_overhead_percentage(tenant),
-    )
+    policy = await resolve_cost_policy(db, tenant)
+    cost_breakdown = CostingService.calculate_model_cost(model, policy=policy)
 
     return {
         **model.__dict__,
@@ -99,7 +101,7 @@ async def create_model(
     await db.commit()
     await db.refresh(model)
 
-    return ModelDetailResponse(**await model_with_cost(model, tenant))
+    return ModelDetailResponse(**await model_with_cost(model, tenant, db))
 
 
 @router.get("", response_model=ModelListResponse)
@@ -160,19 +162,15 @@ async def list_models(
     result = await db.execute(query)
     models = result.scalars().all()
 
-    # Resolve the operator's figures once per request, not once per row: a
-    # rejected setting would otherwise log a warning for every model.
-    labor_rate = tenant_labor_rate(tenant)
-    overhead_percentage = tenant_overhead_percentage(tenant)
+    # Resolve the operator's policy once per request, not once per row: a
+    # rejected setting would otherwise log a warning for every model, and two
+    # rows in one list must never be costed at two different rates.
+    policy = await resolve_cost_policy(db, tenant)
 
     # Calculate total_cost for each model
     model_responses = []
     for m in models:
-        cost_breakdown = CostingService.calculate_model_cost(
-            m,
-            labor_rate=labor_rate,
-            overhead_percentage=overhead_percentage,
-        )
+        cost_breakdown = CostingService.calculate_model_cost(m, policy=policy)
         model_dict = {
             **m.__dict__,
             "total_cost": cost_breakdown.total_cost,
@@ -219,7 +217,7 @@ async def export_models_csv(
     # Convert to dicts with cost breakdown
     model_dicts = []
     for model in models:
-        model_dict = await model_with_cost(model, tenant)
+        model_dict = await model_with_cost(model, tenant, db)
         model_dicts.append(model_dict)
 
     # Generate CSV
@@ -270,7 +268,61 @@ async def get_model(
             detail="Model not found",
         )
 
-    return ModelDetailResponse(**await model_with_cost(model, tenant))
+    return ModelDetailResponse(**await model_with_cost(model, tenant, db))
+
+
+@router.get("/{model_id}/cost", response_model=CostBreakdown)
+async def get_model_cost(
+    model_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+    printer_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Cost this item at the rate of the machine it is planned on "
+            "(FR-011). Omitted, the policy's default machine rate applies."
+        ),
+    ),
+) -> CostBreakdown:
+    """The itemised make-cost of one printed item (task T049).
+
+    Every line carries its amount, its risk class, where its inputs came from
+    and when they were set (FR-001, FR-018). Anything the operator has not
+    supplied is named in `incomplete_reasons` rather than costed at zero
+    (FR-019), because a zero is indistinguishable from a real figure.
+    """
+    query = (
+        select(Model)
+        .where(Model.id == model_id, Model.tenant_id == tenant.id)
+        .options(
+            selectinload(Model.materials).selectinload(ModelMaterial.spool),
+            selectinload(Model.components),
+            selectinload(Model.printer_configs),
+        )
+    )
+    result = await db.execute(query)
+    model = result.scalar_one_or_none()
+
+    if not model:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model not found",
+        )
+
+    printer = None
+    if printer_id is not None:
+        printer_result = await db.execute(
+            select(Printer).where(Printer.id == printer_id, Printer.tenant_id == tenant.id)
+        )
+        printer = printer_result.scalar_one_or_none()
+        if printer is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Printer not found",
+            )
+
+    return await model_cost_breakdown(db, tenant, model, printer=printer)
 
 
 @router.get("/{model_id}/production-defaults", response_model=ModelProductionDefaults)
@@ -416,7 +468,7 @@ async def update_model(
     await db.commit()
     await db.refresh(model)
 
-    return ModelDetailResponse(**await model_with_cost(model, tenant))
+    return ModelDetailResponse(**await model_with_cost(model, tenant, db))
 
 
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)

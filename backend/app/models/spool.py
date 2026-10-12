@@ -3,13 +3,16 @@
 import uuid
 from decimal import Decimal
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+
+if TYPE_CHECKING:
+    from app.models.filament_purchase import FilamentPurchase
 
 
 class Spool(Base, UUIDMixin, TimestampMixin):
@@ -85,6 +88,27 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         comment="Supplier/vendor name",
     )
 
+    # Landed cost (Tier 1)
+    filament_purchase_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("filament_purchases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment=(
+            "Purchase this spool came in on, which carries the inbound shipping "
+            "and tax to allocate. NULL keeps the spool costing from its own "
+            "price with no allocated shipping (FR-008e)"
+        ),
+    )
+
+    unusable_remainder_grams: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 2),
+        nullable=True,
+        comment=(
+            "Filament left on the core that cannot be printed. The per-gram cost "
+            "divides by nominal weight less this, never by nominal weight (FR-008d)"
+        ),
+    )
+
     # Storage & Organization
     storage_location: Mapped[Optional[str]] = mapped_column(
         String(100),
@@ -126,6 +150,19 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         lazy="select",
     )
 
+    filament_purchase: Mapped[Optional["FilamentPurchase"]] = relationship(
+        "FilamentPurchase",
+        back_populates="spools",
+        lazy="select",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "unusable_remainder_grams IS NULL OR unusable_remainder_grams >= 0",
+            name="check_spool_unusable_remainder_non_negative",
+        ),
+    )
+
     def __repr__(self) -> str:
         return f"<Spool(id={self.spool_id}, filament_type_id={self.filament_type_id})>"
 
@@ -142,17 +179,40 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         return (float(self.current_weight) / float(self.initial_weight)) * 100
 
     @property
+    def usable_weight_grams(self) -> Decimal:
+        """Nominal weight less the measured unusable remainder (FR-008d)."""
+        nominal = Decimal(str(self.initial_weight))
+        remainder = (
+            Decimal(str(self.unusable_remainder_grams))
+            if self.unusable_remainder_grams is not None
+            else Decimal("0")
+        )
+        usable = nominal - remainder
+        return usable if usable > 0 else Decimal("0")
+
+    @property
     def cost_per_gram(self) -> Optional[Decimal]:
-        """Calculate cost per gram from purchase price and initial weight.
+        """Landed cost per usable gram, or ``None`` when it cannot be derived.
 
         Exact, because this figure seeds `ModelMaterial.cost_per_gram` and so
         reaches every make-cost in the system (Constitution IV). It used to
         divide two floats, which `app/services/production_run.py` then had to
         wrap in `Decimal(str(...))` to put back into a Decimal column.
+
+        Tier 1 makes this the **landed** figure: it divides by usable weight
+        rather than nominal weight, and includes the shipping and the
+        non-recoverable tax allocated from the parent purchase. There is one
+        implementation of that derivation, in
+        :mod:`app.services.landed_cost`, and this property calls it rather
+        than restating it (Constitution III).
+
+        A spool with no parent purchase and no recorded remainder lands on
+        exactly the figure it reported before Tier 1 -- purchase price over
+        initial weight -- which is what FR-008e requires.
         """
-        if self.purchase_price is not None and self.initial_weight > 0:
-            return Decimal(str(self.purchase_price)) / Decimal(str(self.initial_weight))
-        return None
+        from app.services.landed_cost import spool_landed_cost
+
+        return spool_landed_cost(self).cost_per_gram
 
     @property
     def is_low_stock(self, threshold: float = 20.0) -> bool:

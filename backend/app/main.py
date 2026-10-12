@@ -220,6 +220,7 @@ from app.api.v1 import (
     pages,
     payments,
     platform,
+    pricing_policy,
     print_queue,
     printer_bambu,
     printer_ws,
@@ -237,6 +238,7 @@ from app.api.v1 import (
     sku,
     spoolmandb,
     spools,
+    filament_purchases,
     filament_types,
     tenant_members,
     test,
@@ -258,6 +260,11 @@ app.include_router(
     filament_types.router,
     prefix=f"{settings.api_v1_prefix}/filament-types",
     tags=["filament-types"],
+)
+app.include_router(
+    filament_purchases.router,
+    prefix=f"{settings.api_v1_prefix}/filament-purchases",
+    tags=["filament-purchases"],
 )
 app.include_router(
     consumables.router, prefix=f"{settings.api_v1_prefix}/consumables", tags=["consumables"]
@@ -327,6 +334,14 @@ app.include_router(
 )
 app.include_router(
     settings_api.router, prefix=f"{settings.api_v1_prefix}/settings", tags=["settings"]
+)
+# Pricing policy shares the /settings prefix: it is a settings screen to the
+# operator, and a separate module only because its temporal write path has
+# nothing in common with the rest of settings.
+app.include_router(
+    pricing_policy.router,
+    prefix=f"{settings.api_v1_prefix}/settings",
+    tags=["pricing-policy"],
 )
 app.include_router(
     tenant_members.router,
