@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from app.models.sales_channel import SalesChannel
     from app.services.provenance import FieldOrigin
 
+from app.observability.tracing import traced
 from app.schemas.model import CostBreakdown, CostLine, ModelCostBreakdown
 from app.schemas.product import ProductCostBreakdown
 from app.services.fee_engine import (
@@ -941,6 +942,7 @@ class CostingService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    @traced("cost.item_breakdown")
     def item_breakdown(
         model: "Model",
         *,
@@ -968,6 +970,7 @@ class CostingService:
         )
 
     @staticmethod
+    @traced("cost.product_breakdown")
     def product_breakdown(
         product: "Product",
         *,
@@ -1345,6 +1348,7 @@ class CostingService:
     # ------------------------------------------------------------------
 
     @staticmethod
+    @traced("cost.margin")
     def margin(
         *,
         context: OrderContext,

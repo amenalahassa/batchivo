@@ -197,9 +197,7 @@ class TestOrderingByEarningsPerMachineHour:
 
         assert [entry.job.id for entry in ranking] == [quick.id, slow.id]
 
-    async def test_arrival_order_does_not_decide_it(
-        self, db_session, test_tenant, world
-    ) -> None:
+    async def test_arrival_order_does_not_decide_it(self, db_session, test_tenant, world) -> None:
         # The slow job was queued first. Under the queue's default order it
         # would print first, which is the behaviour this ranking replaces.
         await queue_job(db_session, test_tenant, product=world["products"]["slow"])
@@ -221,9 +219,7 @@ class TestOrderingByEarningsPerMachineHour:
         assert entry.machine_hours == Decimal("2.5")
         assert entry.margin_pct is not None
 
-    async def test_the_figure_matches_the_margin_path(
-        self, db_session, test_tenant, world
-    ) -> None:
+    async def test_the_figure_matches_the_margin_path(self, db_session, test_tenant, world) -> None:
         # Constitution III, asserted rather than assumed: the queue must report
         # what the margin engine reports at that price.
         from app.services import fee_engine
@@ -262,9 +258,7 @@ class TestOrderingByEarningsPerMachineHour:
 
 
 class TestWhatTheRankingRefusesToDecide:
-    async def test_priority_still_comes_first(
-        self, db_session, test_tenant, world
-    ) -> None:
+    async def test_priority_still_comes_first(self, db_session, test_tenant, world) -> None:
         # FR-002: somebody marked this urgent. An economic figure does not
         # overrule a person's decision about their own shop.
         urgent_slow = await queue_job(

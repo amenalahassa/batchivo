@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
+from app.observability.tracing import traced
 from app.core import clock
 from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES
 
@@ -439,6 +440,7 @@ def rules_in_effect(
     return sorted(live, key=lambda rule: (rule.sort_order, rule.name))
 
 
+@traced("fee.compute")
 def compute(
     channel: "SalesChannel",
     context: OrderContext,

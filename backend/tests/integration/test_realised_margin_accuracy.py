@@ -146,9 +146,7 @@ async def settled(db_session, test_tenant, test_filament_type):
     )
     db_session.add(product)
     await db_session.flush()
-    db_session.add(
-        ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1)
-    )
+    db_session.add(ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1))
 
     channel = SalesChannel(
         id=uuid4(),
@@ -268,12 +266,16 @@ async def settled(db_session, test_tenant, test_filament_type):
 
 async def reload_item(db_session, order) -> OrderItem:
     return (
-        await db_session.execute(
-            select(OrderItem)
-            .where(OrderItem.order_id == order.id)
-            .execution_options(populate_existing=True)
+        (
+            await db_session.execute(
+                select(OrderItem)
+                .where(OrderItem.order_id == order.id)
+                .execution_options(populate_existing=True)
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 def margin_from_the_records(item: OrderItem, *, fees_paid: Decimal, run) -> Decimal:
@@ -288,9 +290,7 @@ def margin_from_the_records(item: OrderItem, *, fees_paid: Decimal, run) -> Deci
     breakdown = item.cost_breakdown_json or {}
     lines = {line["key"]: Decimal(str(line["amount"])) for line in breakdown.get("lines", [])}
 
-    material = Decimal(str(run.actual_total_weight_grams)) * Decimal(
-        str(run.cost_per_gram_actual)
-    )
+    material = Decimal(str(run.actual_total_weight_grams)) * Decimal(str(run.cost_per_gram_actual))
     machine_rate = lines["machine"] / Decimal(str(breakdown["machine_hours"]))
     machine = Decimal(str(run.duration_hours)) * machine_rate
 
@@ -360,9 +360,7 @@ class TestTheReportedMarginIsWithinTwoPoints:
         assert "material" in joined
         assert "machine time" in joined
 
-    async def test_the_postage_paid_is_a_cost(
-        self, db_session, test_tenant, settled
-    ) -> None:
+    async def test_the_postage_paid_is_a_cost(self, db_session, test_tenant, settled) -> None:
         item = await reload_item(db_session, settled["order"])
 
         reported = await realised_margin(db_session, test_tenant, item)

@@ -37,6 +37,7 @@ from datetime import date
 from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
+from app.observability.tracing import traced
 from app.core import clock
 from app.models.fee_rule import COUNT_BASES, PERIODIC_BASES
 from app.services import fee_engine
@@ -476,6 +477,7 @@ def _context_at(
     )
 
 
+@traced("price.solve")
 def solve(
     *,
     channel: "SalesChannel",
@@ -701,6 +703,7 @@ def margin_at(
     )
 
 
+@traced("price.ladder")
 def ladder(
     *,
     channel: "SalesChannel",

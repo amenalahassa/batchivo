@@ -122,9 +122,7 @@ def _snapshot_premium(item: OrderItem) -> Decimal:
     return _decimal(breakdown.get("failure_premium"))
 
 
-async def _actual_fees_for_order(
-    db: AsyncSession, tenant: "Tenant", order: Order
-) -> Decimal:
+async def _actual_fees_for_order(db: AsyncSession, tenant: "Tenant", order: Order) -> Decimal:
     """Fees recorded against this order, as a statement reconciled them.
 
     Order-level only (FR-041b). A period total is not attributable to one
