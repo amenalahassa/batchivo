@@ -314,11 +314,11 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T121 [P] Update the pricing section of `CLAUDE.md` so it does not contradict the constitution or this feature
+- [X] T121 [P] Update the pricing section of `CLAUDE.md` so it does not contradict the constitution or this feature
 - [X] T122 [P] Add tracing spans to the cost, fee and solver paths via `backend/app/observability/tracing.py`, instrumenting `backend/app/services/costing.py`, `fee_engine.py` and `pricing_solver.py`
 - [ ] T123 Drop the deprecated `SalesChannel.fee_percentage` and `fee_fixed` columns and the legacy `Tenant.settings["default_labor_rate"]` key, in a migration under `backend/alembic/versions/`, once no read path remains
 - [ ] T124 Retire the legacy comparison profile per FR-052 by deleting `backend/tests/fixtures/legacy_profile.py` and its test
-- [ ] T125 [P] Document the pricing model for operators in `docs-site/docs/pricing-model.md`
+- [X] T125 [P] Document the pricing model for operators in `docs-site/docs/pricing-model.md`
 - [ ] T126 Run the full `specs/002-pricing-engine-rebuild/quickstart.md` validation end to end
 
 ---

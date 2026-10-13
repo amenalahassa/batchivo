@@ -40,6 +40,41 @@ async def list_items(
 
 ---
 
+### Pricing, Costing and Money
+
+The pricing engine has its own constitution at `.specify/memory/constitution.md`.
+These are the rules a change to it must not break:
+
+- **One implementation.** Material, machine, labour, overhead, packaging, fees,
+  tax and the margin each have exactly one authority: `app/services/costing.py`,
+  `fee_engine.py`, `pricing_solver.py`, `cost_resolution.py`. Never recompute a
+  figure beside the engine — not in a route, not in a report, not in the
+  frontend. A second copy drifts, and then two screens disagree about one price.
+- **Money is exact.** `Decimal` end to end, `Numeric` in the database, and
+  decimal **strings** across the wire. Never `float`, never JavaScript numbers
+  for an amount. Round once, at the edge, to the currency's own precision.
+- **Nothing derived is stored.** A cost or margin is computed on read from
+  inputs and the policy in force. The exceptions are deliberate and immutable:
+  a `PriceSnapshot` (what a customer was quoted) and a realised margin's
+  recorded actuals. If you are adding a column for a number the engine can
+  already derive, you are adding a figure that will go stale.
+- **Every input says where it came from.** Writing a cost input means writing
+  its provenance (`observed` / `measured` / `policy` / `assumed`) with it. A
+  screen showing a cost shows how much of it is evidence and how much is a
+  guess. Never relabel an operator's figure as observed.
+- **History is immutable.** Fee rules, policies and snapshots are
+  effective-dated — supersede, never update in place. A past order's figures
+  must not move because today's rate changed.
+- **Telemetry proposes, it does not reprice.** A reading from a printer or a
+  plug goes to `variance_service.consider_outcomes`, which raises a proposal an
+  operator accepts. A faulty sensor must never move a price on its own.
+- **A scenario writes nothing.** Catalogue sweeps run inside a savepoint that
+  is always rolled back (`app/services/scenario_service.py`).
+
+Operator-facing explanation of the model: `docs-site/docs/pricing-model.md`.
+
+---
+
 ## Quick Reference
 
 | Action | Command |

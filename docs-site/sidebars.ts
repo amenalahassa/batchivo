@@ -8,6 +8,11 @@ const sidebars: SidebarsConfig = {
       label: 'Introduction',
     },
     {
+      type: 'doc',
+      id: 'pricing-model',
+      label: 'How Pricing Works',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,
