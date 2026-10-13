@@ -376,8 +376,7 @@ class Product(Base, UUIDMixin, TimestampMixin):
     current_pricing: Mapped[list["ProductPricing"]] = relationship(
         "ProductPricing",
         primaryjoin=(
-            "and_(Product.id == ProductPricing.product_id, "
-            "ProductPricing.valid_to.is_(None))"
+            "and_(Product.id == ProductPricing.product_id, ProductPricing.valid_to.is_(None))"
         ),
         viewonly=True,
         lazy="selectin",

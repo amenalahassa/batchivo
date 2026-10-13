@@ -142,9 +142,7 @@ async def get_provenance(
     policy = await resolve_cost_policy(db, tenant)
     threshold = policy.staleness_threshold_days
 
-    pending = await variance_service.pending_revision_fields(
-        db, tenant, entity_type, entity_id
-    )
+    pending = await variance_service.pending_revision_fields(db, tenant, entity_type, entity_id)
 
     fields: list[FieldOriginResponse] = []
     for field_name, origin in origins.items():
@@ -220,9 +218,7 @@ async def put_provenance(
     try:
         entry = registry_entry(entity_type, field_name)
     except UnknownProvenanceField as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     await _require_write_role(
         db,
@@ -249,18 +245,14 @@ async def put_provenance(
     except ProvenanceNotEditable as exc:
         # 409 rather than 403: the operator has the role, and the figure is the
         # obstacle. A 403 would read as "ask an admin", which would not help.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     await db.commit()
 
     origins = await origins_for_entity(db, tenant, entity_type, entity_id)
     origin = origins[field_name]
     policy = await resolve_cost_policy(db, tenant)
-    pending = await variance_service.pending_revision_fields(
-        db, tenant, entity_type, entity_id
-    )
+    pending = await variance_service.pending_revision_fields(db, tenant, entity_type, entity_id)
 
     logger.info(
         f"Recorded provenance for {entity_type}.{field_name} on {entity_id}: "
@@ -324,9 +316,7 @@ async def list_estimate_revisions(
     )
 
     return EstimateRevisionListResponse(
-        revisions=[
-            EstimateRevisionResponse.model_validate(revision) for revision in revisions
-        ],
+        revisions=[EstimateRevisionResponse.model_validate(revision) for revision in revisions],
         total=len(revisions),
         pending_count=len(pending),
     )
@@ -348,27 +338,19 @@ async def _decide(
     """
     await require_role(user, tenant, db, "member")
 
-    action = (
-        variance_service.accept_revision if accept else variance_service.reject_revision
-    )
+    action = variance_service.accept_revision if accept else variance_service.reject_revision
     try:
         revision = await action(db, tenant, revision_id, user=user)
     except LookupError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         # Already decided. 409, because the request was well-formed and the
         # state of the world is what refuses it.
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except NotLearnable as exc:
         # The figure became an operator decision while the proposal was
         # pending. The decision wins (FR-002).
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     await db.commit()
     return EstimateRevisionResponse.model_validate(revision)

@@ -864,6 +864,24 @@ class MarginResult:
     tax_exclusive_derived: bool
     revenue_tax_exclusive: Decimal
 
+    #: Profit divided by the machine hours the unit occupies (FR-043).
+    #:
+    #: A first-class figure rather than something a screen derives, because in
+    #: a print shop the binding constraint is the machine and not the money:
+    #: ranked by percentage, a 2% margin on a forty-hour print outranks a
+    #: healthy one on a two-hour print, and a shop run that way fills its
+    #: printers with work that pays nothing.
+    #:
+    #: ``None`` where there are no machine hours -- a hand-assembled kit, or an
+    #: item whose print time nobody recorded. Undefined is the honest answer:
+    #: zero would read as "this earns nothing an hour" and sort it to the
+    #: bottom of a ranking it does not belong in at all. Negative is kept as
+    #: negative, since a product losing money per machine-hour is precisely
+    #: what a capacity ranking exists to surface.
+    profit_per_machine_hour: Optional[Decimal] = None
+    #: The hours the figure above was divided by, so a reader can check it.
+    machine_hours: Optional[Decimal] = None
+
     observed_share: Optional[Decimal] = None
     assumed_share: Optional[Decimal] = None
     incomplete_reasons: list[str] = field(default_factory=list)
@@ -1337,6 +1355,7 @@ class CostingService:
         tax: Optional[TaxTreatment] = None,
         postage_paid: Decimal = ZERO,
         margin_basis: Optional[str] = None,
+        machine_hours: Optional[Decimal] = None,
         observed_share: Optional[Decimal] = None,
         assumed_share: Optional[Decimal] = None,
         incomplete_reasons: Sequence[str] = (),
@@ -1433,6 +1452,17 @@ class CostingService:
             # and a division would read as a crash.
             margin_pct = None
 
+        # --- 5. What the machine time earned (FR-043) ----------------------
+        # Divided out of the unrounded profit and rounded once, like every
+        # other figure in this chain. Rounding the profit first and dividing
+        # that would put the error in the denominator, where a long print
+        # magnifies it.
+        hours = Decimal(str(machine_hours)) if machine_hours is not None else None
+        if hours is not None and hours > ZERO:
+            per_machine_hour: Optional[Decimal] = (profit_exact / hours).quantize(CENT)
+        else:
+            per_machine_hour = None
+
         # Who owes the tax. It is never revenue under either answer (FR-028c),
         # and it is a liability only where the operator remits it (FR-028d).
         remitter = getattr(channel, "tax_remitter", "operator") or "operator"
@@ -1454,6 +1484,8 @@ class CostingService:
             margin_basis=basis,
             margin_basis_label=MARGIN_BASIS_LABELS[basis],
             margin_basis_amount=basis_amount.quantize(CENT),
+            profit_per_machine_hour=per_machine_hour,
+            machine_hours=hours,
             sales_tax_collected=collected.quantize(CENT),
             sales_tax_liability=liability.quantize(CENT),
             tax_remitter=remitter,

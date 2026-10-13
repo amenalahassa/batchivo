@@ -608,9 +608,7 @@ class TestTodayIsMeasuredInUtc:
         )
         assert result == fixed.date()
 
-    def test_the_dashboard_reads_that_one_clock_rather_than_its_own(
-        self, monkeypatch
-    ) -> None:
+    def test_the_dashboard_reads_that_one_clock_rather_than_its_own(self, monkeypatch) -> None:
         """So the guard above actually covers this endpoint.
 
         If `_utc_today` ever went back to calling `datetime.now()` itself, the

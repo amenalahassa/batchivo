@@ -34,7 +34,7 @@ All arithmetic is :class:`~decimal.Decimal` (Constitution IV), enforced by
 import logging
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
 from app.core import clock
@@ -329,9 +329,7 @@ def _coefficients(
 
     # profit(P) = (P + S)(1 - D) - (rate·P + const) - make_cost - postage
     slope = ONE - deduction_rate - fee_rate
-    intercept = (
-        shipping_revenue * (ONE - deduction_rate) - fee_constant - make_cost - postage_paid
-    )
+    intercept = shipping_revenue * (ONE - deduction_rate) - fee_constant - make_cost - postage_paid
     return _Coefficients(
         slope=slope,
         intercept=intercept,
@@ -669,6 +667,7 @@ def margin_at(
     shipping_revenue: Decimal = ZERO,
     extras: Decimal = ZERO,
     quantity: int = 1,
+    machine_hours: Optional[Decimal] = None,
     policy: Optional["CostPolicy"] = None,
     margin_basis: Optional[str] = None,
 ) -> MarginResult:
@@ -698,6 +697,7 @@ def margin_at(
         tax=TaxTreatment(),
         postage_paid=Decimal(str(postage_paid)),
         margin_basis=margin_basis,
+        machine_hours=machine_hours,
     )
 
 
@@ -752,19 +752,22 @@ def ladder(
             shipping_revenue=shipping_revenue,
             extras=extras,
             quantity=quantity,
+            machine_hours=hours,
             policy=policy,
             margin_basis=basis,
         )
-        per_hour: Optional[Decimal] = None
-        if hours is not None and hours > ZERO:
-            per_hour = (result.profit / hours).quantize(CENT, rounding=ROUND_HALF_UP)
+        # Read off the margin result rather than divided again here. The same
+        # arithmetic in two places is the defect this feature removed from the
+        # cost path (Constitution III), and the two would differ: the margin
+        # chain divides the unrounded profit, which is the figure the margin
+        # endpoint reports at this price.
         rungs.append(
             LadderRung(
                 price=price.quantize(CENT),
                 margin_pct=result.margin_pct,
                 profit=result.profit,
                 margin_basis=result.margin_basis,
-                profit_per_machine_hour=per_hour,
+                profit_per_machine_hour=result.profit_per_machine_hour,
             )
         )
         price += step

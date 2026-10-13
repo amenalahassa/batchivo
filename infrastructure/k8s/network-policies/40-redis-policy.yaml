@@ -1,8 +1,9 @@
 # Redis Network Policy
-# Redis is used for caching and session storage
+# Redis is used for caching, session storage and as the Celery broker
 #
 # Ingress:
-#   - Backend pods only
+#   - Backend pods
+#   - Celery worker pods (broker and result backend)
 #
 # Egress:
 #   - None required (Redis is an in-memory data store)
@@ -25,6 +26,15 @@ spec:
         - podSelector:
             matchLabels:
               app: backend
+      ports:
+        - protocol: TCP
+          port: 6379
+    # Allow ingress from the Celery worker: Redis is its broker and result
+    # backend (task T120, research.md D4)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: celery-worker
       ports:
         - protocol: TCP
           port: 6379

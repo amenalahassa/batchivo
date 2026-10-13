@@ -103,10 +103,8 @@ class TestReadingIsOpenToEveryRole:
 
 
 class TestWhatTheReadReports:
-    async def test_a_field_with_no_recorded_origin_is_still_reported(
-        self, client, subject
-    ) -> None:
-        """"Nobody has said" is the answer FR-001 wants shown.
+    async def test_a_field_with_no_recorded_origin_is_still_reported(self, client, subject) -> None:
+        """ "Nobody has said" is the answer FR-001 wants shown.
 
         Omitting the field would make an unrecorded figure indistinguishable
         from one that does not exist.
@@ -175,9 +173,7 @@ class TestWhatTheReadReports:
         assert response.status_code == 422
         assert "modle" in response.text
 
-    async def test_an_entity_that_does_not_exist_reports_defaults(
-        self, client
-    ) -> None:
+    async def test_an_entity_that_does_not_exist_reports_defaults(self, client) -> None:
         """Provenance is about field names, not about the record.
 
         A 404 would need a lookup per entity type for no gain; what comes back
@@ -261,9 +257,7 @@ class TestStalenessIsFlaggedNotHidden:
 
         assert entry["is_stale"] is False
 
-    async def test_the_threshold_reported_is_the_tenants_own(
-        self, client, subject
-    ) -> None:
+    async def test_the_threshold_reported_is_the_tenants_own(self, client, subject) -> None:
         """A count of stale figures cannot be judged without the threshold."""
         body = (await client.get(_url(ENTITY_TYPE, subject.id))).json()
 
@@ -319,9 +313,7 @@ class TestAnObservedFigureIsNotEditable:
         assert response.status_code == 409, response.text
         assert "read-only" in response.text or "refreshed" in response.text
 
-    async def test_the_refusal_is_a_conflict_not_a_forbidden(
-        self, client, observed
-    ) -> None:
+    async def test_the_refusal_is_a_conflict_not_a_forbidden(self, client, observed) -> None:
         """403 would read as "ask an admin", which would not help.
 
         The operator has the role. The figure is the obstacle.
@@ -334,20 +326,14 @@ class TestAnObservedFigureIsNotEditable:
         assert response.status_code != 403
         assert response.status_code == 409
 
-    async def test_the_stored_origin_is_unchanged_after_the_refusal(
-        self, client, observed
-    ) -> None:
-        await client.put(
-            _write_url(ENTITY_TYPE, observed.id, FIELD), json={"source": "measured"}
-        )
+    async def test_the_stored_origin_is_unchanged_after_the_refusal(self, client, observed) -> None:
+        await client.put(_write_url(ENTITY_TYPE, observed.id, FIELD), json={"source": "measured"})
 
         body = (await client.get(_url(ENTITY_TYPE, observed.id))).json()
         entry = next(f for f in body["fields"] if f["field_name"] == FIELD)
         assert entry["source"] == "observed"
 
-    async def test_the_read_reports_it_as_not_editable(
-        self, client, observed
-    ) -> None:
+    async def test_the_read_reports_it_as_not_editable(self, client, observed) -> None:
         """So the screen can omit the edit rather than offer one that fails."""
         body = (await client.get(_url(ENTITY_TYPE, observed.id))).json()
 
@@ -400,9 +386,7 @@ class TestWhoMayWrite:
 
         assert response.status_code == 403, response.text
 
-    async def test_a_member_may_not_declare_a_policy_figure(
-        self, as_role, subject
-    ) -> None:
+    async def test_a_member_may_not_declare_a_policy_figure(self, as_role, subject) -> None:
         """A policy figure is a monetary decision, so admin or owner (FR-007a).
 
         Claiming ``policy`` makes the write a decision whatever the field is,
@@ -418,9 +402,7 @@ class TestWhoMayWrite:
 
         assert response.status_code == 403, response.text
 
-    async def test_an_admin_may_declare_a_policy_figure(
-        self, as_role, subject
-    ) -> None:
+    async def test_an_admin_may_declare_a_policy_figure(self, as_role, subject) -> None:
         async with as_role(UserRole.ADMIN) as client:
             response = await client.put(
                 _write_url(ENTITY_TYPE, subject.id, FIELD),
@@ -476,9 +458,7 @@ class TestWritingTheOrigin:
 
         assert response.json()["as_of"] == str(TODAY)
 
-    async def test_confidence_crosses_the_wire_as_a_string(
-        self, client, subject
-    ) -> None:
+    async def test_confidence_crosses_the_wire_as_a_string(self, client, subject) -> None:
         """Constitution IV reaches every figure, confidence included.
 
         A fraction between 0 and 1, which is what the column's CHECK holds --
@@ -578,9 +558,7 @@ class TestAPendingProposalIsVisible:
         other = next(f for f in body["fields"] if f["field_name"] == "waste_grams")
         assert other["has_pending_revision"] is False
 
-    async def test_the_figure_itself_has_not_moved(
-        self, client, subject, with_proposal
-    ) -> None:
+    async def test_the_figure_itself_has_not_moved(self, client, subject, with_proposal) -> None:
         """Pricing keeps using the current estimate while a proposal is held."""
         assert subject.print_time_minutes == 100
 
@@ -598,21 +576,15 @@ class TestAPendingProposalIsVisible:
         assert sorted(proposal["derived_from_run_ids"]) == ["run-0", "run-1", "run-2"]
         assert proposal["state"] == "pending"
 
-    async def test_every_figure_in_the_proposal_is_a_string(
-        self, client, with_proposal
-    ) -> None:
+    async def test_every_figure_in_the_proposal_is_a_string(self, client, with_proposal) -> None:
         """A JSON number is a float the moment anything parses it."""
         proposal = (await client.get("/api/v1/estimate-revisions")).json()["revisions"][0]
 
         for key in ("current_value", "observed_value", "divergence_pct"):
             assert isinstance(proposal[key], str), f"{key} crossed the wire as a number"
 
-    async def test_the_list_can_be_filtered_by_state(
-        self, client, with_proposal
-    ) -> None:
-        accepted = (
-            await client.get("/api/v1/estimate-revisions?state=accepted")
-        ).json()
+    async def test_the_list_can_be_filtered_by_state(self, client, with_proposal) -> None:
+        accepted = (await client.get("/api/v1/estimate-revisions?state=accepted")).json()
 
         assert accepted["total"] == 0
         assert accepted["pending_count"] == 1, "the pending count is reported regardless"
@@ -644,9 +616,7 @@ class TestDecidingAProposalOverHttp:
 
     async def test_a_member_may_accept(self, as_role, held) -> None:
         async with as_role(UserRole.MEMBER) as client:
-            response = await client.post(
-                f"/api/v1/estimate-revisions/{held.id}/accept"
-            )
+            response = await client.post(f"/api/v1/estimate-revisions/{held.id}/accept")
 
         assert response.status_code == 200, response.text
         assert response.json()["state"] == "accepted"
@@ -657,9 +627,7 @@ class TestDecidingAProposalOverHttp:
         assert response.status_code == 200, response.text
         assert subject.print_time_minutes == 900
 
-    async def test_accepting_sets_the_origin_to_observed(
-        self, client, subject, held
-    ) -> None:
+    async def test_accepting_sets_the_origin_to_observed(self, client, subject, held) -> None:
         await client.post(f"/api/v1/estimate-revisions/{held.id}/accept")
 
         body = (await client.get(_url(ENTITY_TYPE, subject.id))).json()
@@ -670,15 +638,11 @@ class TestDecidingAProposalOverHttp:
 
     async def test_a_viewer_may_not_decide(self, as_role, held) -> None:
         async with as_role(UserRole.VIEWER) as client:
-            response = await client.post(
-                f"/api/v1/estimate-revisions/{held.id}/reject"
-            )
+            response = await client.post(f"/api/v1/estimate-revisions/{held.id}/reject")
 
         assert response.status_code == 403, response.text
 
-    async def test_rejecting_leaves_the_figure_alone(
-        self, client, subject, held
-    ) -> None:
+    async def test_rejecting_leaves_the_figure_alone(self, client, subject, held) -> None:
         response = await client.post(f"/api/v1/estimate-revisions/{held.id}/reject")
 
         assert response.status_code == 200, response.text
@@ -691,9 +655,7 @@ class TestDecidingAProposalOverHttp:
 
         assert again.status_code == 409, again.text
 
-    async def test_a_proposal_that_is_not_this_tenants_is_a_404(
-        self, client
-    ) -> None:
+    async def test_a_proposal_that_is_not_this_tenants_is_a_404(self, client) -> None:
         """404 rather than 403: a 403 confirms the id exists somewhere."""
         response = await client.post(f"/api/v1/estimate-revisions/{uuid4()}/accept")
 
@@ -702,8 +664,6 @@ class TestDecidingAProposalOverHttp:
     async def test_an_unauthenticated_decision_is_refused(
         self, unauthenticated_client, held
     ) -> None:
-        response = await unauthenticated_client.post(
-            f"/api/v1/estimate-revisions/{held.id}/accept"
-        )
+        response = await unauthenticated_client.post(f"/api/v1/estimate-revisions/{held.id}/accept")
 
         assert response.status_code == 401

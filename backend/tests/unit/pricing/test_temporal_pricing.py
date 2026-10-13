@@ -162,12 +162,10 @@ class TestReadingThePriceThatApplied:
             row("80.00", valid_from=date(2026, 1, 1), channel=OTHER_CHANNEL),
         ]
 
-        assert price_at(rows, as_of=date(2026, 6, 1), sales_channel_id=CHANNEL) == Decimal(
-            "50.00"
+        assert price_at(rows, as_of=date(2026, 6, 1), sales_channel_id=CHANNEL) == Decimal("50.00")
+        assert price_at(rows, as_of=date(2026, 6, 1), sales_channel_id=OTHER_CHANNEL) == Decimal(
+            "80.00"
         )
-        assert price_at(
-            rows, as_of=date(2026, 6, 1), sales_channel_id=OTHER_CHANNEL
-        ) == Decimal("80.00")
 
     def test_an_empty_history_is_unpriced_rather_than_an_error(self) -> None:
         assert resolve_price([], as_of=date(2026, 6, 1)) is None
@@ -207,13 +205,9 @@ class TestQuantityTiers:
         ],
     )
     def test_the_highest_tier_reached_wins(self, tiers, quantity, expected) -> None:
-        assert price_at(tiers, as_of=date(2026, 6, 1), quantity=quantity) == Decimal(
-            expected
-        )
+        assert price_at(tiers, as_of=date(2026, 6, 1), quantity=quantity) == Decimal(expected)
 
-    def test_the_price_at_exactly_a_break_is_the_tier_that_starts_there(
-        self, tiers
-    ) -> None:
+    def test_the_price_at_exactly_a_break_is_the_tier_that_starts_there(self, tiers) -> None:
         """Stated as its own test because it is the boundary the spec names.
 
         At exactly 10 units both the "1 or more" and the "10 or more" tier
@@ -291,9 +285,7 @@ class TestOverlappingPeriodsAreRefused:
     )
     def test_every_kind_of_overlap_is_refused(self, existing, valid_from, valid_to) -> None:
         with pytest.raises(PriceOverlapError):
-            assert_no_overlap(
-                existing, valid_from=valid_from, valid_to=valid_to, min_quantity=1
-            )
+            assert_no_overlap(existing, valid_from=valid_from, valid_to=valid_to, min_quantity=1)
 
     @pytest.mark.parametrize(
         "valid_from,valid_to",
@@ -311,9 +303,7 @@ class TestOverlappingPeriodsAreRefused:
         A price change closes one period the day before the next opens, so if
         this were refused no price could ever be changed.
         """
-        assert_no_overlap(
-            existing, valid_from=valid_from, valid_to=valid_to, min_quantity=1
-        )
+        assert_no_overlap(existing, valid_from=valid_from, valid_to=valid_to, min_quantity=1)
 
     def test_a_different_tier_does_not_collide(self, existing) -> None:
         """Tiers are independent periods: a "10 or more" price may coexist."""
@@ -336,9 +326,7 @@ class TestOverlappingPeriodsAreRefused:
     def test_the_refusal_names_the_row_it_collided_with(self, existing) -> None:
         """So the operator can see what they are about to contradict."""
         with pytest.raises(PriceOverlapError) as caught:
-            assert_no_overlap(
-                existing, valid_from=date(2026, 3, 1), valid_to=None, min_quantity=1
-            )
+            assert_no_overlap(existing, valid_from=date(2026, 3, 1), valid_to=None, min_quantity=1)
 
         assert caught.value.existing is existing[0]
         assert "50.00" in str(caught.value)
@@ -348,9 +336,7 @@ class TestOverlappingPeriodsAreRefused:
         current = [row("65.00", valid_from=date(2026, 1, 1))]
 
         with pytest.raises(PriceOverlapError):
-            assert_no_overlap(
-                current, valid_from=date(2026, 8, 1), valid_to=None, min_quantity=1
-            )
+            assert_no_overlap(current, valid_from=date(2026, 8, 1), valid_to=None, min_quantity=1)
 
 
 # ---------------------------------------------------------------------------
@@ -394,9 +380,7 @@ class TestTheStorefrontReadsOnlyCurrentPrices:
         assert storefront_price(product, sales_channel_id=CHANNEL) == Decimal("80.00")
 
     def test_an_inactive_listing_is_not_served(self) -> None:
-        product = FakeProduct(
-            [row("65.00", valid_from=date(2026, 1, 1), is_active=False)]
-        )
+        product = FakeProduct([row("65.00", valid_from=date(2026, 1, 1), is_active=False)])
 
         assert storefront_price(product) is None
 

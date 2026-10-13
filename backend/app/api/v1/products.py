@@ -75,7 +75,7 @@ from app.schemas.product_image import (
     ProductImageListResponse,
 )
 from app.services import fee_engine, pricing_solver, temporal_pricing
-from app.services.cost_resolution import product_cost_breakdown
+from app.services.cost_resolution import cost_load_options, product_cost_breakdown
 from app.services.costing import (
     MARGIN_BASIS_LABELS,
     CircularReferenceError,
@@ -106,52 +106,18 @@ router = APIRouter()
 
 
 def _get_product_load_options():
-    """
-    Get SQLAlchemy selectinload options for loading a Product with all
-    relationships needed for cost calculation.
+    """Everything a product response needs loaded.
 
-    This includes nested loading for child products to support recursive
-    cost calculation without lazy loading (which fails in async context).
+    The cost-bearing tree comes from `cost_load_options()`, which the catalogue
+    sweep behind a scenario uses as well: one declaration, so a relationship
+    added to the engine's reach cannot be eager-loaded on one path and
+    lazy-loaded into a 500 on the other (Constitution III). The extras below
+    are presentation only.
     """
     return [
-        # Load product models with their model details
-        selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.materials),
-        selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.components),
-        # Load child products with THEIR relationships (for recursive cost calc)
-        # Level 1: child products
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.materials),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.components),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.packaging_consumable),
-        # Level 2: grandchild products (child's child products)
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.packaging_consumable),
+        *cost_load_options(),
         # Load pricing with sales channels
         selectinload(Product.pricing).selectinload(ProductPricing.sales_channel),
-        # Load packaging consumable
-        selectinload(Product.packaging_consumable),
         # Load designer for attribution
         selectinload(Product.designer),
         # Load categories
@@ -816,6 +782,7 @@ async def get_product_margin(
         policy=policy,
         tax=treatment,
         postage_paid=postage,
+        machine_hours=breakdown.machine_hours,
         observed_share=breakdown.observed_share,
         assumed_share=breakdown.assumed_share,
         incomplete_reasons=breakdown.incomplete_reasons,
@@ -849,6 +816,8 @@ async def get_product_margin(
         margin_basis=result.margin_basis,
         margin_basis_label=result.margin_basis_label,
         margin_basis_amount=result.margin_basis_amount,
+        profit_per_machine_hour=result.profit_per_machine_hour,
+        machine_hours=result.machine_hours,
         sales_tax_collected=result.sales_tax_collected,
         sales_tax_liability=result.sales_tax_liability,
         tax_remitter=result.tax_remitter,

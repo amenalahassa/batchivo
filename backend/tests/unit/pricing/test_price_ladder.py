@@ -129,9 +129,7 @@ class TestEveryRungReportsTheRealMargin:
         The ladder is not a separate calculation, and this is where that is
         checked against the one figure the whole feature is pinned to.
         """
-        rungs = ladder(
-            start=golden.LIST_PRICE, stop=golden.LIST_PRICE, step=Decimal("1.00")
-        )
+        rungs = ladder(start=golden.LIST_PRICE, stop=golden.LIST_PRICE, step=Decimal("1.00"))
 
         assert len(rungs) == 1
         assert rungs[0].price == golden.LIST_PRICE
@@ -151,9 +149,7 @@ class TestEveryRungReportsTheRealMargin:
         )
 
         rung = rungs[0]
-        assert rung.profit_per_machine_hour == (
-            rung.profit / golden.PRINT_HOURS
-        ).quantize(CENT)
+        assert rung.profit_per_machine_hour == (rung.profit / golden.PRINT_HOURS).quantize(CENT)
 
     def test_profit_per_machine_hour_is_absent_rather_than_zero_when_unknown(self) -> None:
         """FR-019's discipline: unknown is reported, never costed as nothing."""
@@ -239,9 +235,7 @@ class TestTheLadderReportsOnTheBasisInEffect:
         assert len(percentages) == 3
 
     def test_an_override_wins_over_policy(self) -> None:
-        rungs = ladder(
-            policy=make_policy(margin_basis="item_price"), margin_basis="net_revenue"
-        )
+        rungs = ladder(policy=make_policy(margin_basis="item_price"), margin_basis="net_revenue")
 
         assert all(rung.margin_basis == "net_revenue" for rung in rungs)
 
@@ -290,9 +284,7 @@ class TestTheBoundsAreInputsRatherThanConstants:
             (Decimal("10"), Decimal("20"), Decimal("10"), 2),
         ],
     )
-    def test_the_caller_decides_how_fine_the_ladder_is(
-        self, start, stop, step, expected
-    ) -> None:
+    def test_the_caller_decides_how_fine_the_ladder_is(self, start, stop, step, expected) -> None:
         rungs = ladder(start=start, stop=stop, step=step)
 
         assert len(rungs) == expected

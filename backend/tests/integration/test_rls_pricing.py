@@ -86,8 +86,11 @@ ROUTER_PREFIXES: dict[str, str] = {
     "reconciliation": f"{API}/reconciliation",
     "filament_purchases": f"{API}/filament-purchases",
     "shipping_profiles": f"{API}/shipping-profiles",
-    "provenance": f"{API}/provenance",
-    "scenarios": f"{API}/scenarios",
+    # Mounted at the API root, with the entity in each route's own path: one
+    # provenance read answers for eleven entity types, and a scenario is asked
+    # of the whole catalogue (contracts/pricing-api.md).
+    "provenance": API,
+    "scenarios": API,
 }
 
 

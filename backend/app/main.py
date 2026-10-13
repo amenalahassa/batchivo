@@ -212,6 +212,7 @@ from app.api.v1 import (
     exports,
     fee_rules,
     provenance,
+    scenarios,
     forecasting,
     model_files,
     models,
@@ -320,6 +321,13 @@ app.include_router(
     provenance.router,
     prefix=settings.api_v1_prefix,
     tags=["provenance"],
+)
+# Scenarios sit at the API root for the same reason provenance does: a shock is
+# asked of the whole catalogue, not of one product (contracts/pricing-api.md).
+app.include_router(
+    scenarios.router,
+    prefix=settings.api_v1_prefix,
+    tags=["scenarios"],
 )
 app.include_router(
     shipping_profiles.router,

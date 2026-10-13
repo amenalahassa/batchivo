@@ -1,0 +1,130 @@
+# Celery worker — catalogue-wide scenarios (task T120, research.md D4)
+#
+# A price-shock scenario sweeps the whole catalogue, so it cannot run on a
+# request thread (FR-044a). This is the worker that runs it.
+#
+# ## The broker URL is the whole point of this file
+#
+# `backend/app/config.py` defaults `celery_broker_url` to
+# `redis://localhost:6379/1`, which inside a pod resolves to the pod itself --
+# nothing is listening, so every scenario would sit queued for ever. research.md
+# D4 carried that forward as a deployment note, and this is where it is paid:
+# both URLs point at the cluster Redis service.
+#
+# Database 1 is the broker and 2 the result backend, keeping them clear of the
+# application cache on database 0 (`REDIS_URL` in backend-config). A flush of
+# one must not take the others with it.
+#
+# ## Why no probes and no service
+#
+# A Celery worker serves no traffic, so there is nothing to route to it and no
+# HTTP endpoint to probe. Liveness is left to the restart policy: a worker that
+# dies is replaced, and a scenario it was running is picked up again because
+# `task_acks_late` returns the message to the queue. The run row's terminal
+# state makes that retry a no-op if the work actually finished (FR-044b).
+#
+# ## Why one replica
+#
+# Scenarios are operator-initiated and rare: one shock across a few hundred
+# products, occasionally. A second replica would double the idle memory to
+# halve a wait nobody is sitting through. Scale this up when the queue depth
+# says to, not in advance.
+#
+# ## The image must track the backend
+#
+# The worker imports `app.tasks` from the same code the API serves, so a worker
+# running an older image would execute a scenario against a different cost
+# engine than the one the operator read their margins from -- two answers to
+# one question, which is what Constitution III forbids. The digest below is the
+# backend deployment's and is updated with it.
+#
+# Deployment is through the pipeline only: push to main, Woodpecker builds,
+# ArgoCD syncs (CLAUDE.md). Nothing here is applied by hand.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+  namespace: batchivo
+  labels:
+    app: celery-worker
+spec:
+  replicas: 1
+  strategy:
+    # Recreate, not RollingUpdate: two workers on different images would be two
+    # cost engines answering one question. A few seconds without a worker only
+    # delays a scenario, which is already asynchronous.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      imagePullSecrets:
+        - name: harbor-creds
+      containers:
+        - name: celery-worker
+          image: registry.techize.co.uk/batchivo/batchivo-backend@sha256:249a041494d2a6a4477c9a1a2ba60dbeee8d5e7974e67a9a0c9bdb0b97c27614
+          imagePullPolicy: Always
+          # `--pool solo` because each task calls `asyncio.run`: a prefork pool
+          # forks a process holding an event loop, and the child inherits a loop
+          # it cannot use. One task at a time is also the honest concurrency for
+          # a sweep that is bound by the database rather than by CPU.
+          command:
+            - celery
+            - -A
+            - app.tasks.celery_app
+            - worker
+            - --loglevel=info
+            - --pool=solo
+            - --queues=celery
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: backend-secrets
+            - secretRef:
+                name: rls-credentials
+                optional: true
+          env:
+            # The note research.md D4 carried forward: the configured default
+            # points at localhost and must not reach production.
+            - name: CELERY_BROKER_URL
+              value: "redis://redis:6379/1"
+            - name: CELERY_RESULT_BACKEND
+              value: "redis://redis:6379/2"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(DB_USER):$(DB_PASSWORD)@postgres.batchivo.svc:5432/batchivo"
+          resources:
+            requests:
+              # A sweep holds one product's object graph at a time, not the
+              # catalogue: the cost engine recurses through a bill of materials
+              # without loading the rest of it.
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

@@ -191,11 +191,7 @@ async def latest_known_rate(
         conditions.append(FxRate.rate_date <= on_or_before)
 
     rows = (
-        (
-            await db.execute(
-                select(FxRate).where(*conditions).order_by(FxRate.rate_date.desc())
-            )
-        )
+        (await db.execute(select(FxRate).where(*conditions).order_by(FxRate.rate_date.desc())))
         .scalars()
         .all()
     )

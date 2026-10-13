@@ -419,6 +419,16 @@ class ProductMarginResponse(BaseModel):
     margin_basis_label: str
     margin_basis_amount: Decimal
 
+    #: FR-043. Null where the unit occupies no machine time, never zero: a
+    #: hand-assembled item has no figure here, and zero would rank it as the
+    #: least profitable use of a printer it never touches.
+    profit_per_machine_hour: Optional[Decimal] = Field(
+        None, description="Profit divided by the machine hours the unit occupies (FR-043)"
+    )
+    machine_hours: Optional[Decimal] = Field(
+        None, description="The hours the figure above was divided by"
+    )
+
     sales_tax_collected: Decimal
     sales_tax_liability: Decimal
     tax_remitter: TaxRemitter
@@ -515,9 +525,7 @@ class PriceSolveResponse(BaseModel):
     as_of: date
 
     achievable: bool
-    reason: Optional[str] = Field(
-        None, description='"unachievable" when no price exists (FR-035)'
-    )
+    reason: Optional[str] = Field(None, description='"unachievable" when no price exists (FR-035)')
     binding_constraint: Optional[str] = Field(
         None, description="Which constraint made it unachievable, in words (FR-035)"
     )

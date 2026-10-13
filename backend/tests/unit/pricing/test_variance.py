@@ -234,9 +234,7 @@ class TestAnAgreeingObservationUpdatesTheEstimate:
             divergence_threshold_pct=Decimal("25"),
         )
 
-        origins = await origins_for_entity(
-            db_session, test_tenant, ENTITY_TYPE, estimated_model.id
-        )
+        origins = await origins_for_entity(db_session, test_tenant, ENTITY_TYPE, estimated_model.id)
         assert origins[FIELD].source == "observed"
         assert origins[FIELD].as_of == max(o.observed_on for o in recorded)
         assert origins[FIELD].as_of < TODAY
@@ -264,9 +262,7 @@ class TestAnAgreeingObservationUpdatesTheEstimate:
         )
 
         assert decision.applied is True
-        origins = await origins_for_entity(
-            db_session, test_tenant, ENTITY_TYPE, estimated_model.id
-        )
+        origins = await origins_for_entity(db_session, test_tenant, ENTITY_TYPE, estimated_model.id)
         assert origins[FIELD].source == "observed"
 
     async def test_an_integer_field_is_not_left_holding_a_fraction(
@@ -293,9 +289,7 @@ class TestAnAgreeingObservationUpdatesTheEstimate:
 
 
 class TestADivergentObservationIsHeld:
-    async def test_it_is_not_applied(
-        self, db_session, test_tenant, estimated_model
-    ) -> None:
+    async def test_it_is_not_applied(self, db_session, test_tenant, estimated_model) -> None:
         decision = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
@@ -311,22 +305,16 @@ class TestADivergentObservationIsHeld:
         If the figure moved and was merely flagged, every price computed while
         the proposal sat there would be based on a reading nobody had checked.
         """
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
 
         assert estimated_model.print_time_minutes == 100
 
     async def test_the_origin_is_not_moved_to_observed(
         self, db_session, test_tenant, estimated_model
     ) -> None:
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
 
-        origins = await origins_for_entity(
-            db_session, test_tenant, ENTITY_TYPE, estimated_model.id
-        )
+        origins = await origins_for_entity(db_session, test_tenant, ENTITY_TYPE, estimated_model.id)
         assert origins[FIELD].source != "observed"
 
     async def test_the_figure_is_flagged_as_having_a_pending_revision(
@@ -336,9 +324,7 @@ class TestADivergentObservationIsHeld:
 
         A divergence nobody is told about is a divergence nobody acts on.
         """
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
 
         pending = await pending_revision(
             db_session,
@@ -464,18 +450,14 @@ class TestDecidingAProposal:
         """FR-042f applies on acceptance exactly as it does automatically."""
         await accept_revision(db_session, test_tenant, held.id, user=test_user)
 
-        origins = await origins_for_entity(
-            db_session, test_tenant, ENTITY_TYPE, estimated_model.id
-        )
+        origins = await origins_for_entity(db_session, test_tenant, ENTITY_TYPE, estimated_model.id)
         assert origins[FIELD].source == "observed"
         assert origins[FIELD].as_of == held.observed_as_of
 
     async def test_accepting_records_who_decided_and_when(
         self, db_session, test_tenant, held, test_user
     ) -> None:
-        accepted = await accept_revision(
-            db_session, test_tenant, held.id, user=test_user
-        )
+        accepted = await accept_revision(db_session, test_tenant, held.id, user=test_user)
 
         assert accepted.state == "accepted"
         assert accepted.reviewed_by_user_id == test_user.id
@@ -491,9 +473,7 @@ class TestDecidingAProposal:
     async def test_rejecting_records_who_decided_and_when(
         self, db_session, test_tenant, held, test_user
     ) -> None:
-        rejected = await reject_revision(
-            db_session, test_tenant, held.id, user=test_user
-        )
+        rejected = await reject_revision(db_session, test_tenant, held.id, user=test_user)
 
         assert rejected.state == "rejected"
         assert rejected.reviewed_by_user_id == test_user.id
@@ -557,9 +537,7 @@ class TestARejectedProposalIsNotReRaised:
         first = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
-        await reject_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await reject_revision(db_session, test_tenant, first.proposal.id, user=test_user)
 
         again = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
@@ -580,9 +558,7 @@ class TestARejectedProposalIsNotReRaised:
         first = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
-        await reject_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await reject_revision(db_session, test_tenant, first.proposal.id, user=test_user)
 
         later = await consider(
             db_session,
@@ -601,9 +577,7 @@ class TestARejectedProposalIsNotReRaised:
         first = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
-        await reject_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await reject_revision(db_session, test_tenant, first.proposal.id, user=test_user)
 
         later = await consider(
             db_session,
@@ -625,9 +599,7 @@ class TestARejectedProposalIsNotReRaised:
             estimated_model,
             values=["900", "910", "920", "930"],
         )
-        await reject_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await reject_revision(db_session, test_tenant, first.proposal.id, user=test_user)
 
         later = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
@@ -646,9 +618,7 @@ class TestARejectedProposalIsNotReRaised:
         first = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
-        await reject_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await reject_revision(db_session, test_tenant, first.proposal.id, user=test_user)
 
         later = await consider(
             db_session,
@@ -668,9 +638,7 @@ class TestARejectedProposalIsNotReRaised:
         first = await consider(
             db_session, test_tenant, estimated_model, values=["900", "910", "920"]
         )
-        await accept_revision(
-            db_session, test_tenant, first.proposal.id, user=test_user
-        )
+        await accept_revision(db_session, test_tenant, first.proposal.id, user=test_user)
         assert estimated_model.print_time_minutes == 910
 
         later = await consider(
@@ -694,9 +662,7 @@ class TestALaterProposalSupersedesAPendingOne:
         self, db_session, test_tenant, estimated_model
     ) -> None:
         """Two pending proposals on one figure make "accept" ambiguous."""
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
         await consider(
             db_session,
             test_tenant,
@@ -721,9 +687,7 @@ class TestALaterProposalSupersedesAPendingOne:
     async def test_the_pending_proposal_is_the_newer_one(
         self, db_session, test_tenant, estimated_model
     ) -> None:
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
         second = await consider(
             db_session,
             test_tenant,
@@ -759,9 +723,7 @@ class TestALaterProposalSupersedesAPendingOne:
     async def test_a_proposal_on_another_field_does_not_collide(
         self, db_session, test_tenant, estimated_model
     ) -> None:
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
 
         other = await consider_outcomes(
             db_session,
@@ -824,9 +786,7 @@ class TestAnOperatorDecisionIsNeverUpdated:
         await db_session.flush()
 
         with pytest.raises(NotLearnable):
-            await consider(
-                db_session, test_tenant, estimated_model, values=["101", "102", "103"]
-            )
+            await consider(db_session, test_tenant, estimated_model, values=["101", "102", "103"])
 
         assert estimated_model.print_time_minutes == 100
 
@@ -889,9 +849,7 @@ class TestTheMechanismIsExactAndScoped:
 
         assert isinstance(decision.observed_value, Decimal)
         assert isinstance(decision.divergence, Decimal)
-        assert isinstance(
-            Decimal(str(decision.proposal.observed_value)), Decimal
-        )
+        assert isinstance(Decimal(str(decision.proposal.observed_value)), Decimal)
 
     async def test_a_proposal_carries_its_tenant(
         self, db_session, test_tenant, estimated_model
@@ -907,19 +865,13 @@ class TestTheMechanismIsExactAndScoped:
     ) -> None:
         from app.models.tenant import Tenant
 
-        await consider(
-            db_session, test_tenant, estimated_model, values=["900", "910", "920"]
-        )
+        await consider(db_session, test_tenant, estimated_model, values=["900", "910", "920"])
         other = Tenant(id=uuid4(), name="Elsewhere", slug=f"elsewhere-{uuid4().hex[:6]}")
         db_session.add(other)
         await db_session.flush()
 
-        mine = await variance_service.list_revisions(
-            db_session, test_tenant, state="pending"
-        )
-        theirs = await variance_service.list_revisions(
-            db_session, other, state="pending"
-        )
+        mine = await variance_service.list_revisions(db_session, test_tenant, state="pending")
+        theirs = await variance_service.list_revisions(db_session, other, state="pending")
 
         assert len(mine) == 1
         assert theirs == []

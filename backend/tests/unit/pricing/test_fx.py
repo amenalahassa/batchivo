@@ -191,9 +191,7 @@ class TestARateIsFetchedOncePerDay:
         assert provider.call_count == 1
         assert rates == {Decimal("1.74")}
 
-    async def test_a_rate_already_recorded_is_reused_without_a_provider(
-        self, db_session
-    ) -> None:
+    async def test_a_rate_already_recorded_is_reused_without_a_provider(self, db_session) -> None:
         """Nothing is asked when the day's figure is already on record."""
         await _store(db_session, rate="1.68")
         provider = CountingProvider("9.99")
@@ -306,9 +304,7 @@ class TestAnUnreachableServiceFallsBack:
         assert await latest_known_rate(db_session, "GBP", "CAD") is None
 
     @pytest.mark.parametrize("bad_rate", ["0", "-1.5"])
-    async def test_a_nonsensical_fetched_rate_is_refused(
-        self, db_session, bad_rate: str
-    ) -> None:
+    async def test_a_nonsensical_fetched_rate_is_refused(self, db_session, bad_rate: str) -> None:
         """A zero rate would value every foreign sale at nothing."""
         await _store(db_session, rate="1.65", on=YESTERDAY)
         provider = CountingProvider(bad_rate)
@@ -328,9 +324,7 @@ class TestAnUnreachableServiceFallsBack:
 class TestAManualRateOverrides:
     """An operator's figure wins, and what it replaced is still on record."""
 
-    async def test_a_manual_rate_beats_a_fetched_one_for_the_same_day(
-        self, db_session
-    ) -> None:
+    async def test_a_manual_rate_beats_a_fetched_one_for_the_same_day(self, db_session) -> None:
         await _store(db_session, rate="1.70", on=TODAY, source="service")
         await set_manual_rate(
             db_session, base="GBP", quote="CAD", rate=Decimal("1.7250"), rate_date=TODAY
@@ -343,9 +337,7 @@ class TestAManualRateOverrides:
         assert resolved.source == "manual"
         assert "by hand" in resolved.reason
 
-    async def test_the_override_does_not_destroy_the_fetched_figure(
-        self, db_session
-    ) -> None:
+    async def test_the_override_does_not_destroy_the_fetched_figure(self, db_session) -> None:
         """Kept as a separate row, so a reader can see what was overridden."""
         fetched = await _store(db_session, rate="1.70", on=TODAY, source="service")
         await set_manual_rate(
@@ -367,9 +359,7 @@ class TestAManualRateOverrides:
         assert resolved is not None
         assert resolved.rate == Decimal("1.7250")
 
-    async def test_a_manual_rate_rescues_a_pair_with_no_service_coverage(
-        self, db_session
-    ) -> None:
+    async def test_a_manual_rate_rescues_a_pair_with_no_service_coverage(self, db_session) -> None:
         """The answer to the never-fetched pair: the operator supplies it."""
         provider = CountingProvider(None)
         assert await resolve_rate(db_session, "GBP", "XPF", provider=provider) is None
@@ -384,13 +374,9 @@ class TestAManualRateOverrides:
     @pytest.mark.parametrize("bad_rate", ["0", "-2"])
     async def test_a_nonpositive_manual_rate_is_refused(self, db_session, bad_rate) -> None:
         with pytest.raises(ValueError):
-            await set_manual_rate(
-                db_session, base="GBP", quote="CAD", rate=Decimal(bad_rate)
-            )
+            await set_manual_rate(db_session, base="GBP", quote="CAD", rate=Decimal(bad_rate))
 
-    async def test_a_manual_rate_is_only_preferred_on_its_own_day(
-        self, db_session
-    ) -> None:
+    async def test_a_manual_rate_is_only_preferred_on_its_own_day(self, db_session) -> None:
         """Yesterday's override does not outrank today's fetched rate."""
         await set_manual_rate(
             db_session, base="GBP", quote="CAD", rate=Decimal("9.99"), rate_date=YESTERDAY
@@ -425,29 +411,18 @@ class TestASaleIsNeverBlocked:
 
         assert resolved is not None
 
-    async def test_a_pair_with_no_rate_returns_none_rather_than_raising(
-        self, db_session
-    ) -> None:
-        assert (
-            await resolve_rate(
-                db_session, "GBP", "CAD", provider=CountingProvider(None)
-            )
-            is None
-        )
+    async def test_a_pair_with_no_rate_returns_none_rather_than_raising(self, db_session) -> None:
+        assert await resolve_rate(db_session, "GBP", "CAD", provider=CountingProvider(None)) is None
 
     @pytest.mark.parametrize(
         "base,quote",
         [("", "CAD"), ("GBP", ""), ("", ""), (None, "CAD"), ("GBP", None)],
     )
-    async def test_a_missing_currency_code_returns_none(
-        self, db_session, base, quote
-    ) -> None:
+    async def test_a_missing_currency_code_returns_none(self, db_session, base, quote) -> None:
         """An order with no currency recorded must not raise at checkout."""
         assert await resolve_rate(db_session, base, quote) is None
 
-    async def test_the_reporting_path_raises_where_the_sale_path_returns(
-        self, db_session
-    ) -> None:
+    async def test_the_reporting_path_raises_where_the_sale_path_returns(self, db_session) -> None:
         """The one deliberate difference between the two entry points."""
         provider = CountingProvider(None)
 
@@ -477,9 +452,7 @@ class TestAnUnknownRateIsNeverParity:
     """
 
     async def test_an_unknown_pair_is_none_not_one(self, db_session) -> None:
-        resolved = await resolve_rate(
-            db_session, "GBP", "CAD", provider=CountingProvider(None)
-        )
+        resolved = await resolve_rate(db_session, "GBP", "CAD", provider=CountingProvider(None))
 
         assert resolved is None, (
             "an unknown rate must read as unknown; returning 1.0 would price a "
@@ -488,9 +461,7 @@ class TestAnUnknownRateIsNeverParity:
 
     async def test_the_error_says_what_to_do_instead(self, db_session) -> None:
         with pytest.raises(RateUnavailableError) as caught:
-            await require_rate(
-                db_session, "GBP", "CAD", provider=CountingProvider(None)
-            )
+            await require_rate(db_session, "GBP", "CAD", provider=CountingProvider(None))
 
         message = str(caught.value)
         assert caught.value.base == "GBP"
@@ -498,16 +469,12 @@ class TestAnUnknownRateIsNeverParity:
         assert "by hand" in message, "it must point at the override, FR-028h"
         assert "parity" in message
 
-    async def test_parity_is_only_ever_returned_for_one_currency(
-        self, db_session
-    ) -> None:
+    async def test_parity_is_only_ever_returned_for_one_currency(self, db_session) -> None:
         """The *only* route to a rate of 1 is the same code on both sides."""
         same = await resolve_rate(db_session, "CAD", "CAD")
         assert same is not None and same.rate == Decimal("1")
 
-        different = await resolve_rate(
-            db_session, "CAD", "GBP", provider=CountingProvider(None)
-        )
+        different = await resolve_rate(db_session, "CAD", "GBP", provider=CountingProvider(None))
         assert different is None
 
 
@@ -543,9 +510,7 @@ class TestAFrozenRateSurvivesABetterOne:
         await _store(db_session, rate="1.65", on=YESTERDAY)
         provider = CountingProvider("9.99")
 
-        resolved = await resolve_rate(
-            db_session, "GBP", "CAD", as_of=YESTERDAY, provider=provider
-        )
+        resolved = await resolve_rate(db_session, "GBP", "CAD", as_of=YESTERDAY, provider=provider)
 
         assert provider.call_count == 0
         assert resolved is not None
@@ -563,9 +528,7 @@ class TestAFrozenRateSurvivesABetterOne:
         assert before is not None and after is not None
         assert before.rate == after.rate == Decimal("1.65")
 
-    async def test_a_manual_correction_today_does_not_restate_yesterday(
-        self, db_session
-    ) -> None:
+    async def test_a_manual_correction_today_does_not_restate_yesterday(self, db_session) -> None:
         """An operator fixing today's rate must not move last month's margins."""
         await _store(db_session, rate="1.65", on=YESTERDAY)
         await set_manual_rate(
@@ -607,12 +570,8 @@ class TestRatesAreExact:
     would put rounding error into money that was otherwise exact.
     """
 
-    async def test_a_recorded_rate_round_trips_to_the_eighth_place(
-        self, db_session
-    ) -> None:
-        await record_rate(
-            db_session, base="GBP", quote="CAD", rate=Decimal("1.73456789")
-        )
+    async def test_a_recorded_rate_round_trips_to_the_eighth_place(self, db_session) -> None:
+        await record_rate(db_session, base="GBP", quote="CAD", rate=Decimal("1.73456789"))
 
         resolved = await resolve_rate(db_session, "GBP", "CAD")
 
@@ -627,9 +586,7 @@ class TestRatesAreExact:
         assert resolved is not None
         assert isinstance(resolved.rate, Decimal)
 
-    async def test_a_float_from_a_provider_does_not_stay_a_float(
-        self, db_session
-    ) -> None:
+    async def test_a_float_from_a_provider_does_not_stay_a_float(self, db_session) -> None:
         """A provider sending a JSON number must not seed a binary float."""
 
         class FloatyProvider:
@@ -637,9 +594,7 @@ class TestRatesAreExact:
                 # Deliberately the value a JSON parser would hand over.
                 return Decimal(str(0.1))
 
-        resolved = await resolve_rate(
-            db_session, "GBP", "CAD", provider=FloatyProvider()
-        )
+        resolved = await resolve_rate(db_session, "GBP", "CAD", provider=FloatyProvider())
 
         assert resolved is not None
         assert isinstance(resolved.rate, Decimal)
@@ -681,9 +636,7 @@ class TestTheHttpProvider:
         assert isinstance(rate, Decimal)
 
     @respx.mock
-    async def test_the_other_common_payload_shape_is_understood(
-        self, http_settings
-    ) -> None:
+    async def test_the_other_common_payload_shape_is_understood(self, http_settings) -> None:
         respx.get("https://rates.example.test/v6/latest/GBP").mock(
             return_value=httpx.Response(200, json={"conversion_rates": {"CAD": 1.7421}})
         )
@@ -691,9 +644,7 @@ class TestTheHttpProvider:
         assert await HttpRateProvider().fetch("GBP", "CAD") == Decimal("1.7421")
 
     @respx.mock
-    async def test_a_timeout_returns_none_rather_than_raising(
-        self, http_settings
-    ) -> None:
+    async def test_a_timeout_returns_none_rather_than_raising(self, http_settings) -> None:
         """The protocol's contract, and the reason a sale survives an outage."""
         respx.get("https://rates.example.test/v6/latest/GBP").mock(
             side_effect=httpx.ConnectTimeout("too slow")
@@ -779,9 +730,7 @@ class TestTheHttpProvider:
             return_value=httpx.Response(200, json={"rates": {"CAD": 1.7421}})
         )
 
-        resolved = await resolve_rate(
-            db_session, "GBP", "CAD", provider=HttpRateProvider()
-        )
+        resolved = await resolve_rate(db_session, "GBP", "CAD", provider=HttpRateProvider())
 
         assert resolved is not None
         assert resolved.rate == Decimal("1.7421")

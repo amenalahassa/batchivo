@@ -107,9 +107,7 @@ async def priced_product(
     ``/products/{id}/pricing/{channel_id}/`` describes a product sold on a
     channel, so a product with no price row there is a 404.
     """
-    test_product.product_models.append(
-        ProductModel(id=uuid4(), model_id=test_model.id, quantity=1)
-    )
+    test_product.product_models.append(ProductModel(id=uuid4(), model_id=test_model.id, quantity=1))
     db_session.add(test_product)
     db_session.add(
         ProductPricing(
@@ -213,9 +211,7 @@ class TestSolvingAPrice:
         await db_session.commit()
 
         margin = (
-            await client.get(
-                f"{API}/products/{priced_product.id}/pricing/{channel.id}/margin"
-            )
+            await client.get(f"{API}/products/{priced_product.id}/pricing/{channel.id}/margin")
         ).json()
 
         assert Decimal(margin["margin_pct"]) == Decimal(solved["margin_pct_at_price"])
@@ -351,14 +347,10 @@ class TestTheSolvedPriceIsOnlyAProposal:
     ) -> None:
         """A read with no side effects: the second call must not have moved."""
         first = (
-            await client.post(
-                _solve_url(priced_product, channel), json={"target_margin_pct": "35"}
-            )
+            await client.post(_solve_url(priced_product, channel), json={"target_margin_pct": "35"})
         ).json()
         second = (
-            await client.post(
-                _solve_url(priced_product, channel), json={"target_margin_pct": "35"}
-            )
+            await client.post(_solve_url(priced_product, channel), json={"target_margin_pct": "35"})
         ).json()
 
         assert first["required_price_raw"] == second["required_price_raw"]

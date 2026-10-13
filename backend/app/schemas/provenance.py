@@ -135,9 +135,7 @@ class EstimateRevisionResponse(BaseModel):
     field_name: str
     current_value: Decimal = Field(..., description="The estimate this would change")
     observed_value: Decimal = Field(..., description="What the outcomes average to")
-    divergence_pct: Decimal = Field(
-        ..., description="How far apart they were when this was raised"
-    )
+    divergence_pct: Decimal = Field(..., description="How far apart they were when this was raised")
     derived_from_run_ids: list[str] = Field(
         ..., description="The outcomes behind it, so a reviewer can check them"
     )

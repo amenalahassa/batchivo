@@ -19,6 +19,9 @@ import type {
   PrinterCostPolicyUpdate,
   ProvenanceWriteRequest,
   RevisionState,
+  ScenarioRun,
+  ScenarioRunList,
+  ScenarioRunRequest,
 } from '@/types/pricing'
 
 /**
@@ -264,4 +267,38 @@ export async function acceptEstimateRevision(revisionId: string): Promise<Estima
  */
 export async function rejectEstimateRevision(revisionId: string): Promise<EstimateRevision> {
   return apiClient.post<EstimateRevision>(`/api/v1/estimate-revisions/${revisionId}/reject`, {})
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue-wide scenarios (US7, FR-044)
+// ---------------------------------------------------------------------------
+
+/**
+ * Request a shock across the catalogue.
+ *
+ * Returns immediately with a handle whose `state` is `queued` and whose
+ * `result` is null (FR-044a). The work happens on a worker; poll
+ * `getScenario` for the answer.
+ */
+export async function requestScenario(payload: ScenarioRunRequest): Promise<ScenarioRun> {
+  return apiClient.post<ScenarioRun>('/api/v1/scenarios', payload)
+}
+
+/** One run's state and, once it has finished, its result. */
+export async function getScenario(runId: string): Promise<ScenarioRun> {
+  return apiClient.get<ScenarioRun>(`/api/v1/scenarios/${runId}`)
+}
+
+/** This tenant's scenario history, newest first. */
+export async function listScenarios(params?: {
+  limit?: number
+  offset?: number
+}): Promise<ScenarioRunList> {
+  const query = new URLSearchParams()
+  if (params?.limit !== undefined) query.set('limit', String(params.limit))
+  if (params?.offset !== undefined) query.set('offset', String(params.offset))
+  const queryString = query.toString()
+  return apiClient.get<ScenarioRunList>(
+    `/api/v1/scenarios${queryString ? `?${queryString}` : ''}`,
+  )
 }

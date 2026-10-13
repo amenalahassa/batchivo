@@ -139,9 +139,7 @@ def price_at(
     sales_channel_id: Optional[uuid.UUID] = None,
 ) -> Optional[Decimal]:
     """Just the amount from :func:`resolve_price`, or ``None``."""
-    row = resolve_price(
-        rows, as_of=as_of, quantity=quantity, sales_channel_id=sales_channel_id
-    )
+    row = resolve_price(rows, as_of=as_of, quantity=quantity, sales_channel_id=sales_channel_id)
     if row is None or row.list_price is None:
         return None
     return Decimal(str(row.list_price))
@@ -222,11 +220,7 @@ def storefront_price(
     must then treat it as unpriced -- the previous code substituted zero, which
     put a free product on a public page.
     """
-    live = [
-        row
-        for row in current_rows(product)
-        if row.is_active and quantity >= row.min_quantity
-    ]
+    live = [row for row in current_rows(product) if row.is_active and quantity >= row.min_quantity]
     if not live:
         return None
 
@@ -354,11 +348,7 @@ async def set_price(
     )
 
     current = next(
-        (
-            row
-            for row in rows
-            if row.valid_to is None and row.min_quantity == min_quantity
-        ),
+        (row for row in rows if row.valid_to is None and row.min_quantity == min_quantity),
         None,
     )
 

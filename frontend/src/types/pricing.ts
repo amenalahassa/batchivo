@@ -751,3 +751,91 @@ export interface EstimateRevisionList {
   total: number
   pending_count: number
 }
+
+// ---------------------------------------------------------------------------
+// Catalogue-wide scenarios (US7, FR-044)
+// ---------------------------------------------------------------------------
+
+/**
+ * A scenario's lifecycle.
+ *
+ * `partial` is the state that matters: a sweep that costed nine hundred
+ * products and could not cost four has an answer worth reading, and calling it
+ * `failed` would throw that away while calling it `succeeded` would hide the
+ * gap (FR-044b).
+ */
+export type ScenarioState = 'queued' | 'running' | 'succeeded' | 'partial' | 'failed'
+
+/** The overrides a scenario applies, each a relative percentage change. */
+export interface ScenarioShock {
+  material_cost_pct?: Money
+  labor_rate_pct?: Money
+  fee_rate_pct?: Money
+  electricity_rate_pct?: Money
+}
+
+/** One product the shock put below the operator's margin floor. */
+export interface BelowFloorEntry {
+  product_id: string
+  sku: string
+  name: string
+  sales_channel_id: string
+  channel_name: string
+  list_price: Money
+  make_cost: Money
+  /** Null where fees consume the whole basis — undefined, not zero. */
+  margin_pct: Money | null
+  profit: Money
+  profit_per_machine_hour: Money | null
+  shortfall_pct: Money | null
+}
+
+/** A product the sweep could not cost, and why. */
+export interface SkippedEntry {
+  product_id: string
+  sku: string
+  sales_channel_id: string
+  reason: string
+}
+
+/**
+ * What a run found.
+ *
+ * `shock` and `inputs` are repeated here on purpose: a result read a fortnight
+ * later must state what it was asking and what it was applied to, or it reads
+ * as a current report (FR-044c).
+ */
+export interface ScenarioResult {
+  shock: Record<string, Money>
+  inputs: Record<string, string | number | null>
+  evaluated: number
+  below_floor: BelowFloorEntry[]
+  skipped: SkippedEntry[]
+  margins?: Record<string, Money | null>
+}
+
+export interface ScenarioRun {
+  id: string
+  state: ScenarioState
+  shock: Record<string, Money>
+  margin_floor_pct: Money
+  inputs: Record<string, string | number | null> | null
+  /** Null until the run finishes: nothing found yet, not nothing wrong. */
+  result: ScenarioResult | null
+  /** Set only for a failure, and a failure always has one (FR-044b). */
+  error_text: string | null
+  requested_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface ScenarioRunList {
+  runs: ScenarioRun[]
+  total: number
+}
+
+export interface ScenarioRunRequest {
+  shock: ScenarioShock
+  margin_floor_pct: Money
+  sales_channel_id?: string
+}

@@ -118,9 +118,7 @@ class TestTheGoldenSolve:
     def test_the_price_is_the_figure_the_spec_names(self, result) -> None:
         """CA$64.64, recomputed rather than quoted."""
         assert result.achievable is True
-        assert result.raw_price == expected_solved_price().quantize(
-            pricing_solver.RAW_PRECISION
-        )
+        assert result.raw_price == expected_solved_price().quantize(pricing_solver.RAW_PRECISION)
         assert result.price == Decimal("64.64")
 
     def test_the_target_is_actually_achieved_at_that_price(self, result) -> None:
@@ -130,9 +128,7 @@ class TestTheGoldenSolve:
         no solver, because the operator has no way to tell which figure is the
         real one.
         """
-        assert result.margin_pct_at_price == golden.TARGET_MARGIN_PCT.quantize(
-            Decimal("0.0001")
-        )
+        assert result.margin_pct_at_price == golden.TARGET_MARGIN_PCT.quantize(Decimal("0.0001"))
 
     def test_the_margin_is_confirmed_through_the_ordinary_margin_path(self, result) -> None:
         """Not from the solver's own arithmetic -- from ``CostingService``."""
@@ -422,9 +418,7 @@ class TestEveryMoveAwayFromTheSolvedPriceIsNamed:
             ("nearest_five_cents", Decimal("64.65")),
         ],
     )
-    def test_a_rounding_rule_is_shown_as_an_adjustment(
-        self, rule: str, expected: Decimal
-    ) -> None:
+    def test_a_rounding_rule_is_shown_as_an_adjustment(self, rule: str, expected: Decimal) -> None:
         result = solve(rounding_rule=rule)
 
         rounding = next(a for a in result.adjustments if a.key == "rounding")
@@ -453,9 +447,7 @@ class TestEveryMoveAwayFromTheSolvedPriceIsNamed:
         """So the adjustment can be checked rather than taken on trust."""
         result = solve(rounding_rule="nearest_dollar")
 
-        assert result.raw_price == expected_solved_price().quantize(
-            pricing_solver.RAW_PRECISION
-        )
+        assert result.raw_price == expected_solved_price().quantize(pricing_solver.RAW_PRECISION)
         assert result.price == Decimal("65.00")
         assert result.price != result.raw_price
 
@@ -498,9 +490,7 @@ class TestEveryMoveAwayFromTheSolvedPriceIsNamed:
         """FR-033: rounding first, then the snap acting on the rounded price."""
         channel = make_channel(free_shipping_threshold=Decimal("75.00"))
 
-        result = solve(
-            channel=channel, snap_to_free_shipping=True, rounding_rule="nearest_dollar"
-        )
+        result = solve(channel=channel, snap_to_free_shipping=True, rounding_rule="nearest_dollar")
 
         assert [a.key for a in result.adjustments] == ["rounding", "free_shipping_snap"]
         assert result.adjustments[0].to_price == result.adjustments[1].from_price
@@ -555,9 +545,7 @@ class TestATargetNoPriceCanAchieve:
         than infinite -- a division would read as a crash and a huge number
         would read as a price.
         """
-        breaking = (
-            HUNDRED - golden_variable_rate_pct() - golden.CHANNEL_EXPECTED_REFUND_PCT
-        )
+        breaking = HUNDRED - golden_variable_rate_pct() - golden.CHANNEL_EXPECTED_REFUND_PCT
 
         result = solve(target_margin_pct=breaking)
 
@@ -566,9 +554,7 @@ class TestATargetNoPriceCanAchieve:
 
     def test_a_target_just_below_the_breaking_point_is_achievable(self) -> None:
         """And it is a very large price, which is the honest answer there."""
-        breaking = (
-            HUNDRED - golden_variable_rate_pct() - golden.CHANNEL_EXPECTED_REFUND_PCT
-        )
+        breaking = HUNDRED - golden_variable_rate_pct() - golden.CHANNEL_EXPECTED_REFUND_PCT
 
         result = solve(target_margin_pct=breaking - Decimal("1"))
 
@@ -675,10 +661,10 @@ class TestTheSolverDoesNotKnowItsOwnFeeArithmetic:
         """
         rules = [
             make_fee_rule("listing", "per_listing", fixed_amount=Decimal("0.20"), sort_order=10),
-            make_fee_rule("subscription", "per_month", fixed_amount=Decimal("15.00"), sort_order=20),
             make_fee_rule(
-                "transaction", "item_subtotal", rate_pct=Decimal("6.5"), sort_order=30
+                "subscription", "per_month", fixed_amount=Decimal("15.00"), sort_order=20
             ),
+            make_fee_rule("transaction", "item_subtotal", rate_pct=Decimal("6.5"), sort_order=30),
         ]
 
         lines = pricing_solver.linearise(rules, as_of=AS_OF)
@@ -737,9 +723,7 @@ class TestTheSolverDoesNotKnowItsOwnFeeArithmetic:
 class TestPropertiesOfTheSolve:
     """Relationships that survive any particular case."""
 
-    @pytest.mark.parametrize(
-        "target", [Decimal("5"), Decimal("20"), Decimal("35"), Decimal("50")]
-    )
+    @pytest.mark.parametrize("target", [Decimal("5"), Decimal("20"), Decimal("35"), Decimal("50")])
     def test_a_higher_target_needs_a_higher_price(self, target: Decimal) -> None:
         lower = solve(target_margin_pct=target)
         higher = solve(target_margin_pct=target + Decimal("5"))

@@ -441,9 +441,7 @@ class EtsySyncService:
         current = current_rows(product)
         if current:
             etsy_pricing = [
-                p
-                for p in current
-                if p.is_active and p.sales_channel.platform_type == "etsy"
+                p for p in current if p.is_active and p.sales_channel.platform_type == "etsy"
             ]
             if etsy_pricing:
                 price = float(etsy_pricing[0].list_price)

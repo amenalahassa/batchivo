@@ -30,7 +30,7 @@ read snapshots would make this file tautological.
 """
 
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -95,9 +95,7 @@ async def reported_margin(db, tenant, order: Order) -> Decimal:
                 costs += breakdown.total_make_cost * quantity
 
         if item.fees_json:
-            costs += sum(
-                (Decimal(str(charge["amount"])) for charge in item.fees_json), ZERO
-            )
+            costs += sum((Decimal(str(charge["amount"])) for charge in item.fees_json), ZERO)
 
     if not any(item.fees_json for item in order.items):
         costs += await _live_fees(db, tenant, order)
@@ -123,16 +121,12 @@ async def _live_fees(db, tenant, order: Order) -> Decimal:
         return ZERO
 
     context, _ = fee_engine.exclusive_context(
-        item_subtotal=sum(
-            (Decimal(str(item.total_price or ZERO)) for item in order.items), ZERO
-        ),
+        item_subtotal=sum((Decimal(str(item.total_price or ZERO)) for item in order.items), ZERO),
         shipping_revenue=Decimal(str(order.shipping_cost or ZERO)),
         quantity=sum(int(item.quantity or 0) for item in order.items) or 1,
         sales_tax_collected=Decimal(str(order.sales_tax_collected or ZERO)),
     )
-    stack = fee_engine.compute(
-        channel, context, clock.today(), rules=list(channel.fee_rules)
-    )
+    stack = fee_engine.compute(channel, context, clock.today(), rules=list(channel.fee_rules))
     return stack.total_exact
 
 
@@ -262,9 +256,7 @@ async def world(db_session, test_tenant, test_filament_type) -> SettledWorld:
     )
     db_session.add(product)
     await db_session.flush()
-    db_session.add(
-        ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1)
-    )
+    db_session.add(ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1))
 
     channel = SalesChannel(
         id=uuid4(),
@@ -358,9 +350,7 @@ async def world(db_session, test_tenant, test_filament_type) -> SettledWorld:
 
     await db_session.flush()
     for order in orders:
-        result = await write_sale_snapshot(
-            db_session, test_tenant, order, as_of=SALE_DAY
-        )
+        result = await write_sale_snapshot(db_session, test_tenant, order, as_of=SALE_DAY)
         assert result.wrote_anything, "the fixture must actually freeze a snapshot"
     await db_session.commit()
 
@@ -479,14 +469,10 @@ class TestNoSettledOrderIsRestated:
 
         assert restated == [], (
             f"changing {label} restated {len(restated)} settled order(s): "
-            + "; ".join(
-                f"{number} moved from {was}% to {now}%" for number, was, now in restated
-            )
+            + "; ".join(f"{number} moved from {was}% to {now}%" for number, was, now in restated)
         )
 
-    async def test_changing_all_four_at_once_restates_nothing(
-        self, db_session, world
-    ) -> None:
+    async def test_changing_all_four_at_once_restates_nothing(self, db_session, world) -> None:
         """FR-038 verbatim, with every input moving together."""
         before = {
             order_id: await reported_margin(
@@ -506,9 +492,7 @@ class TestNoSettledOrderIsRestated:
             for order_id in world.order_ids
         }
 
-        differing = {
-            order_id for order_id in before if before[order_id] != after[order_id]
-        }
+        differing = {order_id for order_id in before if before[order_id] != after[order_id]}
         assert differing == set(), (
             f"{len(differing)} of {len(before)} settled orders were restated after a "
             f"spool price, a labor rate, an overhead setting and a fee rule all moved"
@@ -609,9 +593,7 @@ class TestTheSnapshotItselfIsUntouched:
                 }
         return state
 
-    async def test_every_frozen_column_survives_all_four_edits(
-        self, db_session, world
-    ) -> None:
+    async def test_every_frozen_column_survives_all_four_edits(self, db_session, world) -> None:
         before = await self._frozen_state(db_session, world)
 
         for _label, edit in ALL_EDITS:
@@ -622,10 +604,8 @@ class TestTheSnapshotItselfIsUntouched:
 
         assert after == before
 
-    async def test_resnapshotting_after_the_edits_changes_nothing(
-        self, db_session, world
-    ) -> None:
-        """"Written once" under the worst case: a second call after a change.
+    async def test_resnapshotting_after_the_edits_changes_nothing(self, db_session, world) -> None:
+        """ "Written once" under the worst case: a second call after a change.
 
         All three sale paths may call ``write_sale_snapshot`` more than once,
         so a second call that overwrote would restate every order it touched.
@@ -660,9 +640,7 @@ class TestTheSnapshotItselfIsUntouched:
         await db_session.flush()
 
         product = await _load_product(db_session, world.product.id)
-        live = (
-            await product_cost_breakdown(db_session, world.tenant, product)
-        ).total_make_cost
+        live = (await product_cost_breakdown(db_session, world.tenant, product)).total_make_cost
 
         assert live > frozen, "the spool price rise must move a live cost"
 
@@ -691,9 +669,7 @@ class TestTheFrozenFeesReconcile:
     a rounding remainder -- stable, so this file would still pass, and wrong.
     """
 
-    async def test_the_allocated_shares_sum_to_the_charge(
-        self, db_session, world
-    ) -> None:
+    async def test_the_allocated_shares_sum_to_the_charge(self, db_session, world) -> None:
         for order_id in world.order_ids:
             order = await _reload_order(db_session, order_id)
             charged: dict[str, Decimal] = {}
@@ -702,9 +678,9 @@ class TestTheFrozenFeesReconcile:
             for item in order.items:
                 for charge in item.fees_json or []:
                     charged[charge["name"]] = Decimal(str(charge["order_amount"]))
-                    allocated[charge["name"]] = allocated.get(
-                        charge["name"], ZERO
-                    ) + Decimal(str(charge["amount"]))
+                    allocated[charge["name"]] = allocated.get(charge["name"], ZERO) + Decimal(
+                        str(charge["amount"])
+                    )
 
             assert charged, f"order {order.order_number} froze no fees"
             for name, total in charged.items():
@@ -713,9 +689,7 @@ class TestTheFrozenFeesReconcile:
                     f"{allocated[name]} against a charge of {total}"
                 )
 
-    async def test_the_frozen_fees_are_strings_not_numbers(
-        self, db_session, world
-    ) -> None:
+    async def test_the_frozen_fees_are_strings_not_numbers(self, db_session, world) -> None:
         """A JSONB number is a float once anything reads it (Constitution IV)."""
         order = await _reload_order(db_session, world.order_ids[0])
 
@@ -784,12 +758,8 @@ class TestADatedReadIsAlsoProtected:
         )
         await db_session.flush()
 
-        then = await price_as_of(
-            db_session, world.product.id, world.channel.id, as_of=SALE_DAY
-        )
-        now = await price_as_of(
-            db_session, world.product.id, world.channel.id, as_of=clock.today()
-        )
+        then = await price_as_of(db_session, world.product.id, world.channel.id, as_of=SALE_DAY)
+        now = await price_as_of(db_session, world.product.id, world.channel.id, as_of=clock.today())
 
         assert then is not None and Decimal(str(then.list_price)) == Decimal("64.99")
         assert now is not None and Decimal(str(now.list_price)) == Decimal("79.99")

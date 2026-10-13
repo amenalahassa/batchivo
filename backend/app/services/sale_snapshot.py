@@ -230,9 +230,7 @@ async def write_sale_snapshot(
     # --- the order's fee stack, computed once ------------------------------
     allocations: dict[int, list[dict]] = {index: [] for index in range(len(items))}
     if channel is not None and rules:
-        order_subtotal = sum(
-            (Decimal(str(item.total_price or ZERO)) for item in items), ZERO
-        )
+        order_subtotal = sum((Decimal(str(item.total_price or ZERO)) for item in items), ZERO)
         context, _treatment = fee_engine.exclusive_context(
             item_subtotal=order_subtotal,
             shipping_revenue=Decimal(str(order.shipping_cost or ZERO)),
@@ -266,9 +264,7 @@ async def write_sale_snapshot(
             ).scalar_one_or_none()
             if product is not None:
                 try:
-                    breakdown = await product_cost_breakdown(
-                        db, tenant, product, policy=policy
-                    )
+                    breakdown = await product_cost_breakdown(db, tenant, product, policy=policy)
                 except (CircularReferenceError, MaxDepthExceededError) as exc:
                     # A cycle in the operator's own bundle must not stop a sale
                     # being recorded. The gap is reported instead.

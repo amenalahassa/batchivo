@@ -293,20 +293,20 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 **Depends on**: US2 (machine hours must be costed first).
 
-- [ ] T109 [P] [US7] Reporting and scenario tests in `backend/tests/api/test_scenarios.py`: profit per machine-hour of **CA$2.41** for the golden case; a scenario request acknowledged with `202` before any calculation; a finished run writing no cost, price or provenance figure; a partial or failed run reporting what it got and why it stopped; a result stating the shock and inputs it used; plus an assertion that at least 70% of the golden item's make-cost lines carry an observed origin while fee lines stay labelled as entered (SC-010)
-- [ ] T110 [P] [US7] Telemetry tests in `backend/tests/unit/pricing/test_telemetry_ingestion.py`: actual grams and print hours written to the run, 3MF metadata as the fallback, an offline printer producing no estimate change, and a smart-plug reading updating `measured_watts` with `source = 'observed'`
-- [ ] T111 [P] [US7] Create `backend/app/models/scenario_run.py` with `state` CHECK-constrained to `queued | running | succeeded | partial | failed`, `shock_json`, `inputs_json`, `margin_floor_pct`, `result_json`, `error_text`
-- [ ] T112 [US7] Create the Celery application and task package at `backend/app/tasks/celery_app.py` and `backend/app/tasks/scenario.py`
-- [ ] T113 [US7] Implement `backend/app/services/scenario_service.py` driving the engine through the same override mechanism the legacy profile uses, writing nothing authoritative
-- [ ] T114 [US7] Create `backend/app/api/v1/scenarios.py` with `POST /scenarios` returning `202`, `GET /scenarios/{id}` reporting state and result, and `GET /scenarios` for history
-- [ ] T115 [US7] Implement telemetry ingestion in `backend/app/tasks/telemetry.py` against the existing `printer_adapter` protocol, writing `actual_grams` and `actual_print_hours` onto production runs with 3MF metadata as the fallback
-- [ ] T116 [US7] Implement smart-plug ingestion in `backend/app/tasks/power.py` updating `printers.measured_watts` with an observed origin
-- [ ] T117 [US7] Add profit per machine-hour to the margin response and use it to order the print queue in `backend/app/services/print_queue_service.py`
-- [ ] T117a [US7] End-to-end accuracy test in `backend/tests/integration/test_realised_margin_accuracy.py`: a settled order with recorded actual fees, actual material use and actual print time reports a margin within 2 percentage points of the margin computed from what was actually received and actually paid (SC-001)
-- [ ] T118 [US7] Write the migration for `scenario_runs` in `backend/alembic/versions/` with its RLS policy
-- [ ] T119 [P] [US7] Build `frontend/src/components/pricing/ScenarioRunPanel.tsx` with job state and the below-floor list, and surface profit per machine-hour beside margin percentage
-- [ ] T119a [P] [US7] Vitest test for scenario job states — queued, running, partial, failed — in `frontend/src/components/pricing/ScenarioRunPanel.test.tsx`
-- [ ] T120 [US7] Add the Celery worker deployment manifest in `infrastructure/k8s/` and point the broker URL at the cluster Redis service rather than the configured `redis://localhost:6379/1` default (research D4)
+- [X] T109 [P] [US7] Reporting and scenario tests in `backend/tests/api/test_scenarios.py`: profit per machine-hour of **CA$2.41** for the golden case; a scenario request acknowledged with `202` before any calculation; a finished run writing no cost, price or provenance figure; a partial or failed run reporting what it got and why it stopped; a result stating the shock and inputs it used; plus an assertion that at least 70% of the golden item's make-cost lines carry an observed origin while fee lines stay labelled as entered (SC-010)
+- [X] T110 [P] [US7] Telemetry tests in `backend/tests/unit/pricing/test_telemetry_ingestion.py`: actual grams and print hours written to the run, 3MF metadata as the fallback, an offline printer producing no estimate change, and a smart-plug reading updating `measured_watts` with `source = 'observed'`
+- [X] T111 [P] [US7] Create `backend/app/models/scenario_run.py` with `state` CHECK-constrained to `queued | running | succeeded | partial | failed`, `shock_json`, `inputs_json`, `margin_floor_pct`, `result_json`, `error_text`
+- [X] T112 [US7] Create the Celery application and task package at `backend/app/tasks/celery_app.py` and `backend/app/tasks/scenario.py`
+- [X] T113 [US7] Implement `backend/app/services/scenario_service.py` driving the engine through the same override mechanism the legacy profile uses, writing nothing authoritative
+- [X] T114 [US7] Create `backend/app/api/v1/scenarios.py` with `POST /scenarios` returning `202`, `GET /scenarios/{id}` reporting state and result, and `GET /scenarios` for history
+- [X] T115 [US7] Implement telemetry ingestion in `backend/app/tasks/telemetry.py` against the existing `printer_adapter` protocol, writing `actual_grams` and `actual_print_hours` onto production runs with 3MF metadata as the fallback
+- [X] T116 [US7] Implement smart-plug ingestion in `backend/app/tasks/power.py` updating `printers.measured_watts` with an observed origin
+- [X] T117 [US7] Add profit per machine-hour to the margin response and use it to order the print queue in `backend/app/services/print_queue_service.py`
+- [X] T117a [US7] End-to-end accuracy test in `backend/tests/integration/test_realised_margin_accuracy.py`: a settled order with recorded actual fees, actual material use and actual print time reports a margin within 2 percentage points of the margin computed from what was actually received and actually paid (SC-001)
+- [X] T118 [US7] Write the migration for `scenario_runs` in `backend/alembic/versions/` with its RLS policy
+- [X] T119 [P] [US7] Build `frontend/src/components/pricing/ScenarioRunPanel.tsx` with job state and the below-floor list, and surface profit per machine-hour beside margin percentage
+- [X] T119a [P] [US7] Vitest test for scenario job states — queued, running, partial, failed — in `frontend/src/components/pricing/ScenarioRunPanel.test.tsx`
+- [X] T120 [US7] Add the Celery worker deployment manifest in `infrastructure/k8s/` and point the broker URL at the cluster Redis service rather than the configured `redis://localhost:6379/1` default (research D4)
 
 **Checkpoint**: all seven stories are functional. Capacity, not margin percentage, orders the queue.
 

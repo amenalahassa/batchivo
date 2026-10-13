@@ -1,0 +1,49 @@
+# Celery Worker Network Policy (task T120)
+#
+# The worker runs catalogue-wide scenarios. It serves no traffic, so it needs
+# no ingress at all -- and saying that explicitly is the point: a worker that
+# accepted connections would be an API nobody meant to publish.
+#
+# Egress:
+#   - PostgreSQL (in-namespace) — it reads the catalogue and writes the run's state
+#   - Redis (in-namespace) — the Celery broker and result backend
+#
+# No MinIO and no external HTTPS, deliberately. A scenario costs products from
+# figures already in the database; it fetches no exchange rate, calls no
+# marketplace and uploads no image. Granting egress it does not need would make
+# this the easiest pod in the namespace to exfiltrate a catalogue from.
+#
+# The namespace is default-deny (00-default-deny.yaml), so this file is what
+# makes the worker able to work; the corresponding ingress allowances live on
+# the PostgreSQL and Redis policies.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: celery-worker-policy
+  namespace: batchivo
+spec:
+  podSelector:
+    matchLabels:
+      app: celery-worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []  # Serves no traffic
+  egress:
+    # The catalogue it reads and the run row it writes.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The broker it takes work from and the backend it reports task state to.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379

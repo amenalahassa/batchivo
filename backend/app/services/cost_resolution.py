@@ -33,6 +33,73 @@ logger = logging.getLogger(__name__)
 OriginMap = dict[tuple[str, uuid.UUID, str], FieldOrigin]
 
 
+def cost_load_options() -> list:
+    """Eager-load options for every relationship a cost read walks.
+
+    The engine issues no queries, which is what lets it recurse through a bill
+    of materials cheaply -- but it also means a relationship nobody loaded
+    raises in an async context, or worse, reads as absent and reports a cheaper
+    product. So the cost-bearing tree is declared **once**, here, and every
+    caller that costs a product uses it: the product endpoints, and the
+    catalogue sweep behind a scenario.
+
+    Three levels of bundle are loaded. The engine's own depth guard refuses
+    deeper nesting with a 409 naming the chain, so a fourth level would be
+    loading data only to refuse it.
+    """
+    from sqlalchemy.orm import selectinload
+
+    from app.models.model import Model
+    from app.models.product import Product
+    from app.models.product_component import ProductComponent
+    from app.models.product_model import ProductModel
+
+    return [
+        selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.materials),
+        selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.components),
+        selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.printer_configs),
+        selectinload(Product.packaging_consumable),
+        # Level 1: child products, with their own cost-bearing relationships.
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.materials),
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.components),
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.printer_configs),
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.packaging_consumable),
+        # Level 2: grandchildren.
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.product_models)
+        .selectinload(ProductModel.model)
+        .selectinload(Model.materials),
+        selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.child_products)
+        .selectinload(ProductComponent.child_product)
+        .selectinload(Product.packaging_consumable),
+    ]
+
+
 def _model_entities(model: "Model") -> set[tuple[str, uuid.UUID]]:
     """Every entity whose recorded origins bear on this item's cost.
 

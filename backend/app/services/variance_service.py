@@ -165,9 +165,7 @@ def divergence_pct(current: Decimal, observed: Decimal) -> Optional[Decimal]:
     observed = Decimal(str(observed))
     if current == ZERO:
         return None
-    return (abs(observed - current) / abs(current) * HUNDRED).quantize(
-        DIVERGENCE_PRECISION
-    )
+    return (abs(observed - current) / abs(current) * HUNDRED).quantize(DIVERGENCE_PRECISION)
 
 
 def _coerce_to_field(entity: object, field_name: str, value: Decimal):
@@ -218,16 +216,20 @@ async def pending_revision(
     revision" without having to explain which of several.
     """
     return (
-        await db.execute(
-            select(EstimateRevision).where(
-                EstimateRevision.tenant_id == tenant.id,
-                EstimateRevision.entity_type == entity_type,
-                EstimateRevision.entity_id == entity_id,
-                EstimateRevision.field_name == field_name,
-                EstimateRevision.state == "pending",
+        (
+            await db.execute(
+                select(EstimateRevision).where(
+                    EstimateRevision.tenant_id == tenant.id,
+                    EstimateRevision.entity_type == entity_type,
+                    EstimateRevision.entity_id == entity_id,
+                    EstimateRevision.field_name == field_name,
+                    EstimateRevision.state == "pending",
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
 
 
 async def list_revisions(
@@ -384,9 +386,7 @@ async def consider_outcomes(
     current = _as_decimal(getattr(entity, field_name, None))
 
     if observed is None:  # pragma: no cover - guarded by the minimum above
-        return VarianceDecision(
-            applied=False, reason="no outcomes to average", run_ids=run_ids
-        )
+        return VarianceDecision(applied=False, reason="no outcomes to average", run_ids=run_ids)
 
     divergence = None if current is None else divergence_pct(current, observed)
     observed_on = max(outcome.observed_on for outcome in outcomes)
@@ -395,9 +395,7 @@ async def consider_outcomes(
     # held rather than applied. There is nothing to compare against a
     # threshold, and applying an unchecked reading to a figure nobody has set
     # is how a sensor fault becomes a price.
-    beyond_threshold = (
-        divergence is None or divergence > Decimal(str(divergence_threshold_pct))
-    )
+    beyond_threshold = divergence is None or divergence > Decimal(str(divergence_threshold_pct))
 
     if not beyond_threshold:
         return await _apply(
@@ -461,9 +459,7 @@ async def consider_outcomes(
         # Stored as they stood, not recomputed at review time: the figure may
         # move for an unrelated reason, and the operator must see the
         # comparison that was actually made (FR-042c).
-        current_value=(current if current is not None else ZERO).quantize(
-            VALUE_PRECISION
-        ),
+        current_value=(current if current is not None else ZERO).quantize(VALUE_PRECISION),
         observed_value=observed.quantize(VALUE_PRECISION),
         divergence_pct=(divergence if divergence is not None else Decimal("999.9999")),
         derived_from_run_ids=sorted(run_ids),
@@ -551,13 +547,17 @@ async def _load_pending(
     "not yours" as "nothing to do".
     """
     revision = (
-        await db.execute(
-            select(EstimateRevision).where(
-                EstimateRevision.id == revision_id,
-                EstimateRevision.tenant_id == tenant.id,
+        (
+            await db.execute(
+                select(EstimateRevision).where(
+                    EstimateRevision.id == revision_id,
+                    EstimateRevision.tenant_id == tenant.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if revision is None:
         raise LookupError(f"no estimate revision {revision_id} for this tenant")
     if revision.state != "pending":
@@ -591,9 +591,7 @@ async def accept_revision(
         setattr(
             subject,
             revision.field_name,
-            _coerce_to_field(
-                subject, revision.field_name, Decimal(str(revision.observed_value))
-            ),
+            _coerce_to_field(subject, revision.field_name, Decimal(str(revision.observed_value))),
         )
         db.add(subject)
 
@@ -706,6 +704,4 @@ async def _load_entity(
     if hasattr(model_class, "tenant_id"):
         conditions.append(model_class.tenant_id == tenant.id)
 
-    return (
-        await db.execute(select(model_class).where(*conditions))
-    ).scalars().first()
+    return (await db.execute(select(model_class).where(*conditions))).scalars().first()
