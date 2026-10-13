@@ -211,6 +211,7 @@ from app.api.v1 import (
     discounts,
     exports,
     fee_rules,
+    provenance,
     forecasting,
     model_files,
     models,
@@ -310,6 +311,15 @@ app.include_router(
     reconciliation.router,
     prefix=f"{settings.api_v1_prefix}/reconciliation",
     tags=["reconciliation"],
+)
+# Provenance and estimate proposals sit at the API root rather than under an
+# entity: `GET /provenance?entity_type=` answers for any of eleven entity
+# types, and a prefix per type would be eleven near-identical routers
+# (contracts/pricing-api.md).
+app.include_router(
+    provenance.router,
+    prefix=settings.api_v1_prefix,
+    tags=["provenance"],
 )
 app.include_router(
     shipping_profiles.router,

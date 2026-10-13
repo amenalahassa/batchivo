@@ -245,19 +245,19 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 **Depends on**: US2 and US3 (a snapshot of a wrong cost is worth little). This phase carries the heaviest refactor in the feature.
 
-- [ ] T090 [P] [US5] Snapshot immutability test in `backend/tests/integration/test_snapshot_immutability.py`: after changing a spool price, a labor rate, an overhead setting and a fee rule, **zero** settled orders report a different margin
-- [ ] T091 [P] [US5] Temporal pricing tests in `backend/tests/unit/pricing/test_temporal_pricing.py`: an order from an earlier period reports the price effective on its date; overlapping date ranges are rejected at save time; overlapping quantity tiers are rejected; the price at exactly a break quantity is unambiguous
-- [ ] T092 [P] [US5] Exchange-rate tests in `backend/tests/unit/pricing/test_fx.py` using `respx`: a fetched rate is reused for the day; an unreachable service falls back to the last known rate with its date; a manual rate overrides; a sale is never blocked; a never-fetched pair asks rather than implying 1:1; a frozen rate survives a better rate becoming known
-- [ ] T093 [P] [US5] Extend `backend/app/models/order.py` `OrderItem` with `cost_breakdown_json JSONB`, `make_cost_at_sale Numeric(10,2)`, `list_price_at_sale Numeric(10,2)`, `fees_json JSONB`, `fx_rate Numeric(14,8)`, `margin_basis_at_sale String(20)` and `pricing_rev Integer`, all nullable and all written once
-- [ ] T094 [P] [US5] Extend `backend/app/models/product_pricing.py` with `valid_from Date` not null, `valid_to Date` nullable and `min_quantity Integer` default 1; drop `uq_product_channel_pricing` and add a partial unique index on `(product_id, sales_channel_id, min_quantity) WHERE valid_to IS NULL` (research D6)
-- [ ] T095 [P] [US5] Create `backend/app/models/fx_rate.py` — **not** tenant-scoped, since a published rate is not tenant data; document the deliberate RLS exception in the model docstring
-- [ ] T096 [US5] Write the snapshot at the moment of sale in `backend/app/services/order_fulfillment.py` and the checkout path, recording the breakdown, price, fees, rate and margin basis as they stood
-- [ ] T097 [US5] Implement as-of price resolution and a `Product.current_pricing` relationship primary-joined on `valid_to IS NULL`, then update every read site in `backend/app/api/v1/products.py` and `backend/app/api/v1/shop.py`
-- [ ] T098 [US5] Implement the exchange-rate adapter behind a narrow port in `backend/app/services/fx_service.py`, with day reuse, stale fallback, manual override and no network access in tests
-- [ ] T099 [US5] Write the Tier 3 migration in `backend/alembic/versions/`: snapshot columns, order postage and tax, the `fx_rates` table, and the constraint swap — the downgrade must document that it collapses price history to the current row
-- [ ] T099a [US5] Run the same delta report for the Tier 3 migration into `specs/002-pricing-engine-rebuild/delta-tier3.md`, and assert alongside T090 that zero settled order's margin moved
-- [ ] T100 [P] [US5] Build price history and quantity tiers into `frontend/src/components/products/ProductPricingEditor.tsx`
-- [ ] T100a [P] [US5] Vitest tests for price history and quantity tiers in `frontend/src/components/products/ProductPricingEditor.test.tsx`
+- [X] T090 [P] [US5] Snapshot immutability test in `backend/tests/integration/test_snapshot_immutability.py`: after changing a spool price, a labor rate, an overhead setting and a fee rule, **zero** settled orders report a different margin
+- [X] T091 [P] [US5] Temporal pricing tests in `backend/tests/unit/pricing/test_temporal_pricing.py`: an order from an earlier period reports the price effective on its date; overlapping date ranges are rejected at save time; overlapping quantity tiers are rejected; the price at exactly a break quantity is unambiguous
+- [X] T092 [P] [US5] Exchange-rate tests in `backend/tests/unit/pricing/test_fx.py` using `respx`: a fetched rate is reused for the day; an unreachable service falls back to the last known rate with its date; a manual rate overrides; a sale is never blocked; a never-fetched pair asks rather than implying 1:1; a frozen rate survives a better rate becoming known
+- [X] T093 [P] [US5] Extend `backend/app/models/order.py` `OrderItem` with `cost_breakdown_json JSONB`, `make_cost_at_sale Numeric(10,2)`, `list_price_at_sale Numeric(10,2)`, `fees_json JSONB`, `fx_rate Numeric(14,8)`, `margin_basis_at_sale String(20)` and `pricing_rev Integer`, all nullable and all written once
+- [X] T094 [P] [US5] Extend `backend/app/models/product_pricing.py` with `valid_from Date` not null, `valid_to Date` nullable and `min_quantity Integer` default 1; drop `uq_product_channel_pricing` and add a partial unique index on `(product_id, sales_channel_id, min_quantity) WHERE valid_to IS NULL` (research D6)
+- [X] T095 [P] [US5] Create `backend/app/models/fx_rate.py` — **not** tenant-scoped, since a published rate is not tenant data; document the deliberate RLS exception in the model docstring
+- [X] T096 [US5] Write the snapshot at the moment of sale in `backend/app/services/order_fulfillment.py` and the checkout path, recording the breakdown, price, fees, rate and margin basis as they stood
+- [X] T097 [US5] Implement as-of price resolution and a `Product.current_pricing` relationship primary-joined on `valid_to IS NULL`, then update every read site in `backend/app/api/v1/products.py` and `backend/app/api/v1/shop.py`
+- [X] T098 [US5] Implement the exchange-rate adapter behind a narrow port in `backend/app/services/fx_service.py`, with day reuse, stale fallback, manual override and no network access in tests
+- [X] T099 [US5] Write the Tier 3 migration in `backend/alembic/versions/`: snapshot columns, order postage and tax, the `fx_rates` table, and the constraint swap — the downgrade must document that it collapses price history to the current row
+- [X] T099a [US5] Run the same delta report for the Tier 3 migration into `specs/002-pricing-engine-rebuild/delta-tier3.md`, and assert alongside T090 that zero settled order's margin moved
+- [X] T100 [P] [US5] Build price history and quantity tiers into `frontend/src/components/products/ProductPricingEditor.tsx`
+- [X] T100a [P] [US5] Vitest tests for price history and quantity tiers in `frontend/src/components/products/ProductPricingEditor.test.tsx`
 
 **Checkpoint**: history is immovable. Watch the shop read paths this phase disturbs.
 
@@ -271,15 +271,15 @@ Web application layout per plan.md: `backend/app/` and `backend/tests/` for the 
 
 **Depends on**: US2 (the provenance table and registry land there).
 
-- [ ] T101 [P] [US6] Variance tests in `backend/tests/unit/pricing/test_variance.py`: with enough outcomes and a close value the estimate updates on its own and its origin becomes observed, dated, with the outcomes it came from; a value diverging beyond the threshold is held as a proposal while pricing keeps using the current estimate; a rejected proposal is not re-raised from the same outcomes but a later one from new outcomes is; a newer proposal supersedes a pending one; an operator decision is never updated whatever the divergence
-- [ ] T102 [P] [US6] Provenance endpoint tests in `backend/tests/api/test_provenance.py`: reads available to viewer; a write rejected for a field whose origin is `observed`; a stale measurement flagged while still showing its last value
-- [ ] T103 [P] [US6] Create `backend/app/models/estimate_revision.py` with `state` CHECK-constrained to `pending | accepted | rejected`, `derived_from_run_ids JSONB`, `current_value`, `observed_value`, `divergence_pct`
-- [ ] T104 [US6] Implement `backend/app/services/variance_service.py`: rolling average once `min_outcomes_before_auto_update` is reached, proposal beyond `estimate_divergence_threshold_pct`, supersede-rather-than-queue, and the rule that a measurement updates but a decision never does
-- [ ] T105 [US6] Add `GET /provenance` and `PUT /provenance/{entity_type}/{entity_id}/{field_name}` in a new `backend/app/api/v1/provenance.py`, rejecting writes to observed fields
-- [ ] T106 [US6] Add `GET /estimate-revisions` and the accept and reject actions in `backend/app/api/v1/provenance.py`
-- [ ] T107 [P] [US6] Build `frontend/src/components/pricing/ProvenanceBadge.tsx` and `EstimateProposalList.tsx`, and add the observed-share summary and stale warning to `CostBreakdownPanel.tsx`
-- [ ] T107a [P] [US6] Vitest tests for the provenance badge, the observed share and the stale warning in `frontend/src/components/pricing/ProvenanceBadge.test.tsx`
-- [ ] T108 [US6] Write the migration for `estimate_revisions` in `backend/alembic/versions/` with its RLS policy
+- [X] T101 [P] [US6] Variance tests in `backend/tests/unit/pricing/test_variance.py`: with enough outcomes and a close value the estimate updates on its own and its origin becomes observed, dated, with the outcomes it came from; a value diverging beyond the threshold is held as a proposal while pricing keeps using the current estimate; a rejected proposal is not re-raised from the same outcomes but a later one from new outcomes is; a newer proposal supersedes a pending one; an operator decision is never updated whatever the divergence
+- [X] T102 [P] [US6] Provenance endpoint tests in `backend/tests/api/test_provenance.py`: reads available to viewer; a write rejected for a field whose origin is `observed`; a stale measurement flagged while still showing its last value
+- [X] T103 [P] [US6] Create `backend/app/models/estimate_revision.py` with `state` CHECK-constrained to `pending | accepted | rejected`, `derived_from_run_ids JSONB`, `current_value`, `observed_value`, `divergence_pct`
+- [X] T104 [US6] Implement `backend/app/services/variance_service.py`: rolling average once `min_outcomes_before_auto_update` is reached, proposal beyond `estimate_divergence_threshold_pct`, supersede-rather-than-queue, and the rule that a measurement updates but a decision never does
+- [X] T105 [US6] Add `GET /provenance` and `PUT /provenance/{entity_type}/{entity_id}/{field_name}` in a new `backend/app/api/v1/provenance.py`, rejecting writes to observed fields
+- [X] T106 [US6] Add `GET /estimate-revisions` and the accept and reject actions in `backend/app/api/v1/provenance.py`
+- [X] T107 [P] [US6] Build `frontend/src/components/pricing/ProvenanceBadge.tsx` and `EstimateProposalList.tsx`, and add the observed-share summary and stale warning to `CostBreakdownPanel.tsx`
+- [X] T107a [P] [US6] Vitest tests for the provenance badge, the observed share and the stale warning in `frontend/src/components/pricing/ProvenanceBadge.test.tsx`
+- [X] T108 [US6] Write the migration for `estimate_revisions` in `backend/alembic/versions/` with its RLS policy
 
 **Checkpoint**: a reader can tell an observed figure from a guess, and fee lines are labelled as entered.
 

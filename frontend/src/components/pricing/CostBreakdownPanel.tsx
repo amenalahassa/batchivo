@@ -19,32 +19,36 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { formatMoney, formatShare } from '@/lib/money'
+import { isStaleMeasurement } from '@/lib/provenance'
+import { ProvenanceBadge } from './ProvenanceBadge'
 import type { CostBreakdown, CostLine, ProvenanceSource } from '@/types/pricing'
 
 interface CostBreakdownPanelProps {
   breakdown: CostBreakdown
   /** Currency symbol to prefix amounts with. The API sends no currency. */
   currencySymbol?: string
+  /**
+   * The tenant's staleness threshold in days, from the pricing policy.
+   *
+   * Omitted, no line is flagged stale. That is the right default: inventing a
+   * threshold here would flag figures against a number the operator never
+   * set, and FR-005 makes the threshold theirs.
+   */
+  stalenessThresholdDays?: number | null
   className?: string
 }
 
-/** Human wording for each origin, and how much weight it carries. */
-const SOURCE_LABEL: Record<ProvenanceSource, string> = {
-  observed: 'Observed',
-  measured: 'Measured',
-  policy: 'Your setting',
-  assumed: 'Assumed',
-}
-
-const SOURCE_VARIANT: Record<ProvenanceSource, 'success' | 'secondary' | 'warning'> = {
-  observed: 'success',
-  measured: 'success',
-  policy: 'secondary',
-  assumed: 'warning',
-}
-
-function LineRow({ line, symbol }: { line: CostLine; symbol: string }) {
+function LineRow({
+  line,
+  symbol,
+  stalenessThresholdDays,
+}: {
+  line: CostLine
+  symbol: string
+  stalenessThresholdDays?: number | null
+}) {
   const source = (line.source as ProvenanceSource) ?? 'assumed'
+  const stale = isStaleMeasurement(line, stalenessThresholdDays)
   return (
     <div
       className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-2"
@@ -57,11 +61,20 @@ function LineRow({ line, symbol }: { line: CostLine; symbol: string }) {
             {line.risk_class === 'at_risk' ? 'At risk' : 'Not at risk'}
           </Badge>
         </div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-          <Badge variant={SOURCE_VARIANT[source]}>{SOURCE_LABEL[source]}</Badge>
-          <span>{line.as_of ? `as of ${line.as_of}` : 'never recorded'}</span>
+        <div className="mt-0.5">
+          {/* The shared badge, so "Assumed" means the same thing here as on
+              the provenance list and the proposal list (Constitution III). */}
+          <ProvenanceBadge
+            source={source}
+            asOf={line.as_of}
+            isStale={stale}
+            isDefault={!line.as_of}
+          />
         </div>
       </div>
+      {/* The amount stays beside the badge even when the figure is stale: an
+          operator with an old number can still judge it, and one with no
+          number cannot (FR-005). */}
       <span className="tabular-nums font-medium">{formatMoney(line.amount, symbol)}</span>
     </div>
   )
@@ -70,10 +83,14 @@ function LineRow({ line, symbol }: { line: CostLine; symbol: string }) {
 export function CostBreakdownPanel({
   breakdown,
   currencySymbol = '$',
+  stalenessThresholdDays = null,
   className,
 }: CostBreakdownPanelProps) {
   const symbol = currencySymbol
   const isIncomplete = breakdown.incomplete_reasons.length > 0
+  const staleLines = breakdown.lines.filter((line) =>
+    isStaleMeasurement(line, stalenessThresholdDays),
+  )
   const hasPremium = breakdown.failure_premium !== '0' && formatMoney(breakdown.failure_premium, '') !== '0.00'
 
   return (
@@ -110,6 +127,31 @@ export function CostBreakdownPanel({
           </div>
         )}
 
+        {/* FR-005. Named lines rather than a count: "2 figures are stale"
+            sends the reader hunting, and the point of the warning is to tell
+            them what to re-measure. The cost is still shown and still used. */}
+        {staleLines.length > 0 && (
+          <div
+            className="rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 text-sm"
+            data-testid="stale-measurements"
+            role="status"
+          >
+            <div className="flex items-center gap-2 font-medium">
+              <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              <span>
+                {staleLines.length === 1
+                  ? 'One measurement is older than your threshold'
+                  : `${staleLines.length} measurements are older than your threshold`}
+              </span>
+            </div>
+            <p className="mt-1 text-muted-foreground">
+              This cost still uses {staleLines.length === 1 ? 'it' : 'them'}. Re-measure{' '}
+              {staleLines.map((line) => line.label).join(', ')} to be sure of the figure — your
+              threshold is {stalenessThresholdDays} days.
+            </p>
+          </div>
+        )}
+
         {breakdown.lines.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="no-cost-lines">
             Nothing is costed yet — this item has no material, labor or machine time recorded.
@@ -117,7 +159,12 @@ export function CostBreakdownPanel({
         ) : (
           <div className="divide-y">
             {breakdown.lines.map((line) => (
-              <LineRow key={line.key} line={line} symbol={symbol} />
+              <LineRow
+                key={line.key}
+                line={line}
+                symbol={symbol}
+                stalenessThresholdDays={stalenessThresholdDays}
+              />
             ))}
           </div>
         )}
