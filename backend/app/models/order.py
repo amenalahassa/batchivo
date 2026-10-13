@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING, Optional
 from decimal import Decimal
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, String, Text, DateTime
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, Numeric, String, Text, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -381,6 +382,100 @@ class OrderItem(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         comment="Total line item price (quantity * unit_price)",
     )
+
+    # ------------------------------------------------------------------
+    # The snapshot, written once at the moment of sale (task T093)
+    #
+    # FR-036 and FR-037 together: what a line earned is recorded as it stood
+    # and then never recomputed. Everything above this block is already a
+    # snapshot of a kind -- `product_sku` and `unit_price` have always been
+    # frozen -- and these columns extend that discipline to the figures the
+    # margin is built from.
+    #
+    # Why this matters enough to be a table rather than a recomputation: a
+    # settled order's margin is a historical fact. Recomputing it from today's
+    # spool price, today's labor rate and today's fee rules would silently
+    # restate last quarter's profit every time an input moved, which is the
+    # defect FR-038 exists to prevent and `tests/integration/
+    # test_snapshot_immutability.py` asserts the absence of.
+    #
+    # Every column is nullable: lines settled before this feature have no
+    # snapshot and must read as *unknown* rather than as zero. A zero margin on
+    # a historical order is indistinguishable from a real one.
+    # ------------------------------------------------------------------
+
+    cost_breakdown_json: Mapped[Optional[dict]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment=(
+            "The full cost breakdown as it stood at the moment of sale. "
+            "Written once and never recomputed (FR-036, FR-037)"
+        ),
+    )
+
+    make_cost_at_sale: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment="Make-cost of one unit as it stood at the moment of sale",
+    )
+
+    list_price_at_sale: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        comment=(
+            "The channel list price in effect at the moment of sale. Distinct "
+            "from unit_price, which is what was actually charged after any "
+            "discount -- the two differing is information, not an error"
+        ),
+    )
+
+    fees_json: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment=(
+            "The itemised PLANNED fees as the rules stood at sale. Recorded "
+            "actuals are reconciled against these, never written back over them"
+        ),
+    )
+
+    fx_rate: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(14, 8),
+        nullable=True,
+        comment=(
+            "The exchange rate used, frozen. Never revised when a newer or "
+            "more accurate rate becomes known (FR-028j); the difference is "
+            "reported as a variance, not corrected"
+        ),
+    )
+
+    margin_basis_at_sale: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment=(
+            "The margin basis in effect at sale, so the order keeps reporting "
+            "on the basis it sold on after the setting changes (FR-031d)"
+        ),
+    )
+
+    pricing_rev: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment=(
+            "Revision of the cost engine that produced this snapshot, so a "
+            "figure can be attributed to the arithmetic that made it"
+        ),
+    )
+
+    @property
+    def has_snapshot(self) -> bool:
+        """Whether this line carries a snapshot at all.
+
+        A line settled before this feature has none. Callers must branch on
+        this rather than reading ``make_cost_at_sale or 0`` -- an unrecorded
+        cost and a cost of nothing are different facts, and the second reads
+        as a sale with no cost of goods at all.
+        """
+        return self.make_cost_at_sale is not None
 
     # Relationships
     order: Mapped["Order"] = relationship(

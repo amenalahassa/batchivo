@@ -19,6 +19,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.temporal_pricing import current_rows
 from app.config import get_settings
 from app.models.external_listing import ExternalListing
 from app.models.product import Product
@@ -187,11 +188,17 @@ class ShopifySyncService:
         product_type = getattr(product, "product_type", None) or "3D Print"
 
         # Build variants
+        # `current_pricing` rather than `pricing`: since Tier 3 the second is
+        # the full price history, and publishing a superseded price to a live
+        # Shopify listing would undercharge every customer who bought at it
+        # (task T097, FR-039). Read through `current_rows`, which falls back
+        # to filtering the history where the relationship is absent -- reading
+        # the attribute directly made a sync raise on any product handed over
+        # without it.
         base_price_pence: int = 0
-        if product.pricing:
-            active = [p for p in product.pricing if p.is_active]
-            if active:
-                base_price_pence = int(Decimal(str(active[0].list_price)) * 100)
+        active = [p for p in current_rows(product) if p.is_active]
+        if active:
+            base_price_pence = int(Decimal(str(active[0].list_price)) * 100)
 
         active_variants = sorted(
             [v for v in getattr(product, "variants", []) if v.is_active],

@@ -10,7 +10,7 @@ Provides dashboard data for the authenticated home page including:
 - Failure analytics
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Optional
 from uuid import UUID
 
@@ -20,6 +20,7 @@ from sqlalchemy import select, func, and_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core import clock
 from app.database import get_db
 from app.models.production_run import ProductionRun, ProductionRunItem, ProductionRunMaterial
 from app.models.spool import Spool
@@ -49,7 +50,7 @@ def _utc_today() -> date:
     to it. UTC is at least consistent with the stored data and no longer
     depends on what time of day the request arrives.
     """
-    return datetime.now(timezone.utc).date()
+    return clock.today()
 
 
 # Response Schemas

@@ -666,3 +666,88 @@ export interface PriceLadderParams {
   shipping_revenue?: Money
   as_of?: string | null
 }
+
+// ---------------------------------------------------------------------------
+// Provenance and estimate proposals (User Story 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where one figure came from, as `GET /provenance` reports it.
+ *
+ * `editable` and `has_pending_revision` are served rather than inferred on
+ * this side. An observed figure is read-only (FR-004), and a screen that
+ * worked that out for itself would eventually disagree with the server about
+ * which edits will be refused — which shows up as a form that fails on submit
+ * for no visible reason.
+ */
+export interface FieldOrigin {
+  field_name: string
+  source: ProvenanceSource
+  /** Null where nothing has been recorded, which is not the same as today. */
+  as_of: string | null
+  /** A fraction between 0 and 1, not a percentage. */
+  confidence: Money | null
+  /** True where the registry's default applied because nothing was recorded. */
+  is_default: boolean
+  /** True for a hand measurement past the tenant's threshold (FR-005). */
+  is_stale: boolean
+  /** False where an operator may not write this origin (FR-004). */
+  editable: boolean
+  /** True where an observation diverges beyond the threshold (FR-042e). */
+  has_pending_revision: boolean
+  description: string
+}
+
+export interface EntityProvenance {
+  entity_type: string
+  entity_id: string
+  fields: FieldOrigin[]
+  observed_count: number
+  total_count: number
+  stale_count: number
+  /** The tenant's own threshold; a stale count cannot be judged without it. */
+  staleness_threshold_days: number
+}
+
+/** What an operator may claim. `observed` is deliberately absent (FR-004). */
+export type OperatorProvenanceSource = 'measured' | 'policy' | 'assumed'
+
+export interface ProvenanceWriteRequest {
+  source: OperatorProvenanceSource
+  as_of?: string
+  /** A fraction between 0 and 1. */
+  confidence?: Money
+}
+
+export type RevisionState = 'pending' | 'accepted' | 'rejected'
+
+/**
+ * A proposed estimate change, held for review (FR-042b, FR-042c).
+ *
+ * Every figure is a decimal string. The operator compares `divergence_pct`
+ * against a threshold they set, and a value that drifted in its last place on
+ * the way here could not be reconciled with the one on the server.
+ */
+export interface EstimateRevision {
+  id: string
+  entity_type: string
+  entity_id: string
+  field_name: string
+  /** The estimate this would change, as it stood when the proposal was raised. */
+  current_value: Money
+  observed_value: Money
+  divergence_pct: Money
+  /** The outcomes behind it, so a reviewer can check them (FR-042c). */
+  derived_from_run_ids: string[]
+  state: RevisionState
+  observed_as_of: string
+  reviewed_by_user_id: string | null
+  reviewed_at: string | null
+  created_at: string
+}
+
+export interface EstimateRevisionList {
+  revisions: EstimateRevision[]
+  total: number
+  pending_count: number
+}

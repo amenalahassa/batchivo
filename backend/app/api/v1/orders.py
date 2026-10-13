@@ -1,5 +1,6 @@
 """Orders API endpoints for managing customer orders."""
 
+import logging
 from datetime import datetime, timezone, date
 from decimal import Decimal
 from typing import Optional
@@ -20,6 +21,9 @@ from app.services.commerce_order_ownership import (
     dispatch_native_commerce,
     reject_native_commerce_mutation,
 )
+from app.services.sale_snapshot import write_sale_snapshot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -296,6 +300,21 @@ async def create_order(
                 unit_price=item.unit_price,
                 total_price=item.unit_price * item.quantity,
             )
+        )
+
+    # Freeze what each line earned, as it stands (task T096, FR-036).
+    #
+    # Inside the sale's own transaction, before the commit: a snapshot of an
+    # order that rolled back would be a frozen margin for a sale that never
+    # happened. An order the snapshot cannot fully cost is still recorded --
+    # the gaps are reported, never costed at zero (FR-019).
+    await db.flush()
+    await db.refresh(order, ["items"])
+    snapshot = await write_sale_snapshot(db, tenant, order)
+    if snapshot.incomplete:
+        logger.warning(
+            f"Order {order.order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
         )
 
     await db.commit()

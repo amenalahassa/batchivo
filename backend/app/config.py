@@ -111,6 +111,20 @@ class Settings(BaseSettings):
     email_from_name: str = "Batchivo"
     frontend_base_url: str = "http://localhost:5173"  # Base URL for email links
 
+    # Exchange rates (Tier 3, FR-028f - FR-028j)
+    #
+    # The default is a keyless public endpoint, so a fresh install can price a
+    # cross-currency sale without configuration. It is behind a narrow port in
+    # `services/fx_service.py`, so swapping the provider is one adapter.
+    #
+    # `fx_enabled = False` disables fetching entirely: the service then serves
+    # the last known rate or a manual one. A sale is never blocked by rate
+    # availability under any setting (FR-028i).
+    fx_enabled: bool = True
+    fx_api_url: str = "https://open.er-api.com/v6/latest"
+    fx_api_key: str = ""  # Sent as an apikey header when set
+    fx_timeout_seconds: float = 5.0  # Short: a sale must not wait on a rate
+
     # Sentry Error Monitoring
     sentry_dsn: str = ""  # Sentry DSN for error tracking (leave empty to disable)
     sentry_traces_sample_rate: float = 0.1  # Performance monitoring sample rate

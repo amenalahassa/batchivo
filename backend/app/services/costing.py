@@ -99,6 +99,21 @@ class MaxDepthExceededError(Exception):
 # Maximum recursion depth for product cost calculation
 MAX_RECURSION_DEPTH = 20
 
+#: Which revision of this engine produced a figure, recorded on every sale
+#: snapshot (``order_items.pricing_rev``).
+#:
+#: It exists so a historical margin can be attributed to the arithmetic that
+#: made it. FR-037 forbids recomputing a settled figure, which means a snapshot
+#: written by an older engine stays as it is -- and a reader comparing two
+#: quarters' margins needs to know whether a step change was the business or
+#: the engine.
+#:
+#: Bump this when a change alters what the engine would compute for unchanged
+#: inputs. Revision 1 is the Tier 1-3 engine: the structured breakdown, the
+#: at-risk split and failure premium, overhead per machine-hour, the fee rules
+#: engine and the tax-exclusive margin.
+PRICING_ENGINE_REV = 1
+
 ZERO = Decimal("0")
 ONE = Decimal("1")
 CENT = Decimal("0.01")

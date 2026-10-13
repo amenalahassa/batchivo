@@ -23,13 +23,14 @@ automated process.
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.models.pricing_input_provenance import (
     PROVENANCE_ENTITY_TYPES,
     PROVENANCE_SOURCES,
@@ -312,7 +313,7 @@ class FieldOrigin:
         """
         if self.source != "measured" or self.as_of is None:
             return False
-        reference = today or datetime.now(timezone.utc).date()
+        reference = today or clock.today()
         return (reference - self.as_of).days > threshold_days
 
 
@@ -444,7 +445,7 @@ async def record_origin(
             f"read-only; it is refreshed only from that source (FR-004)"
         )
 
-    effective_as_of = as_of or datetime.now(timezone.utc).date()
+    effective_as_of = as_of or clock.today()
 
     if existing is not None:
         existing.source = source

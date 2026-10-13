@@ -351,11 +351,37 @@ class Product(Base, UUIDMixin, TimestampMixin):
         lazy="selectin",
     )
 
+    #: The **full price history**, every channel and every tier (FR-039).
+    #:
+    #: This used to be one row per channel, so every read of it was implicitly
+    #: a read of the current price. Since Tier 3 it is a history, and a caller
+    #: that still treats it as "the prices" will pick up superseded rows. Read
+    #: `current_pricing` below for what is in effect now, or resolve as at a
+    #: date through `app.services.temporal_pricing`.
     pricing: Mapped[list["ProductPricing"]] = relationship(
         "ProductPricing",
         back_populates="product",
         cascade="all, delete-orphan",
         lazy="selectin",
+        order_by="ProductPricing.valid_from.desc()",
+    )
+
+    #: The prices **in effect now** — one per channel and quantity tier.
+    #:
+    #: Primary-joined on `valid_to IS NULL` (research D6), so the storefront
+    #: and every other current-price read cannot accidentally serve a
+    #: superseded figure. `viewonly` because this is a filtered view of
+    #: `pricing`: writing through it would let two collections disagree about
+    #: the same rows, and closing a period is the service's job.
+    current_pricing: Mapped[list["ProductPricing"]] = relationship(
+        "ProductPricing",
+        primaryjoin=(
+            "and_(Product.id == ProductPricing.product_id, "
+            "ProductPricing.valid_to.is_(None))"
+        ),
+        viewonly=True,
+        lazy="selectin",
+        order_by="ProductPricing.min_quantity",
     )
 
     images: Mapped[list["ProductImage"]] = relationship(

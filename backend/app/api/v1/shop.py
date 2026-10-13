@@ -36,6 +36,7 @@ from app.services.checkout_session import CheckoutSessionService, get_checkout_s
 from app.services.commerce_handover import legacy_product_write_guard, legacy_shop_write_guard
 from app.services.search_service import SearchService, get_search_service
 from app.services.shipping_service import ShippingService, get_shipping_service
+from app.services.temporal_pricing import storefront_price
 from app.services.stock_reservation import (
     ReservationItem,
     StockReservationService,
@@ -394,18 +395,13 @@ async def get_products(
     shop_products = []
     for product in products:
         # Find pricing for tenant's shop channel (active entries only)
-        price = Decimal("0")
-        if channel:
-            for pricing in product.pricing:
-                if pricing.sales_channel_id == channel.id and pricing.is_active:
-                    price = pricing.list_price or Decimal("0")
-                    break
-
-        # If no active channel-specific price, fall back to first active pricing entry
-        if price == 0 and product.pricing:
-            active = [p for p in product.pricing if p.is_active]
-            if active:
-                price = active[0].list_price or Decimal("0")
+        # The temporal filter is applied inside `storefront_price`, which reads
+        # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
+        # `product.pricing` here would serve a superseded price, because since
+        # Tier 3 that collection is the full history (task T097, FR-039).
+        price = storefront_price(
+            product, sales_channel_id=channel.id if channel else None
+        ) or Decimal("0")
 
         # Check if it's a dragon item using dedicated is_dragon field
         is_dragon = getattr(product, "is_dragon", False)
@@ -516,11 +512,8 @@ async def get_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Get pricing — only use active entries
-    price = Decimal("0")
-    active_pricing = [p for p in product.pricing if p.is_active]
-    if active_pricing:
-        price = active_pricing[0].list_price or Decimal("0")
+    # `storefront_price` reads the CURRENT rows only (task T097, FR-039).
+    price = storefront_price(product) or Decimal("0")
 
     base_price_pence = int(price * 100)
     is_dragon = getattr(product, "is_dragon", False)
@@ -707,16 +700,13 @@ async def get_related_products(
 
     shop_products = []
     for product in related:
-        price = Decimal("0")
-        if channel:
-            for pricing in product.pricing:
-                if pricing.sales_channel_id == channel.id and pricing.is_active:
-                    price = pricing.list_price or Decimal("0")
-                    break
-        if price == 0 and product.pricing:
-            active = [p for p in product.pricing if p.is_active]
-            if active:
-                price = active[0].list_price or Decimal("0")
+        # The temporal filter is applied inside `storefront_price`, which reads
+        # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
+        # `product.pricing` here would serve a superseded price, because since
+        # Tier 3 that collection is the full history (task T097, FR-039).
+        price = storefront_price(
+            product, sales_channel_id=channel.id if channel else None
+        ) or Decimal("0")
 
         product_images = []
         for img in getattr(product, "images", []):
@@ -923,10 +913,8 @@ async def get_dragons(db: AsyncSession = Depends(get_db)):
 
     shop_products = []
     for product in products:
-        price = Decimal("0")
-        active_pricing = [p for p in product.pricing if p.is_active]
-        if active_pricing:
-            price = active_pricing[0].list_price or Decimal("0")
+        # Current rows only (task T097, FR-039).
+        price = storefront_price(product) or Decimal("0")
 
         # Convert images - use API endpoint for reliable delivery
         product_images = []
@@ -1070,11 +1058,8 @@ async def add_to_cart(
                     },
                 )
 
-    # Get price — only use active pricing entries
-    price = Decimal("0")
-    active_pricing = [p for p in product.pricing if p.is_active]
-    if active_pricing:
-        price = active_pricing[0].list_price or Decimal("0")
+    # Current rows only (task T097, FR-039).
+    price = storefront_price(product) or Decimal("0")
     price_pence = price * 100
 
     # Add to cart via service

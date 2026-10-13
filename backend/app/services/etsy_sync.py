@@ -15,6 +15,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.temporal_pricing import current_rows
 from app.core.encryption import safe_decrypt
 from app.models.external_listing import ExternalListing
 from app.models.product import Product
@@ -427,19 +428,27 @@ class EtsySyncService:
             elif product.images:
                 primary_image_url = product.images[0].image_url
 
-        # Get price from first active pricing (Etsy channel preferred)
+        # Get price from the CURRENT active pricing (Etsy channel preferred).
+        #
+        # `current_pricing` rather than `pricing`: since Tier 3 the second is
+        # the full price history, and publishing a superseded price to a live
+        # marketplace listing would undercharge every customer who bought at
+        # it (task T097, FR-039). Read through `current_rows`, which falls
+        # back to filtering the history where the relationship is absent --
+        # reading the attribute directly made a sync raise on any product
+        # handed over without it.
         price = None
-        if product.pricing:
+        current = current_rows(product)
+        if current:
             etsy_pricing = [
                 p
-                for p in product.pricing
+                for p in current
                 if p.is_active and p.sales_channel.platform_type == "etsy"
             ]
             if etsy_pricing:
                 price = float(etsy_pricing[0].list_price)
-            elif product.pricing:
-                # Fall back to first active pricing
-                active_pricing = [p for p in product.pricing if p.is_active]
+            else:
+                active_pricing = [p for p in current if p.is_active]
                 if active_pricing:
                     price = float(active_pricing[0].list_price)
 

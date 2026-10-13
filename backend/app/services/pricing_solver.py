@@ -37,6 +37,7 @@ from datetime import date
 from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
+from app.core import clock
 from app.models.fee_rule import COUNT_BASES, PERIODIC_BASES
 from app.services import fee_engine
 from app.services.costing import (
@@ -508,7 +509,7 @@ def solve(
     MAY -- it is the operator's call whether a price should be dragged up to a
     threshold, and doing it unasked would quietly reprice a catalogue.
     """
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
     source = list(rules if rules is not None else (channel.fee_rules or []))
     target = Decimal(str(target_margin_pct)) / HUNDRED
     basis = resolve_margin_basis(policy, override=margin_basis)
@@ -679,7 +680,7 @@ def margin_at(
     second margin implementation here would be the defect this feature removed
     from the cost path, reintroduced one module along.
     """
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
     source = list(rules if rules is not None else (channel.fee_rules or []))
     context = _context_at(
         Decimal(str(price)),

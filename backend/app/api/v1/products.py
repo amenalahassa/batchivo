@@ -24,6 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core import clock
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.database import get_db
 from app.models.designer import Designer
@@ -73,7 +74,7 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
-from app.services import fee_engine, pricing_solver
+from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.cost_resolution import product_cost_breakdown
 from app.services.costing import (
     MARGIN_BASIS_LABELS,
@@ -208,9 +209,15 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
                 }
             )
 
-    # Build pricing responses with profit calculations
+    # Build pricing responses with profit calculations.
+    #
+    # `current_pricing` rather than `pricing`: since Tier 3 the second is the
+    # full history, and the detail screen wants what the product sells for now
+    # (task T097). The history has its own endpoint, which deliberately reports
+    # no profit figures -- valuing a past price against today's cost is the
+    # restatement FR-038 exists to prevent.
     pricing_responses = []
-    for pricing in product.pricing:
+    for pricing in product.current_pricing:
         channel = pricing.sales_channel
         profit_data = CostingService.calculate_profit(
             list_price=Decimal(str(pricing.list_price)),
@@ -225,6 +232,14 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
                 "sales_channel_id": pricing.sales_channel_id,
                 "list_price": pricing.list_price,
                 "is_active": pricing.is_active,
+                # The period and tier this price belongs to. Required on the
+                # response since Tier 3: a price without its period reads as
+                # though it had always applied, which is the ambiguity FR-039
+                # removes.
+                "valid_from": pricing.valid_from,
+                "valid_to": pricing.valid_to,
+                "is_current": pricing.is_current,
+                "min_quantity": pricing.min_quantity,
                 "channel_name": channel.name if channel else None,
                 "platform_type": channel.platform_type if channel else None,
                 "platform_fee": profit_data["platform_fee"],
@@ -699,7 +714,7 @@ async def get_product_margin(
     margin. A zero looks like a real figure, and a product nobody has priced is
     not earning nothing -- it is not for sale.
     """
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
 
     product = (
         await db.execute(
@@ -732,23 +747,25 @@ async def get_product_margin(
             detail="Sales channel not found",
         )
 
-    # `ProductPricing` carries no tenant_id of its own; it is scoped through
-    # the product and the channel, both of which were already checked against
-    # the tenant above.
-    pricing = (
-        await db.execute(
-            select(ProductPricing).where(
-                ProductPricing.product_id == product.id,
-                ProductPricing.sales_channel_id == channel.id,
-            )
-        )
-    ).scalar_one_or_none()
+    # Resolved as at `reference`, not "the" price: since Tier 3 this product
+    # may carry several periods and several quantity tiers on this channel, and
+    # a margin asked for as at a past date must use the price that applied then
+    # (task T097, FR-039). `ProductPricing` carries no tenant_id of its own --
+    # it is scoped through the product and the channel, both already checked
+    # against the tenant above.
+    pricing = await temporal_pricing.price_as_of(
+        db,
+        product.id,
+        channel.id,
+        as_of=reference,
+        quantity=quantity,
+    )
     if not pricing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=(
-                "This product is not priced on that channel, so it has no "
-                "margin there -- which is not the same as a margin of zero"
+                f"This product was not priced on that channel on {reference}, so "
+                f"it has no margin there -- which is not the same as a margin of zero"
             ),
         )
 
@@ -964,16 +981,16 @@ async def _pricing_context(
             detail="Sales channel not found",
         )
 
+    # Resolved as at `reference` rather than read as "the" price: a product may
+    # carry several periods and tiers on this channel (task T097, FR-039).
     # `ProductPricing` carries no tenant_id of its own; it is scoped through the
     # product and the channel, both already checked against the tenant above.
-    pricing = (
-        await db.execute(
-            select(ProductPricing).where(
-                ProductPricing.product_id == product.id,
-                ProductPricing.sales_channel_id == channel.id,
-            )
-        )
-    ).scalar_one_or_none()
+    pricing = await temporal_pricing.price_as_of(
+        db,
+        product.id,
+        channel.id,
+        as_of=reference,
+    )
     if not pricing:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1061,7 +1078,7 @@ async def solve_product_price(
     ``POST`` because the body carries the target, not because it changes
     anything: it writes nothing at all.
     """
-    reference = request.as_of or date.today()
+    reference = request.as_of or clock.today()
     ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
 
     result = pricing_solver.solve(
@@ -1174,7 +1191,7 @@ async def get_product_price_ladder(
     ``price_from`` above ``price_to``, or a step of zero, is a ``422``: an
     empty ladder would read as "no price works".
     """
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
     ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
 
     try:
@@ -1496,6 +1513,39 @@ async def remove_product_model(
 # ==================== Product Pricing Management ====================
 
 
+def _pricing_response(
+    pricing: ProductPricing,
+    channel: Optional[SalesChannel],
+    profit_data: Optional[dict],
+) -> ProductPricingResponse:
+    """One price row as the API serves it, period included.
+
+    ``profit_data`` is omitted for a historical row: computing its margin would
+    mean valuing a past price against today's costs, which is the restatement
+    FR-038 exists to prevent. A settled order's own snapshot is where a
+    historical margin lives.
+    """
+    return ProductPricingResponse(
+        id=pricing.id,
+        product_id=pricing.product_id,
+        sales_channel_id=pricing.sales_channel_id,
+        list_price=pricing.list_price,
+        is_active=pricing.is_active,
+        min_quantity=pricing.min_quantity,
+        valid_from=pricing.valid_from,
+        valid_to=pricing.valid_to,
+        is_current=pricing.is_current,
+        channel_name=channel.name if channel else None,
+        platform_type=channel.platform_type if channel else None,
+        platform_fee=profit_data["platform_fee"] if profit_data else None,
+        net_revenue=profit_data["net_revenue"] if profit_data else None,
+        profit=profit_data["profit"] if profit_data else None,
+        margin_percentage=profit_data["margin_percentage"] if profit_data else None,
+        created_at=pricing.created_at,
+        updated_at=pricing.updated_at,
+    )
+
+
 @router.post(
     "/{product_id}/pricing",
     response_model=ProductPricingResponse,
@@ -1545,28 +1595,28 @@ async def add_product_pricing(
             detail="Sales channel not found",
         )
 
-    # Check if pricing already exists for this channel
-    existing = await db.execute(
-        select(ProductPricing).where(
-            ProductPricing.product_id == product_id,
-            ProductPricing.sales_channel_id == pricing_data.sales_channel_id,
+    # A price already in effect for this channel and tier is no longer a
+    # conflict -- it is the period this one supersedes. `set_price` closes it
+    # and opens the new one, so the old figure stays readable as at its own
+    # dates (task T097, FR-039). What is still refused is backdating behind the
+    # current period's start, which would make two prices apply to the same
+    # days; `PriceOverlapError` says so and names the row it collided with.
+    try:
+        pricing = await temporal_pricing.set_price(
+            db,
+            product_id=product_id,
+            sales_channel_id=pricing_data.sales_channel_id,
+            list_price=pricing_data.list_price,
+            valid_from=pricing_data.valid_from,
+            min_quantity=pricing_data.min_quantity,
+            is_active=pricing_data.is_active,
         )
-    )
-    if existing.scalar_one_or_none():
+    except temporal_pricing.PriceOverlapError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Pricing already exists for this sales channel",
-        )
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
-    # Create pricing entry
-    pricing = ProductPricing(
-        product_id=product_id,
-        sales_channel_id=pricing_data.sales_channel_id,
-        list_price=pricing_data.list_price,
-        is_active=pricing_data.is_active,
-    )
-
-    db.add(pricing)
     await db.commit()
     await db.refresh(pricing)
 
@@ -1582,21 +1632,79 @@ async def add_product_pricing(
         fee_fixed=Decimal(str(channel.fee_fixed)),
     )
 
-    return ProductPricingResponse(
-        id=pricing.id,
-        product_id=pricing.product_id,
-        sales_channel_id=pricing.sales_channel_id,
-        list_price=pricing.list_price,
-        is_active=pricing.is_active,
-        channel_name=channel.name,
-        platform_type=channel.platform_type,
-        platform_fee=profit_data["platform_fee"],
-        net_revenue=profit_data["net_revenue"],
-        profit=profit_data["profit"],
-        margin_percentage=profit_data["margin_percentage"],
-        created_at=pricing.created_at,
-        updated_at=pricing.updated_at,
+    return _pricing_response(pricing, channel, profit_data)
+
+
+@router.get(
+    "/{product_id}/pricing/{channel_id}/history",
+    response_model=list[ProductPricingResponse],
+)
+async def get_product_pricing_history(
+    product_id: UUID,
+    channel_id: UUID,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+) -> list[ProductPricingResponse]:
+    """Every price this product has carried on this channel (task T097).
+
+    FR-039 makes the history readable, and this is where it is read: newest
+    first, each row carrying the period it applied over. Open to every role,
+    like every other cost and price figure (FR-007c) -- what a product used to
+    sell for is not privileged information, and hiding it is how an operator
+    ends up unable to explain a margin that moved.
+    """
+    product = (
+        await db.execute(
+            select(Product).where(
+                Product.id == product_id,
+                Product.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Product not found",
+        )
+
+    channel = (
+        await db.execute(
+            select(SalesChannel).where(
+                SalesChannel.id == channel_id,
+                SalesChannel.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sales channel not found",
+        )
+
+    rows = list(
+        (
+            await db.execute(
+                select(ProductPricing)
+                .where(
+                    ProductPricing.product_id == product_id,
+                    ProductPricing.sales_channel_id == channel_id,
+                )
+                .order_by(
+                    ProductPricing.valid_from.desc(),
+                    ProductPricing.min_quantity,
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
+
+    # No profit figures here, deliberately. A historical price's margin would
+    # have to be computed from today's costs, which is exactly the restatement
+    # FR-038 forbids -- a settled order's own snapshot is where that margin
+    # lives. This endpoint reports prices and periods, nothing derived.
+    return [_pricing_response(row, channel, None) for row in rows]
 
 
 @router.put("/{product_id}/pricing/{pricing_id}", response_model=ProductPricingResponse)
@@ -1608,10 +1716,23 @@ async def update_product_pricing(
     tenant: CurrentTenant,
     db: AsyncSession = Depends(get_db),
 ) -> ProductPricingResponse:
+    """Change a product's price, or delist it (task T097).
+
+    **A price change opens a new period rather than editing this one.** The row
+    addressed by ``pricing_id`` is closed the day before the new price applies
+    and a new row is returned, so an order placed last month still reports the
+    price it was actually charged (FR-039, Constitution VI). A caller that
+    expected the same ``id`` back is getting the honest answer instead: that
+    price is now a historical fact and a different row holds the current one.
+
+    **Delisting is not a price change.** ``is_active`` edits the current row,
+    because whether a product is listed is a status rather than an amount, and
+    recording a period for it would clutter the history with rows whose price
+    never changed.
+
+    A superseded row cannot be repriced at all: its period has passed, and
+    rewriting it would restate what customers were charged.
     """
-    Update product pricing.
-    """
-    # Fetch pricing with related data
     query = (
         select(ProductPricing)
         .join(Product)
@@ -1637,42 +1758,58 @@ async def update_product_pricing(
             detail="Pricing not found",
         )
 
-    # Update fields
+    channel = pricing.sales_channel
+    product = pricing.product
     update_data = pricing_data.model_dump(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(pricing, field, value)
+    new_price = update_data.get("list_price")
+
+    if new_price is not None and Decimal(str(new_price)) != Decimal(str(pricing.list_price)):
+        if not pricing.is_current:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"this price applied from {pricing.valid_from} to "
+                    f"{pricing.valid_to} and has been superseded, so it cannot be "
+                    f"changed -- rewriting it would restate what customers were "
+                    f"actually charged. Price the product again to open a new period"
+                ),
+            )
+        try:
+            pricing = await temporal_pricing.set_price(
+                db,
+                product_id=product_id,
+                sales_channel_id=pricing.sales_channel_id,
+                list_price=new_price,
+                valid_from=update_data.get("valid_from"),
+                min_quantity=pricing.min_quantity,
+                is_active=update_data.get("is_active", pricing.is_active),
+            )
+        except temporal_pricing.PriceOverlapError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+    elif "is_active" in update_data:
+        pricing.is_active = update_data["is_active"]
+        db.add(pricing)
 
     await db.commit()
     await db.refresh(pricing)
 
-    # Calculate profit
-    cost_breakdown = CostingService.calculate_product_cost(
-        pricing.product,
-        policy=await resolve_cost_policy(db, tenant),
-    )
-    channel = pricing.sales_channel
-    profit_data = CostingService.calculate_profit(
-        list_price=Decimal(str(pricing.list_price)),
-        make_cost=cost_breakdown.total_make_cost,
-        fee_percentage=Decimal(str(channel.fee_percentage)),
-        fee_fixed=Decimal(str(channel.fee_fixed)),
-    )
+    profit_data = None
+    if product is not None:
+        cost_breakdown = CostingService.calculate_product_cost(
+            product,
+            policy=await resolve_cost_policy(db, tenant),
+        )
+        profit_data = CostingService.calculate_profit(
+            list_price=Decimal(str(pricing.list_price)),
+            make_cost=cost_breakdown.total_make_cost,
+            fee_percentage=Decimal(str(channel.fee_percentage)),
+            fee_fixed=Decimal(str(channel.fee_fixed)),
+        )
 
-    return ProductPricingResponse(
-        id=pricing.id,
-        product_id=pricing.product_id,
-        sales_channel_id=pricing.sales_channel_id,
-        list_price=pricing.list_price,
-        is_active=pricing.is_active,
-        channel_name=channel.name,
-        platform_type=channel.platform_type,
-        platform_fee=profit_data["platform_fee"],
-        net_revenue=profit_data["net_revenue"],
-        profit=profit_data["profit"],
-        margin_percentage=profit_data["margin_percentage"],
-        created_at=pricing.created_at,
-        updated_at=pricing.updated_at,
-    )
+    return _pricing_response(pricing, channel, profit_data)
 
 
 @router.delete("/{product_id}/pricing/{pricing_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1683,8 +1820,16 @@ async def remove_product_pricing(
     tenant: CurrentTenant,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Remove product pricing for a sales channel.
+    """Delist a product from a channel by closing its current price period.
+
+    Not a delete, for the current row. An order placed yesterday has to keep
+    reporting the price it was charged, and deleting the row would leave it
+    reporting nothing (FR-039, Constitution VI). So the period is closed as of
+    today and the product stops being priced on that channel from tomorrow.
+
+    A **superseded** row is deleted outright when asked: it is already closed,
+    nothing reads it as current, and an operator cleaning up a mistyped
+    historical period should be able to. What they cannot do is rewrite one.
     """
     query = (
         select(ProductPricing)
@@ -1705,7 +1850,20 @@ async def remove_product_pricing(
             detail="Pricing not found",
         )
 
-    await db.delete(pricing)
+    if pricing.is_current:
+        today = clock.today()
+        if pricing.valid_from >= today:
+            # Opened today and withdrawn today: there is no day of history to
+            # keep, so removing it is the coherent answer rather than closing
+            # it to a period that ends before it begins.
+            await db.delete(pricing)
+        else:
+            pricing.valid_to = today
+            pricing.is_active = False
+            db.add(pricing)
+    else:
+        await db.delete(pricing)
+
     await db.commit()
 
 

@@ -7,6 +7,7 @@ from decimal import Decimal
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sys
 import time
@@ -45,6 +46,10 @@ from app.services.commerce_sales_channel import commerce_sales_channel
 engine = commerce_engine(RUNTIME, os.environ, native_engine)
 from app.models import Product, ProductVariant, Tenant, Order, OrderItem, PrintJob, JobStatus
 from app.models.base import UUIDMixin, TimestampMixin
+from app.services.sale_snapshot import write_sale_snapshot
+
+#: Named so it cannot collide with the module-level names this file reuses.
+bridge_logger = logging.getLogger(__name__)
 
 TENANT = UUID(os.environ["COMMERCE_TENANT_ID"])
 SECRET = os.environ["COMMERCE_BRIDGE_SECRET"].encode()
@@ -1187,6 +1192,25 @@ async def receive(request: Request):
                     )
             if reservation:
                 reservation.state = "committed"
+
+            # Freeze what each line earned, as it stands (task T096, FR-036).
+            #
+            # This is the storefront's moment of sale: payment is verified and
+            # the order exists. Inside the same transaction, so a rolled-back
+            # checkout leaves no frozen margin behind. A snapshot that cannot
+            # be completed never fails the sale (FR-028i and FR-019 both): the
+            # gaps are logged and the order stands.
+            await db.flush()
+            await db.refresh(order, ["items"])
+            snapshot_tenant = await db.get(Tenant, TENANT)
+            if snapshot_tenant is not None:
+                snapshot = await write_sale_snapshot(db, snapshot_tenant, order)
+                if snapshot.incomplete:
+                    bridge_logger.warning(
+                        f"Commerce order {order.order_number} was snapshotted with "
+                        f"gaps: {'; '.join(snapshot.incomplete)}"
+                    )
+
             mapping = CommerceOrder(
                 woo_order_id=event.order_id,
                 batchivo_order_id=str(order.id),

@@ -1,6 +1,10 @@
 import { apiClient } from '../api'
 import type {
   CostBreakdown,
+  EntityProvenance,
+  EstimateRevision,
+  EstimateRevisionList,
+  FieldOrigin,
   FilamentPurchase,
   FilamentPurchaseCreate,
   FilamentPurchaseListResponse,
@@ -13,6 +17,8 @@ import type {
   PriceSolveResult,
   PrinterCostPolicy,
   PrinterCostPolicyUpdate,
+  ProvenanceWriteRequest,
+  RevisionState,
 } from '@/types/pricing'
 
 /**
@@ -182,4 +188,80 @@ export const pricingApi = {
   deleteFilamentPurchase: async (purchaseId: string): Promise<void> => {
     return apiClient.delete<void>(`/api/v1/filament-purchases/${purchaseId}`)
   },
+}
+
+// ---------------------------------------------------------------------------
+// Provenance and estimate proposals (User Story 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every recorded origin for one entity's numeric fields.
+ *
+ * Open to every role including a viewer (FR-007c): a margin cannot be judged
+ * without seeing which of the figures behind it are measured and which are
+ * guesses.
+ */
+export async function getProvenance(
+  entityType: string,
+  entityId: string,
+): Promise<EntityProvenance> {
+  const query = new URLSearchParams({ entity_type: entityType, entity_id: entityId })
+  return apiClient.get<EntityProvenance>(`/api/v1/provenance?${query.toString()}`)
+}
+
+/**
+ * Record where one figure came from.
+ *
+ * Refused with a 409 for a field whose current origin is `observed`, which is
+ * read-only and refreshed only from its source (FR-004). Callers should read
+ * `editable` from the field first rather than offering an edit that will fail.
+ */
+export async function putProvenance(
+  entityType: string,
+  entityId: string,
+  fieldName: string,
+  data: ProvenanceWriteRequest,
+): Promise<FieldOrigin> {
+  return apiClient.put<FieldOrigin>(
+    `/api/v1/provenance/${entityType}/${entityId}/${fieldName}`,
+    data,
+  )
+}
+
+/** Proposals for this tenant, newest first. Defaults to the pending ones. */
+export async function listEstimateRevisions(params?: {
+  state?: RevisionState | null
+  entityType?: string
+  entityId?: string
+}): Promise<EstimateRevisionList> {
+  const query = new URLSearchParams()
+  if (params?.state !== undefined && params.state !== null) query.set('state', params.state)
+  if (params?.entityType) query.set('entity_type', params.entityType)
+  if (params?.entityId) query.set('entity_id', params.entityId)
+  const queryString = query.toString()
+  return apiClient.get<EstimateRevisionList>(
+    `/api/v1/estimate-revisions${queryString ? `?${queryString}` : ''}`,
+  )
+}
+
+/**
+ * Apply a held proposal, whole (FR-042c).
+ *
+ * There is no partial acceptance: a proposal is a single claim — "these
+ * outcomes say the figure is this" — and accepting half of it would produce a
+ * figure no evidence supports.
+ */
+export async function acceptEstimateRevision(revisionId: string): Promise<EstimateRevision> {
+  return apiClient.post<EstimateRevision>(`/api/v1/estimate-revisions/${revisionId}/accept`, {})
+}
+
+/**
+ * Decline a held proposal, leaving the estimate untouched.
+ *
+ * Not a permanent veto on the field: the outcomes behind it stay on record, so
+ * the same question is not asked again but a new outcome can still raise it
+ * (FR-042d).
+ */
+export async function rejectEstimateRevision(revisionId: string): Promise<EstimateRevision> {
+  return apiClient.post<EstimateRevision>(`/api/v1/estimate-revisions/${revisionId}/reject`, {})
 }

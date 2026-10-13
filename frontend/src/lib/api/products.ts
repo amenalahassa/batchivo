@@ -63,6 +63,21 @@ export interface ProductPricing {
   sales_channel_id: string
   list_price: string
   is_active: boolean
+  /**
+   * First day this price applied (FR-039). A price without its period reads
+   * as though it had always been the price, which is what made a historical
+   * margin unanswerable before Tier 3.
+   */
+  valid_from: string
+  /** Last day it applied, or null for the price in effect now. */
+  valid_to: string | null
+  /** True for the row in effect now, i.e. the one with no `valid_to`. */
+  is_current: boolean
+  /**
+   * Lower bound of the quantity tier this price applies from. Tiers are
+   * half-open, so at exactly a break quantity the highest tier reached wins.
+   */
+  min_quantity: number
   channel_name?: string
   platform_type?: string
   platform_fee?: string
@@ -237,14 +252,25 @@ export interface ProductPricingCreateRequest {
   sales_channel_id: string
   list_price: string
   is_active?: boolean
+  /** Lower bound of the quantity tier. Omitted means the base tier, 1. */
+  min_quantity?: number
+  /** Backdates the period. Omitted means today. */
+  valid_from?: string
 }
 
 /**
  * Request to update pricing
+ *
+ * A price change **closes the current period and opens a new one** rather
+ * than editing the row, so a settled order still reports the price it was
+ * charged (FR-039). `is_active` is the exception: delisting is a status, not
+ * a price, so it edits the current row in place.
  */
 export interface ProductPricingUpdateRequest {
   list_price?: string
   is_active?: boolean
+  /** First day the new price applies. Omitted means today. */
+  valid_from?: string
 }
 
 export interface ProductListParams {
@@ -354,7 +380,26 @@ export async function updateProductPricing(
 }
 
 /**
+ * Every price this product has carried on a channel, newest period first
+ *
+ * Deliberately carries **no** profit or margin figures. Valuing a past price
+ * against today's cost is the restatement FR-038 exists to prevent; a settled
+ * order's own snapshot is where a historical margin lives.
+ */
+export async function getProductPricingHistory(
+  productId: string,
+  salesChannelId: string
+): Promise<ProductPricing[]> {
+  return apiClient.get<ProductPricing[]>(
+    `/api/v1/products/${productId}/pricing/${salesChannelId}/history`
+  )
+}
+
+/**
  * Remove product pricing for a sales channel
+ *
+ * Closes the current period rather than deleting it, so the prices past
+ * orders were charged stay readable.
  */
 export async function removeProductPricing(productId: string, pricingId: string): Promise<void> {
   return apiClient.delete(`/api/v1/products/${productId}/pricing/${pricingId}`)

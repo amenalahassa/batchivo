@@ -1,6 +1,6 @@
 """Tests for dashboard API endpoints."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -574,13 +574,20 @@ class TestTodayIsMeasuredInUtc:
     def test_the_helper_asks_the_clock_for_utc(self, monkeypatch) -> None:
         """Guards the fix itself, deterministically, in any zone at any hour.
 
-        Comparing `_utc_today()` against today's UTC date would only fail while
-        the machine's local date happens to differ -- the same time-of-day
-        dependence that let the original bug sit here. So this watches *how* the
-        clock is read instead: `datetime.now()` with no argument returns local
-        time, and that is the defect. A stub records the timezone it was handed.
+        Comparing against today's UTC date would only fail while the machine's
+        local date happens to differ -- the same time-of-day dependence that
+        let the original bug sit here. So this watches *how* the clock is read
+        instead: `datetime.now()` with no argument returns local time, and that
+        is the defect. A stub records the timezone it was handed.
+
+        The observation point is `app.core.clock`, because every money and
+        dated path now reads the clock through that one module rather than
+        calling `datetime.now()` itself. Guarding it there covers a policy
+        period, a price period, a fee rule's effective date, an exchange
+        rate's day and a sale snapshot's reference date as well as this
+        dashboard -- which is the reason the indirection exists.
         """
-        from app.api.v1 import dashboard
+        from app.core import clock
 
         asked_for: list[object] = []
         fixed = datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc)
@@ -591,12 +598,27 @@ class TestTodayIsMeasuredInUtc:
                 asked_for.append(tz)
                 return fixed if tz is not None else fixed.replace(tzinfo=None)
 
-        monkeypatch.setattr(dashboard, "datetime", RecordingDatetime)
+        monkeypatch.setattr(clock, "datetime", RecordingDatetime)
 
-        result = dashboard._utc_today()
+        result = clock.today()
 
         assert asked_for == [timezone.utc], (
             f"the clock was read with {asked_for!r}; `datetime.now()` without a "
             f"timezone returns the server's local time, which is the defect"
         )
         assert result == fixed.date()
+
+    def test_the_dashboard_reads_that_one_clock_rather_than_its_own(
+        self, monkeypatch
+    ) -> None:
+        """So the guard above actually covers this endpoint.
+
+        If `_utc_today` ever went back to calling `datetime.now()` itself, the
+        test above would still pass while this one fails -- which is the right
+        way round.
+        """
+        from app.api.v1 import dashboard
+
+        monkeypatch.setattr(dashboard.clock, "today", lambda: date(2026, 10, 12))
+
+        assert dashboard._utc_today() == date(2026, 10, 12)

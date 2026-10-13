@@ -8,10 +8,15 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from typing import TYPE_CHECKING
+
 from app.models.order import Order
 from app.models.product import Product
 from app.models.tenant import Tenant
 from app.services.commerce_order_ownership import reject_native_commerce_mutation
+
+if TYPE_CHECKING:
+    from app.services.sale_snapshot import SnapshotResult
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +54,23 @@ class OrderFulfillmentService:
         """
         self.db = db
         self.tenant = tenant
+
+    async def write_sale_snapshot(self, order: Order) -> "SnapshotResult":
+        """Freeze what each line of ``order`` earned, as it stands (task T096).
+
+        Delegates to :func:`app.services.sale_snapshot.write_sale_snapshot`,
+        which is the single implementation: the three sale paths do not share a
+        moment of sale -- a manual order, a storefront checkout and a Shopify
+        import each settle differently -- so each calls it, and the first call
+        for a line wins. Calling it again is a no-op for that line (FR-037).
+
+        Deliberately not committed here: the snapshot belongs to the same
+        transaction as the sale, or a rolled-back sale would leave a frozen
+        margin for an order that never existed.
+        """
+        from app.services.sale_snapshot import write_sale_snapshot
+
+        return await write_sale_snapshot(self.db, self.tenant, order)
 
     async def validate_inventory(self, order: Order) -> FulfillmentResult:
         """

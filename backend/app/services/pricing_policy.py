@@ -21,13 +21,14 @@ settings reader so no cost is ever computed from a figure nobody configured.
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.models.tenant_pricing_policy import (
     MARGIN_BASES,
     OVERHEAD_METHODS,
@@ -130,7 +131,14 @@ class CostPolicy:
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    """The business date, from the one authoritative clock.
+
+    Delegates rather than computing its own: this module dates every policy
+    row, and the endpoints that read them back default their ``as_of`` to the
+    same function. The two disagreeing is what made a policy change written in
+    the evening invisible until the next morning.
+    """
+    return clock.today()
 
 
 async def resolve_policy_row(
@@ -140,9 +148,20 @@ async def resolve_policy_row(
 ) -> Optional[TenantPricingPolicy]:
     """The policy row in effect on ``as_of``, or ``None`` if there is none.
 
-    Ordered by ``effective_from`` then insertion, newest first: two rows can
-    legitimately share a start date when a lever is changed twice in one day,
-    and the later write is the one in force.
+    Ordered by ``effective_from``, then by whether the row is still open, then
+    by insertion -- newest first. Two rows can legitimately share a start date
+    when a lever is changed twice in one day, and the later write is the one in
+    force.
+
+    The open-row tiebreaker is load-bearing. ``created_at`` has second
+    resolution, so two writes in the same second are indistinguishable by it
+    and the tie resolves arbitrarily -- which meant a change could be made and
+    then read back as the figure it replaced. Among rows sharing a start date,
+    the one with no ``effective_to`` is by definition the later write, and the
+    partial unique index guarantees there is only one of those. It cannot
+    disturb a historical read, because ``effective_from`` is still the primary
+    sort: an open row that started earlier never outranks a closed row that
+    started later.
     """
     reference = as_of or _today()
     statement = (
@@ -157,6 +176,7 @@ async def resolve_policy_row(
         )
         .order_by(
             TenantPricingPolicy.effective_from.desc(),
+            TenantPricingPolicy.effective_to.is_(None).desc(),
             TenantPricingPolicy.created_at.desc(),
         )
         .limit(1)

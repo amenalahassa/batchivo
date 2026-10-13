@@ -27,6 +27,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.sales_channel import SalesChannel
+from app.services.sale_snapshot import write_sale_snapshot
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -296,6 +297,22 @@ async def shopify_webhook(
             total_price=unit_price * qty,
         )
         order.items.append(order_item)
+
+    # Freeze what each line earned, as it stands (task T096, FR-036).
+    #
+    # A Shopify line carries no product_id -- it is matched by SKU and often
+    # not matched at all -- so most of these snapshots will be partial. That is
+    # the correct outcome and the reason the columns are nullable: an imported
+    # order whose product is unknown has an unknown cost, which must read as
+    # unknown rather than as zero (FR-019). The fees, the price and the rate
+    # are still frozen, which is what the margin needs.
+    await db.flush()
+    snapshot = await write_sale_snapshot(db, tenant, order)
+    if snapshot.incomplete:
+        logger.info(
+            f"Shopify order {batchivo_order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
+        )
 
     await db.commit()
     logger.info(

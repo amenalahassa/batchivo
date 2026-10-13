@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.models.fee_rule import FeeRule
 from app.models.sales_channel import SalesChannel
@@ -162,7 +163,7 @@ async def list_fee_rules(
     """
     channel = await _channel_or_404(db, tenant, channel_id)
     rules = await _rules_for(db, channel.id, tenant.id)
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
     if as_of is not None:
         rules = fee_engine.rules_in_effect(rules, as_of)
 
@@ -313,7 +314,7 @@ async def preview_fee_rules(
     """
     channel = await _channel_or_404(db, tenant, channel_id)
     rules = await _rules_for(db, channel.id, tenant.id)
-    reference = payload.as_of or date.today()
+    reference = payload.as_of or clock.today()
 
     context, treatment = fee_engine.exclusive_context(
         item_subtotal=payload.item_subtotal,

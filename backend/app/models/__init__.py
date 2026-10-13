@@ -109,6 +109,11 @@ from app.models.fee_actual import FEE_ACTUAL_SOURCES, FeeActual
 from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES, FeeRule
 from app.models.shipping_profile import ShippingProfile
 
+# Exchange rates (Tier 3). Deliberately NOT tenant-scoped -- a published rate
+# is not tenant data; the exception is argued in the model's docstring.
+from app.models.estimate_revision import REVISION_STATES, EstimateRevision
+from app.models.fx_rate import FX_RATE_SOURCES, FxRate
+
 # Multi-tenancy
 from app.models.tenant import Tenant
 from app.models.tenant_module import TenantModule
@@ -226,6 +231,11 @@ __all__ = [
     "FeeActual",
     "FEE_ACTUAL_SOURCES",
     "ShippingProfile",
+    # Exchange rates
+    "EstimateRevision",
+    "REVISION_STATES",
+    "FxRate",
+    "FX_RATE_SOURCES",
     # Multi-tenancy
     "Tenant",
     "TenantModule",

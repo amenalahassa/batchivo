@@ -41,6 +41,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
+from app.core import clock
 from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES
 
 if TYPE_CHECKING:
@@ -458,7 +459,7 @@ def compute(
     :mod:`app.services.channel_pnl` (FR-025) -- but the channel P&L view wants
     them charged.
     """
-    reference = as_of or date.today()
+    reference = as_of or clock.today()
     source = rules if rules is not None else (channel.fee_rules or [])
 
     charges: list[FeeCharge] = []

@@ -1,6 +1,6 @@
 """Pydantic schemas for Product API (sellable items composed of models)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -77,19 +77,44 @@ class ProductPricingBase(BaseModel):
     sales_channel_id: UUID = Field(..., description="Sales channel ID")
     list_price: Decimal = Field(..., ge=0, description="List price on this channel")
     is_active: bool = Field(True, description="Whether this pricing is active")
+    min_quantity: int = Field(
+        1,
+        ge=1,
+        description=(
+            "Lower bound of the quantity tier this price applies from. The "
+            "tier is half-open, so the price at exactly a break quantity is "
+            "unambiguous: the highest tier the quantity reaches wins"
+        ),
+    )
 
 
 class ProductPricingCreate(ProductPricingBase):
-    """Schema for creating product pricing."""
+    """Schema for creating product pricing.
 
-    pass
+    ``valid_from`` backdates the period. Left unset it is today, which is the
+    case an operator means when they change a price: today's orders get the new
+    figure and yesterday's keep the old one (FR-039).
+    """
+
+    valid_from: Optional[date] = Field(
+        None, description="First day this price applies; defaults to today"
+    )
 
 
 class ProductPricingUpdate(BaseModel):
-    """Schema for updating product pricing."""
+    """Schema for changing a product's price.
+
+    A change **closes the current period and opens a new one** rather than
+    editing the row in place, so an order still reports the price effective
+    when it was placed (FR-039, Constitution VI). `is_active` is the exception:
+    delisting is a status rather than a price, so it edits the current row.
+    """
 
     list_price: Optional[Decimal] = Field(None, ge=0)
     is_active: Optional[bool] = None
+    valid_from: Optional[date] = Field(
+        None, description="First day the new price applies; defaults to today"
+    )
 
 
 class ProductPricingResponse(ProductPricingBase):
@@ -97,6 +122,13 @@ class ProductPricingResponse(ProductPricingBase):
 
     id: UUID
     product_id: UUID
+    valid_from: date = Field(..., description="First day this price applied")
+    valid_to: Optional[date] = Field(
+        None, description="Last day it applied, or null for the price in effect now"
+    )
+    is_current: bool = Field(
+        ..., description="Whether this is the row in effect now (valid_to is null)"
+    )
     channel_name: Optional[str] = Field(None, description="Sales channel name")
     platform_type: Optional[str] = Field(None, description="Platform type")
     platform_fee: Optional[Decimal] = Field(None, description="Calculated platform fee")
