@@ -34,10 +34,7 @@ from app.models.tenant_pricing_policy import (
     OVERHEAD_METHODS,
     TenantPricingPolicy,
 )
-from app.services.tenant_cost_settings import (
-    tenant_labor_rate,
-    tenant_overhead_percentage,
-)
+from app.services.tenant_cost_settings import tenant_overhead_percentage
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -244,16 +241,28 @@ def cost_policy_from_row(
     )
 
 
+#: The hourly labor rate a tenant with no policy row costs at. It matches what
+#: the settings screen presented as its default before the typed policy table
+#: replaced it, so a tenant who has configured nothing gets the figure that
+#: screen would have shown them rather than one invented here.
+POLICYLESS_LABOR_RATE = Decimal("20.00")
+
+
 def legacy_cost_policy(tenant: "Tenant") -> CostPolicy:
     """The policy a tenant with no policy row still has.
 
-    Built from the figures the settings UI writes, so a tenant the Tier 1
-    migration has not reached keeps costing at the rate they configured rather
-    than at one invented here (Constitution IV). It carries no machine rate and
-    no overhead pool, which is why such a tenant's machine line is reported
-    missing rather than guessed.
+    The Tier 1 migration gave every tenant a policy row from the rate they had
+    configured, so this is reached only by a tenant created since and never
+    through the policy screen. Such a tenant has configured no rate anywhere --
+    the settings blob's `default_labor_rate` went with task T123 -- so this
+    carries :data:`POLICYLESS_LABOR_RATE`, the figure the settings screen used
+    to present as its default. Not a configured value being shadowed by a
+    default (Constitution IV): there is no configured value yet.
+
+    It carries no machine rate and no overhead pool, which is why such a
+    tenant's machine line is reported missing rather than guessed.
     """
-    rate = tenant_labor_rate(tenant)
+    rate = POLICYLESS_LABOR_RATE
     return CostPolicy(
         print_labor_rate=rate,
         finishing_labor_rate=rate,

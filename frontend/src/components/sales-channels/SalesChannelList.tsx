@@ -71,11 +71,6 @@ export function SalesChannelList() {
     return `£${numValue.toFixed(2)}`
   }
 
-  const formatPercentage = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `${numValue.toFixed(1)}%`
-  }
-
   const channels = data?.channels || []
   const activeCount = channels.filter((c) => c.is_active).length
   const inactiveCount = channels.filter((c) => !c.is_active).length
@@ -244,10 +239,6 @@ export function SalesChannelList() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                    <span>Fee: {formatPercentage(channel.fee_percentage)}</span>
-                    {parseFloat(channel.fee_fixed) > 0 && (
-                      <span>+ {formatCurrency(channel.fee_fixed)}</span>
-                    )}
                     {parseFloat(channel.monthly_cost) > 0 && (
                       <span>Monthly: {formatCurrency(channel.monthly_cost)}</span>
                     )}
@@ -266,8 +257,6 @@ export function SalesChannelList() {
                     <TableHead>Name</TableHead>
                     <TableHead className="w-[150px]">Platform</TableHead>
                     <TableHead className="w-[100px]">Status</TableHead>
-                    <TableHead className="w-[100px] text-right">Fee %</TableHead>
-                    <TableHead className="w-[100px] text-right">Fixed Fee</TableHead>
                     <TableHead className="w-[100px] text-right">Monthly</TableHead>
                     <TableHead className="w-[80px]"></TableHead>
                   </TableRow>
@@ -303,12 +292,6 @@ export function SalesChannelList() {
                         >
                           {channel.is_active ? 'Active' : 'Inactive'}
                         </Badge>
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatPercentage(channel.fee_percentage)}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums">
-                        {formatCurrency(channel.fee_fixed)}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {formatCurrency(channel.monthly_cost)}

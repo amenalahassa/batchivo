@@ -56,7 +56,7 @@ Validation: `expected_yield` in `(0, 1]`; a zero yield is rejected rather than p
 | `currency_code` | `String(3)` | Channel display currency |
 | `offsite_ads_opt_in` | `Boolean` default false | Policy lever |
 
-`fee_percentage` and `fee_fixed` are **deprecated, not dropped**, in Tier 2: the migration converts each channel into equivalent `fee_rule` rows, and a later tier drops the columns once no read path remains. `monthly_cost` stays and is finally absorbed by `channel_pnl`.
+`fee_percentage` and `fee_fixed` are **deprecated, not dropped**, in Tier 2: the migration converts each channel into equivalent `fee_rule` rows, and a later tier drops the columns once no read path remains. That drop has since landed in Polish (task T123, `pricing_drop_legacy_v1`), together with the legacy `Tenant.settings["default_labor_rate"]` key that seeded the first policy row. `monthly_cost` stays and is finally absorbed by `channel_pnl`.
 
 ### `product_pricing` — temporal (Tier 3)
 

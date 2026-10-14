@@ -183,9 +183,7 @@ def upgrade() -> None:
     op.create_index(f"ix_{TABLE}_state", TABLE, ["state"])
 
     # The read the review screen does.
-    op.create_index(
-        "ix_estimate_revisions_tenant_state", TABLE, ["tenant_id", "state"]
-    )
+    op.create_index("ix_estimate_revisions_tenant_state", TABLE, ["tenant_id", "state"])
     # The read FR-042d does: has this field been rejected before, and from
     # which outcomes?
     op.create_index(

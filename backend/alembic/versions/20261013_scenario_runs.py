@@ -147,10 +147,7 @@ def upgrade() -> None:
             "result_json",
             _json_type(),
             nullable=True,
-            comment=(
-                "What the sweep found. Holds no authoritative cost or price "
-                "(FR-044d)"
-            ),
+            comment=("What the sweep found. Holds no authoritative cost or price (FR-044d)"),
         ),
         sa.Column(
             "error_text",

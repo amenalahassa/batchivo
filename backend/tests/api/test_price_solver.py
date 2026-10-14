@@ -60,8 +60,6 @@ async def channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesChannel
         tenant_id=test_tenant.id,
         name="Solver Marketplace",
         platform_type="etsy",
-        fee_percentage=Decimal("0"),
-        fee_fixed=Decimal("0"),
         monthly_cost=Decimal("0"),
         tax_remitter="marketplace",
         expected_discount_pct=Decimal("0"),

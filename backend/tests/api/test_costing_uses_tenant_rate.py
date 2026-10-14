@@ -7,7 +7,9 @@ a fallback.*
 `Tenant.settings["default_labor_rate"]` was written by the settings UI and read
 by nobody. Every cost on every screen used `CostingService`'s own
 `DEFAULT_LABOR_RATE` of 10.00 instead -- a figure the operator never chose and
-could not change.
+could not change. The rate now lives in the dated `tenant_pricing_policy` row
+and that blob key is gone (task T123), so these cases set it where the operator
+sets it.
 
 **This test must never be made to pass by restoring the hardcoded rate**, and
 the rate below is deliberately absurd (CA$137.00/h) so that no plausible
@@ -33,7 +35,13 @@ from app.models.model_material import ModelMaterial
 from app.models.product import Product
 from app.models.product_model import ProductModel
 from app.models.tenant import Tenant
-from app.services.tenant_cost_settings import tenant_labor_rate
+from app.services.pricing_policy import (
+    POLICYLESS_LABOR_RATE,
+    PolicyMisconfigured,
+    legacy_cost_policy,
+    resolve_cost_policy,
+    write_policy,
+)
 
 API = "/api/v1"
 
@@ -55,9 +63,18 @@ ASSEMBLY_MINUTES = Decimal(ASSEMBLY_MINUTES_STORED)
 
 @pytest.fixture
 async def rate_tenant(db_session: AsyncSession, test_tenant: Tenant) -> Tenant:
-    """The authenticated tenant, with a labor rate nobody could guess."""
-    test_tenant.settings = {**(test_tenant.settings or {}), "default_labor_rate": "137.00"}
-    db_session.add(test_tenant)
+    """The authenticated tenant, with a labor rate nobody could guess.
+
+    Written to the policy row, which is where a configured rate lives since
+    Tier 1. It was `Tenant.settings["default_labor_rate"]` until task T123
+    dropped that key: a float in a JSON blob was the wrong type for money and
+    could not say when the rate started applying.
+    """
+    await write_policy(
+        db_session,
+        test_tenant,
+        {"print_labor_rate": DISTINCTIVE_RATE, "finishing_labor_rate": DISTINCTIVE_RATE},
+    )
     await db_session.commit()
     await db_session.refresh(test_tenant)
     return test_tenant
@@ -117,45 +134,59 @@ async def costed_product(
 # ---------------------------------------------------------------------------
 
 
-class TestTheResolverReadsTheSetting:
-    def test_it_returns_the_configured_rate(self, rate_tenant: Tenant) -> None:
-        assert tenant_labor_rate(rate_tenant) == DISTINCTIVE_RATE
+class TestTheResolverReadsTheConfiguredRate:
+    """What `resolve_cost_policy` hands the engine.
 
-    def test_it_converts_through_str_so_a_json_float_stays_exact(self, test_tenant: Tenant) -> None:
-        """`Decimal(20.1)` from a float carries the float's error; `Decimal("20.1")` does not."""
-        test_tenant.settings = {"default_labor_rate": 20.1}
-        assert tenant_labor_rate(test_tenant) == Decimal("20.1")
+    These cases were written against the settings blob and its string-to-
+    Decimal coercion. The blob's rate is gone (task T123) and the column is
+    `Numeric`, so coercion is the database's problem now; what still has to be
+    true is that the figure the operator set is the figure the engine gets, and
+    that a tenant who has set nothing does not silently get the engine's old
+    hardcoded 10.00.
+    """
 
-    def test_it_accepts_an_integer(self, test_tenant: Tenant) -> None:
-        test_tenant.settings = {"default_labor_rate": 25}
-        assert tenant_labor_rate(test_tenant) == Decimal("25")
-
-    def test_an_unset_rate_falls_back_to_the_documented_default_not_to_ten(
-        self, test_tenant: Tenant
+    async def test_it_returns_the_configured_rate(
+        self, db_session: AsyncSession, rate_tenant: Tenant
     ) -> None:
-        from app.services.tenant_cost_settings import FALLBACK_LABOR_RATE
+        policy = await resolve_cost_policy(db_session, rate_tenant)
 
-        test_tenant.settings = {}
-        resolved = tenant_labor_rate(test_tenant)
-        assert resolved == FALLBACK_LABOR_RATE
-        assert resolved != SUPERSEDED_HARDCODED_RATE, (
+        assert policy.print_labor_rate == DISTINCTIVE_RATE
+        assert policy.finishing_labor_rate == DISTINCTIVE_RATE
+
+    async def test_a_tenant_with_no_policy_row_does_not_fall_back_to_ten(
+        self, db_session: AsyncSession, test_tenant: Tenant
+    ) -> None:
+        policy = legacy_cost_policy(test_tenant)
+
+        assert policy.print_labor_rate == POLICYLESS_LABOR_RATE
+        assert policy.print_labor_rate != SUPERSEDED_HARDCODED_RATE, (
             "the fallback is the figure the settings screen shows an operator, "
             "not the engine's old hardcoded 10.00"
         )
 
-    def test_a_nonsense_value_falls_back_rather_than_crashing_a_price_screen(
-        self, test_tenant: Tenant
+    async def test_the_rate_is_exact_not_a_float(
+        self, db_session: AsyncSession, test_tenant: Tenant
     ) -> None:
-        from app.services.tenant_cost_settings import FALLBACK_LABOR_RATE
+        """A rate with a fractional cent must survive the round trip exactly."""
+        await write_policy(db_session, test_tenant, {"print_labor_rate": Decimal("20.10")})
+        await db_session.commit()
 
-        test_tenant.settings = {"default_labor_rate": "twenty quid"}
-        assert tenant_labor_rate(test_tenant) == FALLBACK_LABOR_RATE
+        policy = await resolve_cost_policy(db_session, test_tenant)
 
-    def test_a_negative_rate_is_rejected(self, test_tenant: Tenant) -> None:
-        from app.services.tenant_cost_settings import FALLBACK_LABOR_RATE
+        assert policy.print_labor_rate == Decimal("20.10")
+        assert isinstance(policy.print_labor_rate, Decimal)
 
-        test_tenant.settings = {"default_labor_rate": "-5"}
-        assert tenant_labor_rate(test_tenant) == FALLBACK_LABOR_RATE
+    async def test_a_negative_rate_is_refused_rather_than_stored(
+        self, db_session: AsyncSession, test_tenant: Tenant
+    ) -> None:
+        """Refused at the write, which is better than falling back at the read.
+
+        The blob could hold anything and the reader had to cope; a typed column
+        with a validator can simply say no, and the operator finds out when
+        they set it rather than when a price looks wrong.
+        """
+        with pytest.raises(PolicyMisconfigured):
+            await write_policy(db_session, test_tenant, {"print_labor_rate": Decimal("-5")})
 
 
 # ---------------------------------------------------------------------------

@@ -113,7 +113,7 @@ cd backend && poetry run pytest tests/unit/pricing/test_fee_engine.py tests/api/
 - Two otherwise identical sales, one where the marketplace remits tax and one where the operator does, report the **same** margin.
 - Tax collected appears as a liability, never as revenue or profit.
 - The data migration reproduces each channel's previous fee amounts exactly — asserted per channel, not sampled.
-- The legacy override profile reproduces the superseded 66.4% without any second implementation existing (research D7).
+- The legacy override profile reproduced the superseded 66.4% without any second implementation existing (research D7). **Retired**: FR-052 requires the comparison to be withdrawn once the migration is done, and task T124 deleted the profile and its test. The parity that still has to hold is the line above it -- each channel's converted fee rules charge what the channel charged -- and `tests/integration/test_fee_migration_parity.py` asserts it per channel at the Tier 2 revision, where the superseded columns still exist.
 
 ---
 

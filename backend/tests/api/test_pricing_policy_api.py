@@ -63,7 +63,8 @@ class TestReadingThePolicy:
         assert response.status_code == 200
         body = response.json()
         assert body["origin"] == "legacy_settings"
-        # test_tenant's settings carry default_labor_rate 20.0
+        # `POLICYLESS_LABOR_RATE`: what a tenant with no policy row costs at,
+        # which is the figure the settings screen used to present as its default.
         assert Decimal(body["print_labor_rate"]) == Decimal("20")
 
     @pytest.mark.parametrize("role", [UserRole.MEMBER, UserRole.VIEWER])

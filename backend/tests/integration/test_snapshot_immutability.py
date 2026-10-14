@@ -263,8 +263,6 @@ async def world(db_session, test_tenant, test_filament_type) -> SettledWorld:
         tenant_id=test_tenant.id,
         name="Settled Marketplace",
         platform_type="etsy",
-        fee_percentage=Decimal("0"),
-        fee_fixed=Decimal("0"),
         monthly_cost=Decimal("0"),
         currency_code="CAD",
         expected_refund_pct=Decimal("1.5"),

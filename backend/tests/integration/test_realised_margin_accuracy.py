@@ -153,8 +153,6 @@ async def settled(db_session, test_tenant, test_filament_type):
         tenant_id=test_tenant.id,
         name="Realised Marketplace",
         platform_type="etsy",
-        fee_percentage=Decimal("0"),
-        fee_fixed=Decimal("0"),
         monthly_cost=Decimal("0"),
         currency_code="CAD",
         tax_remitter="marketplace",

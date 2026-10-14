@@ -33,8 +33,6 @@ async def sales_channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesC
         tenant_id=test_tenant.id,
         name="Test Channel",
         platform_type="online_shop",
-        fee_percentage=Decimal("5.0"),
-        fee_fixed=Decimal("0.30"),
         is_active=True,
     )
     db_session.add(channel)

@@ -58,8 +58,9 @@ depends_on = None
 
 
 #: Names given to the two rules converted from each channel's single pair.
-#: Shared with ``tests/fixtures/legacy_profile.py``, which reproduces the
-#: superseded figure through the same two rules.
+#: They were shared with a fixture that reproduced the superseded figure
+#: through the same two rules; FR-052 retired that comparison once the
+#: migration was done, and task T124 deleted it.
 PERCENTAGE_RULE_NAME = "platform_percentage"
 FIXED_RULE_NAME = "platform_fixed"
 

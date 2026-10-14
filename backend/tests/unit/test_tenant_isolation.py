@@ -28,7 +28,7 @@ async def second_tenant(db_session: AsyncSession) -> Tenant:
         name="Second Tenant",
         slug="second-tenant",
         tenant_type=TenantType.THREE_D_PRINT.value,
-        settings={"default_labor_rate": 25.0, "currency": "EUR"},
+        settings={"currency": "EUR"},
     )
     db_session.add(tenant)
     await db_session.commit()

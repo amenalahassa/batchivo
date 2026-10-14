@@ -18,6 +18,7 @@ Properties covered (tasks.md T008):
 """
 
 import random
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
@@ -25,7 +26,9 @@ from uuid import uuid4
 import pytest
 
 from app.schemas.model import CostBreakdown
+from app.services import fee_engine
 from app.services.costing import CostingService
+from tests.unit.pricing.conftest import make_channel, make_fee_rule, make_policy
 
 SEED = 20261011
 
@@ -33,6 +36,10 @@ SEED = 20261011
 #: (Constitution IV). Where a property is about weight or hours, this is the
 #: constant that is held while the variable under test moves.
 HELD_RATE = Decimal("25.00")
+
+#: A date every fee rule in this file applies on. Which date is immaterial
+#: here -- these properties are about shape, not about effective periods.
+PROPERTY_AS_OF = date(2026, 6, 1)
 
 
 def _model(**overrides) -> SimpleNamespace:
@@ -89,27 +96,63 @@ class TestMarginMonotonicInPrice:
     A fee charged as a percentage takes a share of the increase, so profit
     grows more slowly at a higher fee rate -- but it still grows. If it ever
     falls, a fee is being charged on more than the price, or a sign is wrong.
+
+    Asserted through the fee engine and `CostingService.margin`, which is the
+    one path that prices anything. These properties were written against the
+    superseded `calculate_profit` helper, whose blended percentage was deleted
+    with the channel columns it read (task T123); the properties outlived it.
     """
 
-    @pytest.mark.parametrize("fee_pct", ["0", "6.5", "15", "40", "99"])
-    def test_profit_strictly_increases_with_price(self, fee_pct: str) -> None:
+    @staticmethod
+    def _profit_and_margin(price: Decimal, *, rate_pct: str, make_cost: Decimal):
+        channel = make_channel(
+            fee_rules=[
+                make_fee_rule(
+                    "Transaction",
+                    "item_plus_shipping",
+                    rate_pct=Decimal(rate_pct),
+                    fixed_amount=Decimal("0.30"),
+                )
+            ]
+        )
+        context, treatment = fee_engine.exclusive_context(item_subtotal=price)
+        result = CostingService.margin(
+            context=context,
+            make_cost=make_cost,
+            channel=channel,
+            fees=fee_engine.compute(channel, context, PROPERTY_AS_OF, rules=channel.fee_rules),
+            policy=make_policy(),
+            tax=treatment,
+        )
+        return result.profit, result.margin_pct
+
+    # Up to 97%: with the channel's 2.5% refund reserve on top, the total
+    # variable take stays under 100%, which is the condition the property
+    # holds under. Beyond it the relationship genuinely inverts -- see
+    # `test_beyond_a_full_take_a_higher_price_earns_less` below.
+    @pytest.mark.parametrize("fee_pct", ["0", "6.5", "15", "40", "97"])
+    def test_profit_never_falls_as_price_rises(self, fee_pct: str) -> None:
         make_cost = Decimal("20.30")
+        first = last = None
         previous = None
         for cents in range(1000, 12000, 137):
             price = Decimal(cents) / Decimal("100")
-            result = CostingService.calculate_profit(
-                list_price=price,
-                make_cost=make_cost,
-                fee_percentage=Decimal(fee_pct),
-                fee_fixed=Decimal("0.30"),
-            )
-            profit = result["profit"]
+            profit, _ = self._profit_and_margin(price, rate_pct=fee_pct, make_cost=make_cost)
             if previous is not None:
-                assert profit > previous, (
+                assert profit >= previous, (
                     f"profit fell from {previous} to {profit} as price rose to {price} "
                     f"at a {fee_pct}% fee"
                 )
-            previous = profit
+            if first is None:
+                first = profit
+            previous = last = profit
+
+        # `>=` per step rather than `>`, because at a 97% take the price step
+        # used here adds less than a cent of profit and rounding to the cent
+        # flattens it. Across the whole sweep the increase must still be real,
+        # which is what this asserts -- a flat step is rounding, a flat sweep
+        # would be a fee charged on more than the price.
+        assert last > first
 
     @pytest.mark.parametrize("fee_pct", ["0", "6.5", "15"])
     def test_margin_increases_with_price_once_profitable(self, fee_pct: str) -> None:
@@ -117,11 +160,7 @@ class TestMarginMonotonicInPrice:
         previous = None
         for cents in range(4000, 20000, 311):
             price = Decimal(cents) / Decimal("100")
-            margin = CostingService.calculate_profit(
-                list_price=price,
-                make_cost=make_cost,
-                fee_percentage=Decimal(fee_pct),
-            )["margin_percentage"]
+            _, margin = self._profit_and_margin(price, rate_pct=fee_pct, make_cost=make_cost)
             if previous is not None:
                 assert margin >= previous, (
                     f"margin fell from {previous}% to {margin}% as price rose to {price}"
@@ -130,11 +169,30 @@ class TestMarginMonotonicInPrice:
 
     def test_a_price_below_cost_reports_a_loss_not_a_zero(self) -> None:
         """A loss must be visible as a negative figure, never clamped to zero."""
-        result = CostingService.calculate_profit(
-            list_price=Decimal("5.00"), make_cost=Decimal("20.30")
+        profit, margin = self._profit_and_margin(
+            Decimal("5.00"), rate_pct="6.5", make_cost=Decimal("20.30")
         )
-        assert result["profit"] < 0
-        assert result["margin_percentage"] < 0
+
+        assert profit < 0
+        assert margin < 0
+
+    def test_beyond_a_full_take_a_higher_price_earns_less(self) -> None:
+        """Where the variable take exceeds the whole price, the relation inverts.
+
+        A 99% fee plus the channel's 2.5% refund reserve is 101.5% of every
+        additional dollar, so raising the price loses money. This is not a
+        defect to be clamped away: it is the condition the solver reports as an
+        unachievable target instead of returning a price (US4 scenario 4), and
+        it must be visible as arithmetic rather than hidden by a floor at zero.
+        """
+        cheaper, _ = self._profit_and_margin(
+            Decimal("50.00"), rate_pct="99", make_cost=Decimal("20.30")
+        )
+        dearer, _ = self._profit_and_margin(
+            Decimal("90.00"), rate_pct="99", make_cost=Decimal("20.30")
+        )
+
+        assert dearer < cheaper
 
 
 # ============================================================================

@@ -7,7 +7,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Edit, Loader2, Trash2, Store, DollarSign, Percent, Calendar, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Edit, Loader2, Trash2, Store, Calendar, AlertTriangle } from 'lucide-react'
 
 import {
   getSalesChannel,
@@ -20,7 +20,7 @@ import { FeeRuleEditor } from './FeeRuleEditor'
 import { ChannelProfitabilityPanel } from './ChannelProfitabilityPanel'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CardContent, CardTitle, Card, CardDescription, CardHeader } from '@/components/ui/card'
+import { CardContent, CardTitle, Card, CardHeader } from '@/components/ui/card'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -92,11 +92,6 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
     return `£${numValue.toFixed(2)}`
   }
 
-  const formatPercentage = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `${numValue.toFixed(1)}%`
-  }
-
   if (isLoading) {
     return (
       <div className="flex h-[400px] items-center justify-center">
@@ -123,13 +118,6 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
   // (FR-020). Its fees are rendered with its own symbol so an amount is never
   // labelled with the wrong currency.
   const channelSymbol = symbolForCurrency(channel.currency_code, '£')
-
-  // Calculate example fee for a £20 sale
-  const exampleSale = 20
-  const feePercentage = parseFloat(channel.fee_percentage || '0')
-  const feeFixed = parseFloat(channel.fee_fixed || '0')
-  const totalFee = (exampleSale * feePercentage / 100) + feeFixed
-  const netAmount = exampleSale - totalFee
 
   return (
     <div className="space-y-6">
@@ -223,31 +211,16 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
         </div>
       </div>
 
-      {/* Fee Stats Grid */}
+      {/* What the channel costs to be on. Its per-sale fees are the rule
+          stack below, which is the only thing a margin is computed from
+          (FR-020) -- an "example sale" figure here would be a second answer
+          to a question the fee rules already answer. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard
-          icon={Percent}
-          label="Fee Percentage"
-          value={formatPercentage(channel.fee_percentage)}
-          subValue="Per sale"
-        />
-        <StatCard
-          icon={DollarSign}
-          label="Fixed Fee"
-          value={formatCurrency(channel.fee_fixed)}
-          subValue="Per sale"
-        />
         <StatCard
           icon={Calendar}
           label="Monthly Cost"
           value={formatCurrency(channel.monthly_cost)}
           subValue="Subscription/booth fee"
-        />
-        <StatCard
-          icon={Store}
-          label="Example (£20 sale)"
-          value={formatCurrency(netAmount)}
-          subValue={`After ${formatCurrency(totalFee)} fees`}
         />
       </div>
 
@@ -308,42 +281,6 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
       {/* Planned against recorded, over a period (FR-025, FR-041d) */}
       <ChannelProfitabilityPanel channelId={channelId} currencySymbol={channelSymbol} />
 
-      {/* Fee Calculator Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <DollarSign className="h-5 w-5" />
-            Fee Calculator (legacy single-rate)
-          </CardTitle>
-          <CardDescription>
-            A rough estimate from the channel&rsquo;s single percentage and fixed
-            fee. The fee rules above are what the system actually charges
-            against a sale (FR-020); where the two disagree, the rules are
-            right and these figures are the old model kept for comparison.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[10, 20, 30, 50].map((saleAmount) => {
-              const fee = (saleAmount * feePercentage / 100) + feeFixed
-              const net = saleAmount - fee
-              const feePercent = (fee / saleAmount) * 100
-
-              return (
-                <div key={saleAmount} className="rounded-lg border p-3 text-center">
-                  <div className="text-sm text-muted-foreground">
-                    {formatCurrency(saleAmount)} sale
-                  </div>
-                  <div className="text-lg font-bold mt-1">{formatCurrency(net)}</div>
-                  <div className="text-xs text-muted-foreground">
-                    -{formatCurrency(fee)} ({feePercent.toFixed(1)}%)
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 }

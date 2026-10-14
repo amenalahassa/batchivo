@@ -19,8 +19,6 @@ async def test_sales_channel(db_session: AsyncSession, test_tenant: Tenant) -> S
         tenant_id=test_tenant.id,
         name="Test Online Shop",
         platform_type="online_shop",
-        fee_percentage=Decimal("3.00"),
-        fee_fixed=Decimal("0.30"),
         monthly_cost=Decimal("0.00"),
         is_active=True,
     )
@@ -59,8 +57,6 @@ class TestSalesChannelsBasicCRUD:
             json={
                 "name": "Full Featured Channel",
                 "platform_type": "etsy",
-                "fee_percentage": "5.00",
-                "fee_fixed": "0.25",
                 "monthly_cost": "15.00",
                 "is_active": True,
             },
@@ -69,8 +65,6 @@ class TestSalesChannelsBasicCRUD:
         data = response.json()
         assert data["name"] == "Full Featured Channel"
         assert data["platform_type"] == "etsy"
-        assert float(data["fee_percentage"]) == 5.00
-        assert float(data["fee_fixed"]) == 0.25
         assert float(data["monthly_cost"]) == 15.00
         assert data["is_active"] is True
 
@@ -109,13 +103,13 @@ class TestSalesChannelsBasicCRUD:
             headers=auth_headers,
             json={
                 "name": "Updated Channel Name",
-                "fee_percentage": "4.50",
+                "monthly_cost": "4.50",
             },
         )
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "Updated Channel Name"
-        assert float(data["fee_percentage"]) == 4.50
+        assert float(data["monthly_cost"]) == 4.50
 
     @pytest.mark.asyncio
     async def test_delete_sales_channel(
@@ -147,8 +141,6 @@ class TestSalesChannelsAllFieldsPersistence:
         update_data = {
             "name": "Persistence Test Channel",
             "platform_type": "shopify",
-            "fee_percentage": "2.50",
-            "fee_fixed": "0.50",
             "monthly_cost": "29.00",
             "is_active": True,
         }
@@ -169,8 +161,6 @@ class TestSalesChannelsAllFieldsPersistence:
 
         assert data["name"] == "Persistence Test Channel"
         assert data["platform_type"] == "shopify"
-        assert float(data["fee_percentage"]) == 2.50
-        assert float(data["fee_fixed"]) == 0.50
         assert float(data["monthly_cost"]) == 29.00
         assert data["is_active"] is True
 
@@ -218,8 +208,6 @@ class TestSalesChannelsPlatformTypes:
             json={
                 "name": "Etsy Store",
                 "platform_type": "etsy",
-                "fee_percentage": "6.50",
-                "fee_fixed": "0.20",
             },
         )
         assert response.status_code in [200, 201]
@@ -227,34 +215,14 @@ class TestSalesChannelsPlatformTypes:
         assert data["platform_type"] == "etsy"
 
 
-class TestSalesChannelsFeeFields:
-    """Test fee-related fields."""
+class TestSalesChannelsCostFields:
+    """The channel's own costs.
 
-    @pytest.mark.asyncio
-    async def test_fee_percentage(
-        self, client: AsyncClient, auth_headers: dict, test_sales_channel: SalesChannel
-    ):
-        """Test updating fee_percentage."""
-        response = await client.put(
-            f"/api/v1/sales-channels/{test_sales_channel.id}",
-            headers=auth_headers,
-            json={"fee_percentage": "10.00"},
-        )
-        assert response.status_code == 200
-        assert float(response.json()["fee_percentage"]) == 10.00
-
-    @pytest.mark.asyncio
-    async def test_fee_fixed(
-        self, client: AsyncClient, auth_headers: dict, test_sales_channel: SalesChannel
-    ):
-        """Test updating fee_fixed."""
-        response = await client.put(
-            f"/api/v1/sales-channels/{test_sales_channel.id}",
-            headers=auth_headers,
-            json={"fee_fixed": "1.00"},
-        )
-        assert response.status_code == 200
-        assert float(response.json()["fee_fixed"]) == 1.00
+    Its *fees* are `fee_rules` and are tested with them (FR-020); the blended
+    `fee_percentage`/`fee_fixed` pair this class used to exercise was dropped
+    with the columns behind it (task T123). What a channel still carries
+    directly is a periodic cost.
+    """
 
     @pytest.mark.asyncio
     async def test_monthly_cost(
@@ -270,23 +238,19 @@ class TestSalesChannelsFeeFields:
         assert float(response.json()["monthly_cost"]) == 49.99
 
     @pytest.mark.asyncio
-    async def test_zero_fees(self, client: AsyncClient, auth_headers: dict):
-        """Test creating channel with zero fees (e.g., direct sales)."""
+    async def test_zero_cost(self, client: AsyncClient, auth_headers: dict):
+        """A channel that costs nothing to sell on, such as direct cash sales."""
         response = await client.post(
             "/api/v1/sales-channels",
             headers=auth_headers,
             json={
                 "name": "Direct Cash Sales",
                 "platform_type": "other",
-                "fee_percentage": "0",
-                "fee_fixed": "0",
                 "monthly_cost": "0",
             },
         )
         assert response.status_code in [200, 201]
         data = response.json()
-        assert float(data["fee_percentage"]) == 0
-        assert float(data["fee_fixed"]) == 0
         assert float(data["monthly_cost"]) == 0
 
 
@@ -349,34 +313,6 @@ class TestSalesChannelsValidation:
             "/api/v1/sales-channels",
             headers=auth_headers,
             json={"name": "", "platform_type": "other"},
-        )
-        assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_fee_percentage_over_100_rejected(self, client: AsyncClient, auth_headers: dict):
-        """Test that fee_percentage over 100 is rejected."""
-        response = await client.post(
-            "/api/v1/sales-channels",
-            headers=auth_headers,
-            json={
-                "name": "Invalid Fee Channel",
-                "platform_type": "other",
-                "fee_percentage": "150.00",
-            },
-        )
-        assert response.status_code == 422
-
-    @pytest.mark.asyncio
-    async def test_negative_fee_rejected(self, client: AsyncClient, auth_headers: dict):
-        """Test that negative fees are rejected."""
-        response = await client.post(
-            "/api/v1/sales-channels",
-            headers=auth_headers,
-            json={
-                "name": "Negative Fee Channel",
-                "platform_type": "other",
-                "fee_fixed": "-1.00",
-            },
         )
         assert response.status_code == 422
 

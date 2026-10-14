@@ -106,9 +106,10 @@ NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
     "tenant_pricing_policy": {
         "sales_tax_recoverable": "a boolean policy flag, carried by the policy row itself",
     },
-    # sales_channel has no exclusions: all three of its numeric columns are fee
-    # inputs, and all three are registered (fee_percentage and fee_fixed as the
-    # deprecated blended pair, monthly_cost as the periodic charge).
+    # sales_channel has no exclusions: every numeric column it still carries is
+    # a cost input and every one is registered. The blended `fee_percentage`
+    # and `fee_fixed` were registered here too until task T123 dropped them;
+    # a channel's fees are now its `fee_rules`.
 }
 
 

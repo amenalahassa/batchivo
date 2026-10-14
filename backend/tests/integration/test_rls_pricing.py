@@ -254,8 +254,6 @@ async def other_tenants_channel(db_session: AsyncSession, other_tenant: Tenant) 
         tenant_id=other_tenant.id,
         name="Someone else's channel",
         platform_type="etsy",
-        fee_percentage=Decimal("6.5"),
-        fee_fixed=Decimal("0.20"),
         monthly_cost=Decimal("0"),
         is_active=True,
     )

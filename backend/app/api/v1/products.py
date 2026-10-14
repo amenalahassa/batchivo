@@ -83,7 +83,7 @@ from app.services.costing import (
     MaxDepthExceededError,
     resolve_margin_basis,
 )
-from app.services.pricing_policy import resolve_cost_policy
+from app.services.pricing_policy import CostPolicy, resolve_cost_policy
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
 from app.services.shopify_sync import (
     ShopifySyncService,
@@ -185,11 +185,18 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
     pricing_responses = []
     for pricing in product.current_pricing:
         channel = pricing.sales_channel
-        profit_data = CostingService.calculate_profit(
-            list_price=Decimal(str(pricing.list_price)),
-            make_cost=cost_breakdown.total_make_cost,
-            fee_percentage=Decimal(str(channel.fee_percentage)) if channel else Decimal("0"),
-            fee_fixed=Decimal(str(channel.fee_fixed)) if channel else Decimal("0"),
+        profit_data = (
+            await _planned_profit(
+                db,
+                tenant,
+                product,
+                channel,
+                Decimal(str(pricing.list_price)),
+                cost_breakdown.total_make_cost,
+                policy=policy,
+            )
+            if channel
+            else None
         )
         pricing_responses.append(
             {
@@ -863,6 +870,63 @@ async def _postage_for(
         if profile.covers(weight):
             return Decimal(str(profile.postage_cost))
     return Decimal("0")
+
+
+async def _planned_profit(
+    db: AsyncSession,
+    tenant: Tenant,
+    product: Product,
+    channel: SalesChannel,
+    list_price: Decimal,
+    make_cost: Decimal,
+    *,
+    policy: Optional[CostPolicy] = None,
+) -> dict:
+    """The fee, net revenue, profit and margin one price row carries.
+
+    Through the fee engine and `CostingService.margin` -- the same path the
+    margin endpoint uses. It was previously a blended percentage read from the
+    channel's `fee_percentage` and `fee_fixed` columns, which made this response
+    a second fee implementation (Constitution III): the product detail screen
+    and the margin screen could show two different margins for one price, and
+    the one here was always the optimistic figure, because a single percentage
+    cannot represent a marketplace that also charges processing, a regulatory
+    fee and postage.
+
+    Shipping revenue is zero: until an order exists there is none to read, which
+    is the free-shipping case of FR-024 and what the acceptance scenario uses.
+    """
+    rules = list(
+        (
+            await db.execute(
+                select(FeeRule).where(
+                    FeeRule.sales_channel_id == channel.id,
+                    FeeRule.tenant_id == tenant.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    context, treatment = fee_engine.exclusive_context(item_subtotal=list_price)
+    reference = clock.today()
+    result = CostingService.margin(
+        context=context,
+        make_cost=make_cost,
+        channel=channel,
+        fees=fee_engine.compute(channel, context, reference, rules=rules),
+        policy=policy if policy is not None else await resolve_cost_policy(db, tenant),
+        tax=treatment,
+        postage_paid=await _postage_for(db, tenant, product),
+    )
+
+    return {
+        "platform_fee": result.fee_total,
+        "net_revenue": result.net_revenue,
+        "profit": result.profit,
+        "margin_percentage": result.margin_pct,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1594,11 +1658,13 @@ async def add_product_pricing(
         product,
         policy=await resolve_cost_policy(db, tenant),
     )
-    profit_data = CostingService.calculate_profit(
-        list_price=Decimal(str(pricing.list_price)),
-        make_cost=cost_breakdown.total_make_cost,
-        fee_percentage=Decimal(str(channel.fee_percentage)),
-        fee_fixed=Decimal(str(channel.fee_fixed)),
+    profit_data = await _planned_profit(
+        db,
+        tenant,
+        product,
+        channel,
+        Decimal(str(pricing.list_price)),
+        cost_breakdown.total_make_cost,
     )
 
     return _pricing_response(pricing, channel, profit_data)
@@ -1771,11 +1837,13 @@ async def update_product_pricing(
             product,
             policy=await resolve_cost_policy(db, tenant),
         )
-        profit_data = CostingService.calculate_profit(
-            list_price=Decimal(str(pricing.list_price)),
-            make_cost=cost_breakdown.total_make_cost,
-            fee_percentage=Decimal(str(channel.fee_percentage)),
-            fee_fixed=Decimal(str(channel.fee_fixed)),
+        profit_data = await _planned_profit(
+            db,
+            tenant,
+            product,
+            channel,
+            Decimal(str(pricing.list_price)),
+            cost_breakdown.total_make_cost,
         )
 
     return _pricing_response(pricing, channel, profit_data)

@@ -212,8 +212,6 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
     *(
         _entry("sales_channel", field, description, default_source="policy", learnable=False)
         for field, description in (
-            ("fee_percentage", "DEPRECATED (Tier 2): blended percentage fee"),
-            ("fee_fixed", "DEPRECATED (Tier 2): fixed fee per transaction"),
             ("monthly_cost", "Periodic channel cost, absorbed over order volume"),
             # Channel economics (Tier 2). Every one of these is an operator
             # decision in the sense of FR-002 -- a reserve the operator chooses

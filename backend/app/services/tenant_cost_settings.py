@@ -7,8 +7,10 @@ a fallback.*
 Before this module, `Tenant.settings["default_labor_rate"]` was written by the
 settings UI, documented as the tenant's hourly labor rate, and read by nobody.
 Every cost on every screen used `CostingService`'s own `DEFAULT_LABOR_RATE` of
-10.00 instead. This is the one place that reads the setting, so that every call
-site reaches it the same way.
+10.00 instead. That key is now gone (task T123): the rate lives in the typed,
+dated `tenant_pricing_policy` table, which is where a figure that money depends
+on belongs. What remains here is the overhead percentage, which FR-014 keeps as
+an absorption option and which has not moved into that table.
 
 The value is stored in a JSON blob and arrives as whatever JSON had -- an int, a
 float, or a string. It is converted through `str` rather than passed to
@@ -30,15 +32,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The legacy settings keys, as written by the tenant settings UI.
-LABOR_RATE_KEY = "default_labor_rate"
+#: The legacy settings key still read here. The labor rate's key went with the
+#: column drop in task T123: every tenant has a dated policy row, and a tenant
+#: created without one takes `pricing_policy.POLICYLESS_LABOR_RATE`.
 OVERHEAD_PERCENTAGE_KEY = "default_overhead_percentage"
-
-#: Used only when the tenant has configured nothing. It matches the default the
-#: settings schema presents, so an operator who has never opened the screen gets
-#: the figure that screen would have shown them -- not a different one invented
-#: here.
-FALLBACK_LABOR_RATE = Decimal("20.00")
 
 #: No overhead unless configured. A model's own `overhead_percentage` still
 #: wins where it is set, which is how overhead already worked.
@@ -64,22 +61,6 @@ def _as_decimal(value: Any, *, field: str, tenant_slug: str) -> Optional[Decimal
         )
         return None
     return converted
-
-
-def tenant_labor_rate(tenant: "Tenant") -> Decimal:
-    """The hourly labor rate this tenant configured.
-
-    Returns :data:`FALLBACK_LABOR_RATE` only when the tenant has configured
-    nothing usable, and logs when a configured value had to be rejected -- a
-    silent fallback is the defect this module exists to remove.
-    """
-    settings = getattr(tenant, "settings", None) or {}
-    configured = _as_decimal(
-        settings.get(LABOR_RATE_KEY),
-        field=LABOR_RATE_KEY,
-        tenant_slug=getattr(tenant, "slug", "<unknown>"),
-    )
-    return configured if configured is not None else FALLBACK_LABOR_RATE
 
 
 def tenant_overhead_percentage(tenant: "Tenant") -> Decimal:

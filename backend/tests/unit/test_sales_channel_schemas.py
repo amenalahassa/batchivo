@@ -1,5 +1,9 @@
-"""
-Tests for SalesChannel Pydantic schemas.
+"""Tests for the SalesChannel Pydantic schemas.
+
+The blended `fee_percentage`/`fee_fixed` pair these schemas used to carry was
+removed with the columns behind it (task T123). A channel's fees are its
+`fee_rules`, which have their own schemas and their own tests; what remains
+here is the channel itself.
 """
 
 from decimal import Decimal
@@ -23,8 +27,6 @@ class TestSalesChannelBase:
     def test_valid_minimal(self):
         c = SalesChannelBase(**valid_channel())
         assert c.name == "My Etsy Shop"
-        assert c.fee_percentage == Decimal("0")
-        assert c.fee_fixed == Decimal("0")
         assert c.monthly_cost == Decimal("0")
         assert c.is_active is True
 
@@ -36,30 +38,6 @@ class TestSalesChannelBase:
         with pytest.raises(ValidationError):
             SalesChannelBase(**valid_channel(name="N" * 101))
 
-    def test_fee_percentage_zero_accepted(self):
-        c = SalesChannelBase(**valid_channel(fee_percentage=Decimal("0")))
-        assert c.fee_percentage == Decimal("0")
-
-    def test_fee_percentage_max_100(self):
-        c = SalesChannelBase(**valid_channel(fee_percentage=Decimal("100")))
-        assert c.fee_percentage == Decimal("100")
-
-    def test_fee_percentage_above_100_raises(self):
-        with pytest.raises(ValidationError):
-            SalesChannelBase(**valid_channel(fee_percentage=Decimal("100.01")))
-
-    def test_fee_percentage_negative_raises(self):
-        with pytest.raises(ValidationError):
-            SalesChannelBase(**valid_channel(fee_percentage=Decimal("-1")))
-
-    def test_fee_fixed_zero_accepted(self):
-        c = SalesChannelBase(**valid_channel(fee_fixed=Decimal("0")))
-        assert c.fee_fixed == Decimal("0")
-
-    def test_fee_fixed_negative_raises(self):
-        with pytest.raises(ValidationError):
-            SalesChannelBase(**valid_channel(fee_fixed=Decimal("-0.01")))
-
     def test_monthly_cost_zero_accepted(self):
         c = SalesChannelBase(**valid_channel(monthly_cost=Decimal("0")))
         assert c.monthly_cost == Decimal("0")
@@ -67,16 +45,6 @@ class TestSalesChannelBase:
     def test_monthly_cost_negative_raises(self):
         with pytest.raises(ValidationError):
             SalesChannelBase(**valid_channel(monthly_cost=Decimal("-5")))
-
-    def test_realistic_etsy_fees(self):
-        c = SalesChannelBase(
-            **valid_channel(
-                fee_percentage=Decimal("6.5"),
-                fee_fixed=Decimal("0.20"),
-                monthly_cost=Decimal("0"),
-            )
-        )
-        assert c.fee_percentage == Decimal("6.5")
 
     def test_is_active_default_true(self):
         c = SalesChannelBase(**valid_channel())
@@ -97,20 +65,13 @@ class TestSalesChannelUpdate:
     def test_all_optional(self):
         u = SalesChannelUpdate()
         assert u.name is None
-        assert u.fee_percentage is None
+        assert u.monthly_cost is None
         assert u.is_active is None
 
     def test_partial_update(self):
-        u = SalesChannelUpdate(fee_percentage=Decimal("5.0"), is_active=False)
-        assert u.fee_percentage == Decimal("5.0")
-
-    def test_fee_percentage_above_100_raises(self):
-        with pytest.raises(ValidationError):
-            SalesChannelUpdate(fee_percentage=Decimal("101"))
-
-    def test_fee_fixed_negative_raises(self):
-        with pytest.raises(ValidationError):
-            SalesChannelUpdate(fee_fixed=Decimal("-1"))
+        u = SalesChannelUpdate(monthly_cost=Decimal("5.0"), is_active=False)
+        assert u.monthly_cost == Decimal("5.0")
+        assert u.is_active is False
 
     def test_name_empty_raises(self):
         with pytest.raises(ValidationError):

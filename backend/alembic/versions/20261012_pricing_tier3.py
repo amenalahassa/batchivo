@@ -163,9 +163,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("rate > 0", name="ck_fx_rate_positive"),
         sa.CheckConstraint("source IN ('service', 'manual')", name="ck_fx_rate_source"),
-        sa.CheckConstraint(
-            "base_currency <> quote_currency", name="ck_fx_rate_pair_distinct"
-        ),
+        sa.CheckConstraint("base_currency <> quote_currency", name="ck_fx_rate_pair_distinct"),
         comment=(
             "Published exchange rates. Deliberately NOT tenant-scoped: a "
             "published rate is not tenant data. See app/models/fx_rate.py"
@@ -195,18 +193,14 @@ def upgrade() -> None:
     # starting the day it was created.
     if is_postgres:
         op.execute(
-            "UPDATE product_pricing SET valid_from = created_at::date "
-            "WHERE valid_from IS NULL"
+            "UPDATE product_pricing SET valid_from = created_at::date WHERE valid_from IS NULL"
         )
     else:
         op.execute(
-            "UPDATE product_pricing SET valid_from = date(created_at) "
-            "WHERE valid_from IS NULL"
+            "UPDATE product_pricing SET valid_from = date(created_at) WHERE valid_from IS NULL"
         )
     # A row whose created_at was somehow null would block the NOT NULL below.
-    op.execute(
-        "UPDATE product_pricing SET valid_from = CURRENT_DATE WHERE valid_from IS NULL"
-    )
+    op.execute("UPDATE product_pricing SET valid_from = CURRENT_DATE WHERE valid_from IS NULL")
 
     with op.batch_alter_table("product_pricing") as batch:
         # NOT NULL, with today as the server default. The default is not a
@@ -225,8 +219,7 @@ def upgrade() -> None:
     # replaces it is defined over that column.
     if is_postgres:
         op.execute(
-            "ALTER TABLE product_pricing "
-            "DROP CONSTRAINT IF EXISTS uq_product_channel_pricing"
+            "ALTER TABLE product_pricing DROP CONSTRAINT IF EXISTS uq_product_channel_pricing"
         )
         op.execute(
             "CREATE UNIQUE INDEX uq_product_channel_tier_current "

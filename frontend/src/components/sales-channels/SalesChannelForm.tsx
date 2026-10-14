@@ -54,16 +54,6 @@ const PLATFORM_TYPES: PlatformType[] = [
 const salesChannelFormSchema = z.object({
   name: z.string().min(1, 'Name is required').max(200, 'Name must be 200 characters or less'),
   platform_type: z.enum(['fair', 'online_shop', 'shopify', 'ebay', 'etsy', 'amazon', 'other']),
-  fee_percentage: z
-    .string()
-    .regex(/^\d+(\.\d{1,2})?$/, 'Must be a valid percentage')
-    .optional()
-    .default('0'),
-  fee_fixed: z
-    .string()
-    .regex(/^\d+(\.\d{1,2})?$/, 'Must be a valid amount')
-    .optional()
-    .default('0'),
   monthly_cost: z
     .string()
     .regex(/^\d+(\.\d{1,2})?$/, 'Must be a valid amount')
@@ -115,8 +105,6 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
     defaultValues: {
       name: channel?.name || '',
       platform_type: channel?.platform_type || 'other',
-      fee_percentage: channel?.fee_percentage || '0',
-      fee_fixed: channel?.fee_fixed || '0',
       monthly_cost: channel?.monthly_cost || '0',
       is_active: channel?.is_active ?? true,
       tax_remitter: channel?.tax_remitter ?? 'operator',
@@ -150,8 +138,6 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
     const data = {
       name: values.name,
       platform_type: values.platform_type,
-      fee_percentage: values.fee_percentage || '0',
-      fee_fixed: values.fee_fixed || '0',
       monthly_cost: values.monthly_cost || '0',
       is_active: values.is_active,
       tax_remitter: values.tax_remitter,
@@ -175,15 +161,6 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
   }
 
   const isPending = createMutation.isPending || updateMutation.isPending
-
-  // Live fee preview
-  const watchFeePercentage = form.watch('fee_percentage')
-  const watchFeeFixed = form.watch('fee_fixed')
-  const exampleSale = 20
-  const feePercentage = parseFloat(watchFeePercentage || '0')
-  const feeFixed = parseFloat(watchFeeFixed || '0')
-  const totalFee = (exampleSale * feePercentage / 100) + feeFixed
-  const netAmount = exampleSale - totalFee
 
   return (
     <Form {...form}>
@@ -240,49 +217,18 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
           </CardContent>
         </Card>
 
-        {/* Fee Structure */}
+        {/* What the channel costs to be on, aside from its fees */}
         <Card>
           <CardHeader>
-            <CardTitle>Fee Structure (legacy)</CardTitle>
+            <CardTitle>Channel Cost</CardTitle>
             <CardDescription>
-              One percentage plus one fixed amount, kept while the migration settles.
-              A real marketplace charges several fees on different amounts — set those
-              up under Fee rules, which is what the margin is now computed from. These
-              two no longer feed it.
+              What this channel costs you whether or not anything sells. Its
+              per-sale fees are set up under Fee rules, which is what every
+              margin is computed from.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 md:grid-cols-3">
-              <FormField
-                control={form.control}
-                name="fee_percentage"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Fee Percentage (%)</FormLabel>
-                    <FormControl>
-                      <Input type="number" step="0.01" min="0" max="100" placeholder="0" {...field} />
-                    </FormControl>
-                    <FormDescription>Percentage of each sale</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="fee_fixed"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Fixed Fee (£)</FormLabel>
-                    <FormControl>
-                      <Input type="number" step="0.01" min="0" placeholder="0.00" {...field} />
-                    </FormControl>
-                    <FormDescription>Fixed amount per sale</FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
               <FormField
                 control={form.control}
                 name="monthly_cost"
@@ -297,25 +243,6 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
                   </FormItem>
                 )}
               />
-            </div>
-
-            {/* Fee Preview */}
-            <div className="rounded-lg border bg-muted/50 p-4">
-              <div className="text-sm font-medium mb-2">Fee Preview (£{exampleSale} sale)</div>
-              <div className="grid grid-cols-3 gap-4 text-center">
-                <div>
-                  <div className="text-xs text-muted-foreground">Total Fee</div>
-                  <div className="font-semibold">£{totalFee.toFixed(2)}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Net Amount</div>
-                  <div className="font-semibold text-green-600">£{netAmount.toFixed(2)}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Effective Rate</div>
-                  <div className="font-semibold">{((totalFee / exampleSale) * 100).toFixed(1)}%</div>
-                </div>
-              </div>
             </div>
           </CardContent>
         </Card>

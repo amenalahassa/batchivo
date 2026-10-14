@@ -83,8 +83,6 @@ async def sales_channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesC
         tenant_id=test_tenant.id,
         name="Mystmereforge",
         platform_type="online_shop",
-        fee_percentage=0,
-        fee_fixed=0,
         is_active=True,
     )
     db_session.add(channel)

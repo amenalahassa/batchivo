@@ -223,8 +223,12 @@ class TenantSettings(BaseModel):
     features: TenantFeatures = Field(default_factory=TenantFeatures)
     shop: ShopSettings = Field(default_factory=ShopSettings)
 
-    # Legacy fields (for backward compatibility)
-    default_labor_rate: float = Field(default=20.0, description="Default hourly labor rate")
+    # Legacy fields (for backward compatibility).
+    #
+    # `default_labor_rate` was removed with the key behind it (task T123): a
+    # labor rate lives in the typed, dated `tenant_pricing_policy` table, and a
+    # float in a JSON blob could not be either. It was also the wrong type for
+    # money (Constitution IV).
     currency: str = Field(default="GBP", description="Legacy currency field")
 
     @classmethod

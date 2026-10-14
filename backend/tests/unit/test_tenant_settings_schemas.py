@@ -156,7 +156,6 @@ class TestTenantSettings:
     def test_defaults(self):
         t = TenantSettings()
         assert t.tenant_type == TenantType.THREE_D_PRINT
-        assert t.default_labor_rate == 20.0
         assert t.currency == "GBP"
         assert isinstance(t.branding, BrandingSettings)
         assert isinstance(t.features, TenantFeatures)

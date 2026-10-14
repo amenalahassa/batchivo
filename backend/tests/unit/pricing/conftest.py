@@ -275,8 +275,6 @@ def make_channel(**overrides) -> SalesChannel:
         tenant_id=uuid4(),
         name="Golden Marketplace",
         platform_type="etsy",
-        fee_percentage=Decimal("0"),
-        fee_fixed=Decimal("0"),
         monthly_cost=Decimal("0"),
         tax_remitter=golden.CHANNEL_TAX_REMITTER,
         expected_discount_pct=golden.CHANNEL_EXPECTED_DISCOUNT_PCT,

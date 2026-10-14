@@ -31,6 +31,7 @@ from app.models.product_component import ProductComponent
 from app.models.product_model import ProductModel
 from app.models.sales_channel import SalesChannel
 from app.models.tenant import Tenant
+from app.services.pricing_policy import write_policy
 
 API = "/api/v1"
 
@@ -40,8 +41,11 @@ LIST_PRICE = Decimal("64.99")
 @pytest.fixture
 async def configured_tenant(db_session: AsyncSession, test_tenant: Tenant) -> Tenant:
     """A tenant with a labor rate set, so the rate is part of every figure."""
-    test_tenant.settings = {**(test_tenant.settings or {}), "default_labor_rate": "25.00"}
-    db_session.add(test_tenant)
+    await write_policy(
+        db_session,
+        test_tenant,
+        {"print_labor_rate": Decimal("25.00"), "finishing_labor_rate": Decimal("25.00")},
+    )
     await db_session.commit()
     await db_session.refresh(test_tenant)
     return test_tenant
@@ -127,8 +131,6 @@ async def channel(db_session: AsyncSession, configured_tenant: Tenant) -> SalesC
         tenant_id=configured_tenant.id,
         name=f"Consistency channel {uuid4().hex[:6]}",
         platform_type="etsy",
-        fee_percentage=Decimal("6.5"),
-        fee_fixed=Decimal("0.20"),
         monthly_cost=Decimal("0"),
         is_active=True,
     )
@@ -221,11 +223,11 @@ class TestTheThreeScreensAgree:
         """Agreement must survive a change, not just hold at one moment."""
         before = await _cost_from_detail(client, rich_product)
 
-        configured_tenant.settings = {
-            **(configured_tenant.settings or {}),
-            "default_labor_rate": "50.00",
-        }
-        db_session.add(configured_tenant)
+        await write_policy(
+            db_session,
+            configured_tenant,
+            {"print_labor_rate": Decimal("50.00"), "finishing_labor_rate": Decimal("50.00")},
+        )
         await db_session.commit()
 
         detail = await _cost_from_detail(client, rich_product)

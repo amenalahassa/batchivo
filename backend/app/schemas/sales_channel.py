@@ -17,17 +17,13 @@ class SalesChannelBase(BaseModel):
     platform_type: str = Field(
         ..., description="Platform type: fair, online_shop, shopify, ebay, etsy, amazon, other"
     )
-    fee_percentage: Decimal = Field(
-        Decimal("0"), ge=0, le=100, description="Platform percentage fee"
-    )
-    fee_fixed: Decimal = Field(Decimal("0"), ge=0, description="Fixed fee per transaction")
     monthly_cost: Decimal = Field(Decimal("0"), ge=0, description="Monthly subscription/booth fee")
     is_active: bool = Field(True, description="Whether channel is active")
 
     # ------------------------------------------------------------------
-    # Channel economics (Tier 2). `fee_percentage` and `fee_fixed` above are
-    # deprecated in favour of the channel's `fee_rules` (FR-020); they stay in
-    # this schema while the migration keeps them populated.
+    # Channel economics (Tier 2). A channel's fees are its `fee_rules`
+    # (FR-020); the blended `fee_percentage`/`fee_fixed` pair this schema used
+    # to carry was dropped with the columns behind it (task T123).
     # ------------------------------------------------------------------
     tax_remitter: TaxRemitter = Field(
         "operator", description="Who remits sales tax on this channel's sales (FR-028b)"
@@ -69,8 +65,6 @@ class SalesChannelUpdate(BaseModel):
 
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     platform_type: Optional[str] = None
-    fee_percentage: Optional[Decimal] = Field(None, ge=0, le=100)
-    fee_fixed: Optional[Decimal] = Field(None, ge=0)
     monthly_cost: Optional[Decimal] = Field(None, ge=0)
     is_active: Optional[bool] = None
 

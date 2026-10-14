@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.tenant import Tenant
 from app.models.tenant_pricing_policy import TenantPricingPolicy
 from app.services.pricing_policy import (
+    POLICYLESS_LABOR_RATE,
     PolicyMisconfigured,
     current_policy_row,
     ensure_policy_row,
@@ -343,16 +344,20 @@ class TestTheResolvedSnapshotTheEngineTakes:
         assert policy.overhead_method == "percentage"
         assert policy.overhead_rate_per_machine_hour is None
 
-    async def test_a_tenant_with_no_policy_row_falls_back_to_its_settings(
+    async def test_a_tenant_with_no_policy_row_still_gets_a_policy(
         self, db_session: AsyncSession, test_tenant: Tenant
     ) -> None:
-        """No row yet is not a reason to cost at a rate nobody configured."""
-        test_tenant.settings = {**(test_tenant.settings or {}), "default_labor_rate": "33.00"}
-        db_session.add(test_tenant)
-        await db_session.commit()
+        """No row yet is not a reason to refuse a figure, or to invent a rate.
 
+        It used to fall back to `settings["default_labor_rate"]`; that key went
+        with task T123, so the fallback is now the documented default and says
+        so through its origin. The machine rate stays absent either way, which
+        is why such a tenant's machine line is reported missing rather than
+        guessed.
+        """
         policy = await resolve_cost_policy(db_session, test_tenant, TODAY)
-        assert policy.print_labor_rate == Decimal("33.00")
+
+        assert policy.print_labor_rate == POLICYLESS_LABOR_RATE
         assert policy.origin == "legacy_settings"
         assert policy.default_machine_rate_per_hour is None
 
@@ -362,17 +367,21 @@ class TestTheResolvedSnapshotTheEngineTakes:
 
 
 class TestSeedingARowForATenantThatHasNone:
-    async def test_a_row_is_created_from_the_legacy_settings(
+    async def test_a_row_is_created_from_the_fallback_policy(
         self, db_session: AsyncSession, test_tenant: Tenant
     ) -> None:
-        test_tenant.settings = {**(test_tenant.settings or {}), "default_labor_rate": "21.50"}
-        db_session.add(test_tenant)
-        await db_session.commit()
+        """The seeded row carries the same rate the fallback policy reported.
 
+        Which matters more than the figure itself: an operator opening the
+        policy screen for the first time must see the rate their costs were
+        already being computed at, not a different one appearing at the moment
+        a row gets written.
+        """
         row = await ensure_policy_row(db_session, test_tenant, effective_from=TODAY)
         await db_session.commit()
-        assert row.print_labor_rate == Decimal("21.50")
-        assert row.finishing_labor_rate == Decimal("21.50")
+
+        assert row.print_labor_rate == POLICYLESS_LABOR_RATE
+        assert row.finishing_labor_rate == POLICYLESS_LABOR_RATE
         assert row.effective_from == TODAY
 
     async def test_an_existing_row_is_returned_unchanged(

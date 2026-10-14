@@ -15,10 +15,6 @@ export interface SalesChannel {
   tenant_id: string
   name: string
   platform_type: PlatformType
-  /** @deprecated superseded by the channel's fee rules (FR-020); still populated. */
-  fee_percentage: string
-  /** @deprecated superseded by the channel's fee rules (FR-020); still populated. */
-  fee_fixed: string
   monthly_cost: string
   is_active: boolean
   // Channel economics (Tier 2)
@@ -51,8 +47,6 @@ export interface SalesChannelEconomicsRequest {
 export interface SalesChannelCreateRequest extends SalesChannelEconomicsRequest {
   name: string
   platform_type: PlatformType
-  fee_percentage?: string
-  fee_fixed?: string
   monthly_cost?: string
   is_active?: boolean
 }
@@ -60,8 +54,6 @@ export interface SalesChannelCreateRequest extends SalesChannelEconomicsRequest 
 export interface SalesChannelUpdateRequest extends SalesChannelEconomicsRequest {
   name?: string
   platform_type?: PlatformType
-  fee_percentage?: string
-  fee_fixed?: string
   monthly_cost?: string
   is_active?: boolean
 }

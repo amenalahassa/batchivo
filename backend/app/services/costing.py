@@ -1501,47 +1501,6 @@ class CostingService:
         )
 
     @staticmethod
-    def calculate_profit(
-        list_price: Decimal,
-        make_cost: Decimal,
-        fee_percentage: Decimal = Decimal("0"),
-        fee_fixed: Decimal = Decimal("0"),
-    ) -> dict:
-        """
-        Calculate profit and margin for a product at a given price.
-
-        Args:
-            list_price: Selling price
-            make_cost: Total make cost
-            fee_percentage: Platform percentage fee (0-100)
-            fee_fixed: Fixed platform fee per transaction
-
-        Returns:
-            Dict with platform_fee, net_revenue, profit, margin_percentage
-        """
-        # Calculate platform fees
-        percentage_fee = list_price * (fee_percentage / Decimal("100"))
-        platform_fee = percentage_fee + fee_fixed
-
-        # Net revenue after platform takes their cut
-        net_revenue = list_price - platform_fee
-
-        # Profit after deducting make cost
-        profit = net_revenue - make_cost
-
-        # Margin percentage (profit / list_price * 100)
-        margin_percentage = (
-            (profit / list_price * Decimal("100")) if list_price > 0 else Decimal("0")
-        )
-
-        return {
-            "platform_fee": platform_fee.quantize(Decimal("0.01")),
-            "net_revenue": net_revenue.quantize(Decimal("0.01")),
-            "profit": profit.quantize(Decimal("0.01")),
-            "margin_percentage": margin_percentage.quantize(Decimal("0.01")),
-        }
-
-    @staticmethod
     def calculate_cost_per_gram_from_spool(
         purchase_price: Optional[Decimal],
         initial_weight: Decimal,

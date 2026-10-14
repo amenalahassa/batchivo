@@ -318,10 +318,9 @@ async def test_tenant(db_session: AsyncSession) -> Tenant:
         id=uuid4(),
         name="Test Tenant",
         slug=f"test-tenant-{unique_id}",
-        settings={
-            "default_labor_rate": 20.0,
-            "currency": "USD",
-        },
+        # No `default_labor_rate`: the key went with task T123, and a labor
+        # rate now comes from the tenant's policy row.
+        settings={"currency": "USD"},
     )
     db_session.add(tenant)
     await db_session.commit()
