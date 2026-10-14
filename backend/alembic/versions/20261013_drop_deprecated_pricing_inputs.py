@@ -66,6 +66,28 @@ def _is_postgres() -> bool:
     return op.get_bind().dialect.name == "postgresql"
 
 
+def _settings_is_jsonb() -> bool:
+    """Whether `tenants.settings` is `jsonb` or plain `json` in this database.
+
+    The model declares `JSONB` on PostgreSQL, but the migration that created
+    the column used `json`, so a deployed database may hold either. It matters:
+    `-` and `?` are jsonb operators and simply do not exist for `json`, so a
+    statement written for one fails outright against the other -- which is how
+    this migration first failed against a real database.
+    """
+    row = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'tenants' AND column_name = 'settings'"
+            )
+        )
+        .scalar()
+    )
+    return row == "jsonb"
+
+
 def upgrade() -> None:
     # ------------------------------------------------------------------
     # The blended fee pair
@@ -88,10 +110,16 @@ def upgrade() -> None:
     # The legacy labor rate in the settings blob
     # ------------------------------------------------------------------
     if _is_postgres():
+        # Cast through jsonb where the column is `json`, and cast the result
+        # back so the column keeps the type it had.
+        if _settings_is_jsonb():
+            expression = f"settings - '{LABOR_RATE_KEY}'"
+        else:
+            expression = f"(settings::jsonb - '{LABOR_RATE_KEY}')::json"
         op.execute(
-            "UPDATE tenants SET settings = settings - '{key}' WHERE settings ? '{key}'".format(
-                key=LABOR_RATE_KEY
-            )
+            f"UPDATE tenants SET settings = {expression} "
+            f"WHERE settings IS NOT NULL "
+            f"AND (settings::jsonb) ? '{LABOR_RATE_KEY}'"
         )
     else:
         # SQLite's json_remove, for the test database. `json_valid` guards a
@@ -158,16 +186,23 @@ def downgrade() -> None:
     # The legacy labor rate, copied back from the policy row
     # ------------------------------------------------------------------
     if _is_postgres():
+        # As in `upgrade`: `||` and `jsonb_build_object` are jsonb, so the
+        # column is cast through jsonb and the result cast back to whatever it
+        # actually is.
+        merged = (
+            f"COALESCE(settings::jsonb, '{{}}'::jsonb) || jsonb_build_object("
+            f"'{LABOR_RATE_KEY}', "
+            f"(SELECT tenant_pricing_policy.print_labor_rate FROM tenant_pricing_policy"
+            f" WHERE tenant_pricing_policy.tenant_id = tenants.id"
+            f"   AND tenant_pricing_policy.effective_to IS NULL"
+            f" ORDER BY tenant_pricing_policy.effective_from DESC"
+            f" LIMIT 1))"
+        )
+        if not _settings_is_jsonb():
+            merged = f"({merged})::json"
         op.execute(
             f"""
-            UPDATE tenants SET settings = COALESCE(settings, '{{}}'::jsonb) || jsonb_build_object(
-                '{LABOR_RATE_KEY}',
-                (SELECT tenant_pricing_policy.print_labor_rate FROM tenant_pricing_policy
-                 WHERE tenant_pricing_policy.tenant_id = tenants.id
-                   AND tenant_pricing_policy.effective_to IS NULL
-                 ORDER BY tenant_pricing_policy.effective_from DESC
-                 LIMIT 1)
-            )
+            UPDATE tenants SET settings = {merged}
             WHERE EXISTS (
                 SELECT 1 FROM tenant_pricing_policy
                 WHERE tenant_pricing_policy.tenant_id = tenants.id
