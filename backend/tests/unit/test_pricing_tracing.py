@@ -45,15 +45,22 @@ ITEM_MAKE_COST = Decimal("19.38")
 def recorded():
     """A real tracer provider whose spans land in memory.
 
-    The global provider is restored afterwards. OpenTelemetry refuses a second
+    The global is restored afterwards. OpenTelemetry refuses a second
     `set_tracer_provider`, so the private attribute is put back by hand -- the
     alternative is a test that poisons every later test in the process.
+
+    The snapshot is `trace._TRACER_PROVIDER` itself, **not**
+    `trace.get_tracer_provider()`. The accessor returns a proxy provider when
+    none is set, and that proxy resolves its tracer by calling the accessor
+    again -- so restoring its return value as the global makes every later
+    `get_tracer` call recurse until the stack runs out. Which it duly did,
+    hundreds of tests later, in a suite that had nothing to do with pricing.
     """
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
 
-    previous = trace.get_tracer_provider()
+    previous = trace._TRACER_PROVIDER  # noqa: SLF001 - no public getter for the raw global
     trace._TRACER_PROVIDER = provider  # noqa: SLF001 - no public setter to undo
     try:
         yield exporter
@@ -277,3 +284,25 @@ class TestNoCommercialFigureLeavesInASpan:
         assert span.attributes is not None
         assert span.attributes.get("pricing.rungs") == 4
         assert "pricing.missing" not in span.attributes
+
+
+class TestTheFixtureLeavesTheGlobalAsItFoundIt:
+    """Because the first version of it did not.
+
+    Restoring `get_tracer_provider()`'s return value instead of the raw global
+    left a proxy provider installed as the provider it proxies. Nothing failed
+    here; a production-run test three thousand cases later died of a
+    `RecursionError` inside OpenTelemetry, which is the worst kind of failure
+    to debug -- the symptom is nowhere near the cause.
+    """
+
+    def test_the_global_provider_is_untouched_after_a_recorded_test(self, recorded) -> None:
+        with pricing_span("test.installed"):
+            pass
+
+    def test_a_tracer_can_still_be_got_after_the_fixture_tore_down(self) -> None:
+        # Runs after the test above, with no `recorded` fixture of its own: if
+        # teardown left a self-delegating provider behind, this recurses.
+        tracer = trace.get_tracer(__name__)
+        with tracer.start_as_current_span("test.after"):
+            pass
