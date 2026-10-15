@@ -1,3 +1,5 @@
+> **Retired (Oct 2026):** the batchivo-staging environment has been removed. The manifests under infrastructure/k8s/staging were deleted; this doc is kept for history only.
+
 # Staging Environment Strategy
 
 **Decision**: Same PostgreSQL instance, separate database (Option B)
