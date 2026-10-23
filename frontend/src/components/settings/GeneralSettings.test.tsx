@@ -83,7 +83,7 @@ describe('GeneralSettings', () => {
 
   it('enables save button when form is dirty', async () => {
     vi.mocked(settingsApi.getTenant).mockResolvedValue(mockTenant)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<GeneralSettings />)
 
@@ -112,7 +112,7 @@ describe('GeneralSettings', () => {
       name: 'New Organization Name',
     })
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<GeneralSettings />)
 

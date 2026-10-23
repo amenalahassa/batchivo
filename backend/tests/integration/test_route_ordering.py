@@ -31,7 +31,7 @@ import httpx
 import pytest
 import uvicorn
 
-from app.auth.dependencies import get_current_tenant, get_current_user
+from app.auth.dependencies import get_current_tenant, get_current_user, get_tenant_db
 from app.database import get_db
 from app.main import app
 from app.models.tenant import Tenant
@@ -59,6 +59,9 @@ async def real_server_base_url(db_session: AsyncSession, test_user: User, test_t
         return test_tenant
 
     app.dependency_overrides[get_db] = override_get_db
+    # `TenantDB` endpoints resolve through `get_tenant_db`, which otherwise
+    # opens its own session against the real engine (task T155).
+    app.dependency_overrides[get_tenant_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[get_current_tenant] = override_get_current_tenant
     app.state.limiter.enabled = False

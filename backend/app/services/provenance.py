@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -537,15 +537,29 @@ def observed_share(lines: Sequence["CostLineLike"]) -> tuple[Decimal, Decimal]:
     return (share, Decimal("1") - share)
 
 
-class CostLineLike:
+@runtime_checkable
+class CostLineLike(Protocol):
     """Structural type for :func:`observed_share` -- anything with the two fields.
 
-    Declared as a class rather than a Protocol so the module stays importable
-    from the models layer without dragging the schemas in.
+    It is a `Protocol` so that it is actually structural. As a plain class it
+    read as structural and behaved nominally: `CostLine` does not inherit it,
+    so passing a real breakdown's lines was a type error that went unreported
+    until this module came under the money paths' stricter settings (T137).
+    `Protocol` is stdlib, so this still drags no schema import into the models
+    layer -- which was the reason given for avoiding it.
+
+    Both members are read-only properties rather than attributes. A mutable
+    protocol attribute is invariant, which would reject `CostLine.source` for
+    being the narrower `Literal["policy", "observed", "measured", "assumed"]`
+    instead of exactly `str`. `observed_share` only ever reads them, so
+    read-only is both the accurate shape and the one that accepts a real line.
     """
 
-    amount: Decimal
-    source: str
+    @property
+    def amount(self) -> Decimal: ...
+
+    @property
+    def source(self) -> str: ...
 
 
 def breakdown_observed_share(breakdown: "CostBreakdown") -> tuple[Decimal, Decimal]:

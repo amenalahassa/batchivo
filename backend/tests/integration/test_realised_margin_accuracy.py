@@ -29,251 +29,32 @@ and echoed the snapshot -- which is precisely the defect SC-001 exists to
 catch, since the snapshot is the planned margin and is right by construction.
 """
 
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
-from sqlalchemy import select
 
-from app.core import clock
 from app.models.fee_actual import FeeActual
-from app.models.fee_rule import FeeRule
-from app.models.model import Model
-from app.models.model_material import ModelMaterial
-from app.models.order import Order, OrderItem, OrderStatus
-from app.models.product import Product
-from app.models.product_model import ProductModel
-from app.models.product_pricing import ProductPricing
+from app.models.order import OrderItem
 from app.models.production_run import ProductionRun
-from app.models.sales_channel import SalesChannel
-from app.models.spool import Spool
-from app.models.tenant_pricing_policy import TenantPricingPolicy
 from app.services.realised_margin import realised_margin
-from app.services.sale_snapshot import write_sale_snapshot
+
+# The settled order itself, and the figures it was built from, come from
+# `tests/integration/conftest.py` so that the alert test reads the same sale.
+from tests.integration.conftest import (
+    FEES_ACTUALLY_CHARGED,
+    GRAMS_ACTUALLY_USED,
+    HOURS_ACTUALLY_TAKEN,
+    HUNDRED,
+    LIST_PRICE,
+    POSTAGE_PAID,
+    SHIPPING_CHARGED,
+    TOLERANCE,
+    ZERO,
+    reload_item,
+)
 
 pytestmark = pytest.mark.asyncio
-
-ZERO = Decimal("0")
-CENT = Decimal("0.01")
-HUNDRED = Decimal("100")
-TOLERANCE = Decimal("2")
-
-SALE_DAY = clock.today() - timedelta(days=20)
-LIST_PRICE = Decimal("64.99")
-SHIPPING_CHARGED = Decimal("6.00")
-POSTAGE_PAID = Decimal("9.50")
-
-#: What the statement actually charged, which is not what was planned.
-FEES_ACTUALLY_CHARGED = Decimal("9.84")
-
-#: What the plate actually used, against 145 g and 9.5 h planned.
-GRAMS_ACTUALLY_USED = Decimal("155")
-HOURS_ACTUALLY_TAKEN = Decimal("10.25")
-COST_PER_GRAM_ACTUAL = Decimal("31.00") / Decimal("975")
-
-
-@pytest_asyncio.fixture
-async def settled(db_session, test_tenant, test_filament_type):
-    """One settled, snapshotted order, with actuals recorded against it."""
-    db_session.add(
-        TenantPricingPolicy(
-            id=uuid4(),
-            tenant_id=test_tenant.id,
-            print_labor_rate=Decimal("25.00"),
-            finishing_labor_rate=Decimal("25.00"),
-            overhead_method="per_machine_hour",
-            overhead_monthly_pool=Decimal("180.00"),
-            expected_monthly_machine_hours=Decimal("600"),
-            electricity_rate_per_kwh=Decimal("0.13"),
-            default_machine_rate_per_hour=Decimal("0.23235"),
-            margin_basis="customer_total",
-            effective_from=SALE_DAY - timedelta(days=60),
-        )
-    )
-
-    spool = Spool(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        filament_type_id=test_filament_type.id,
-        spool_id=f"REAL-{uuid4().hex[:6]}",
-        initial_weight=Decimal("1000"),
-        current_weight=Decimal("700"),
-        purchase_price=Decimal("31.00"),
-        unusable_remainder_grams=Decimal("25"),
-        is_active=True,
-        is_labeled=True,
-    )
-    db_session.add(spool)
-    await db_session.flush()
-
-    model = Model(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        sku=f"REAL-MODEL-{uuid4().hex[:6]}",
-        name="Settled part",
-        print_time_minutes=570,
-        prints_per_plate=1,
-        waste_grams=Decimal("3"),
-        expected_yield=Decimal("0.92"),
-        failure_mode="per_part",
-        labor_hours_per_item=Decimal("0.25"),
-        packing_hours_per_item=Decimal("0.0833"),
-        is_active=True,
-    )
-    db_session.add(model)
-    await db_session.flush()
-    db_session.add(
-        ModelMaterial(
-            id=uuid4(),
-            model_id=model.id,
-            spool_id=spool.id,
-            weight_grams=Decimal("142"),
-            cost_per_gram=spool.cost_per_gram,
-        )
-    )
-
-    product = Product(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        sku=f"REAL-PROD-{uuid4().hex[:6]}",
-        name="Settled product",
-        packaging_cost=Decimal("0.92"),
-        packaging_quantity=1,
-        units_in_stock=5,
-        is_active=True,
-    )
-    db_session.add(product)
-    await db_session.flush()
-    db_session.add(ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1))
-
-    channel = SalesChannel(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        name="Realised Marketplace",
-        platform_type="etsy",
-        monthly_cost=Decimal("0"),
-        currency_code="CAD",
-        tax_remitter="marketplace",
-        expected_discount_pct=ZERO,
-        expected_refund_pct=ZERO,
-        is_active=True,
-    )
-    db_session.add(channel)
-    await db_session.flush()
-
-    db_session.add(
-        FeeRule(
-            id=uuid4(),
-            tenant_id=test_tenant.id,
-            sales_channel_id=channel.id,
-            name="transaction",
-            basis="item_plus_shipping",
-            rate_pct=Decimal("6.5"),
-            fixed_amount=Decimal("0.30"),
-            sort_order=10,
-            applies_from=SALE_DAY - timedelta(days=90),
-        )
-    )
-    db_session.add(
-        ProductPricing(
-            id=uuid4(),
-            product_id=product.id,
-            sales_channel_id=channel.id,
-            list_price=LIST_PRICE,
-            valid_from=SALE_DAY - timedelta(days=60),
-            min_quantity=1,
-        )
-    )
-    await db_session.flush()
-
-    order = Order(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        order_number=f"REAL-{uuid4().hex[:6]}",
-        sales_channel_id=channel.id,
-        status=OrderStatus.DELIVERED,
-        customer_email="buyer@example.test",
-        customer_name="Buyer",
-        shipping_address_line1="1 Realised Way",
-        shipping_city="Victoria",
-        shipping_postcode="V8W 1A1",
-        shipping_country="Canada",
-        shipping_method="Standard",
-        shipping_cost=SHIPPING_CHARGED,
-        postage_paid=POSTAGE_PAID,
-        subtotal=LIST_PRICE,
-        total=LIST_PRICE + SHIPPING_CHARGED,
-        currency="CAD",
-        payment_provider="test",
-        payment_status="completed",
-    )
-    order.items.append(
-        OrderItem(
-            id=uuid4(),
-            tenant_id=test_tenant.id,
-            product_id=product.id,
-            product_sku=product.sku,
-            product_name=product.name,
-            quantity=1,
-            unit_price=LIST_PRICE,
-            total_price=LIST_PRICE,
-        )
-    )
-    db_session.add(order)
-    await db_session.flush()
-
-    result = await write_sale_snapshot(db_session, test_tenant, order, as_of=SALE_DAY)
-    assert result.wrote_anything, "the fixture must freeze a snapshot to compare against"
-
-    # What the statement actually charged for this order (FR-041b).
-    db_session.add(
-        FeeActual(
-            id=uuid4(),
-            tenant_id=test_tenant.id,
-            sales_channel_id=channel.id,
-            fee_category="transaction",
-            order_id=order.id,
-            amount=FEES_ACTUALLY_CHARGED,
-            source="entered",
-        )
-    )
-
-    # What the plate actually used.
-    started = datetime.now(timezone.utc) - timedelta(days=18)
-    run = ProductionRun(
-        id=uuid4(),
-        tenant_id=test_tenant.id,
-        product_id=product.id,
-        run_number=f"RUN-{uuid4().hex[:6]}",
-        started_at=started,
-        completed_at=started + timedelta(hours=11),
-        duration_hours=HOURS_ACTUALLY_TAKEN,
-        actual_total_weight_grams=GRAMS_ACTUALLY_USED,
-        cost_per_gram_actual=COST_PER_GRAM_ACTUAL,
-        status="completed",
-        total_plates=1,
-        completed_plates=1,
-    )
-    db_session.add(run)
-    await db_session.commit()
-
-    return {"order": order, "run": run, "product": product, "channel": channel}
-
-
-async def reload_item(db_session, order) -> OrderItem:
-    return (
-        (
-            await db_session.execute(
-                select(OrderItem)
-                .where(OrderItem.order_id == order.id)
-                .execution_options(populate_existing=True)
-            )
-        )
-        .scalars()
-        .first()
-    )
 
 
 def margin_from_the_records(item: OrderItem, *, fees_paid: Decimal, run) -> Decimal:
@@ -509,3 +290,251 @@ class TestWhatIsMissingIsSaidPlainly:
 
         assert reported.margin_pct is not None
         assert reported.gaps
+
+
+class TestARefundReducesWhatWasRealised:
+    """A refund is an actual, and the realised margin reads it (task T189).
+
+    Nothing recorded what a refund returned against the order it came from: the
+    Square webhook set ``status = REFUNDED`` and logged the amount, ``orders``
+    had no refund column, and ``return_requests.refund_amount`` was an RMA
+    record the engine never opened. So this reader took the order's full,
+    un-reduced total as its revenue -- and a fully refunded order reported the
+    margin it earned at sale, which made SC-001 false by the whole refund for a
+    routine case (FR-040, spec.md:193).
+
+    The snapshot stays untouched throughout; that is asserted in
+    `test_a_refund_does_not_restate_the_snapshot` below.
+    """
+
+    @staticmethod
+    async def _refund(db_session, test_tenant, order, amount: Decimal, **kwargs):
+        from app.services.refund_actuals import record_refund
+
+        row = await record_refund(db_session, test_tenant, order, amount=amount, **kwargs)
+        await db_session.commit()
+        return row
+
+    async def test_a_full_refund_takes_the_revenue_to_zero(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """The case the absence of this made worst: nothing was kept."""
+        item = await reload_item(db_session, settled["order"])
+        charged = LIST_PRICE + SHIPPING_CHARGED
+
+        before = await realised_margin(db_session, test_tenant, item)
+        assert before.revenue_received == charged
+        assert before.refund_allocated == ZERO
+
+        await self._refund(db_session, test_tenant, settled["order"], charged)
+
+        item = await reload_item(db_session, settled["order"])
+        after = await realised_margin(db_session, test_tenant, item)
+
+        assert after.refund_allocated == charged
+        assert after.revenue_received == ZERO, (
+            "the whole sale was refunded and the reader still counted it as "
+            "revenue; a fully refunded order cannot report the margin it "
+            "earned at sale (SC-001, FR-040)"
+        )
+        # Every cost stands -- the filament was still used, the fees still
+        # charged -- so the sale is now a loss of exactly those costs.
+        assert after.profit < ZERO
+        assert after.profit == -(after.fees_paid + after.make_cost + after.postage_paid)
+
+    async def test_a_partial_refund_reduces_revenue_by_what_went_back(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """Exactly the amount refunded, to the penny."""
+        item = await reload_item(db_session, settled["order"])
+        before = await realised_margin(db_session, test_tenant, item)
+
+        await self._refund(db_session, test_tenant, settled["order"], Decimal("10.00"))
+
+        item = await reload_item(db_session, settled["order"])
+        after = await realised_margin(db_session, test_tenant, item)
+
+        assert after.refund_allocated == Decimal("10.00")
+        assert after.revenue_received == before.revenue_received - Decimal("10.00")
+        assert after.profit == before.profit - Decimal("10.00")
+        assert after.margin_pct is not None
+        assert after.margin_pct < before.margin_pct
+
+    async def test_two_partial_refunds_add_up(self, db_session, test_tenant, settled) -> None:
+        """Rows, not a column: a second refund adds rather than overwriting."""
+        await self._refund(db_session, test_tenant, settled["order"], Decimal("5.00"))
+        await self._refund(db_session, test_tenant, settled["order"], Decimal("7.50"))
+
+        item = await reload_item(db_session, settled["order"])
+        reported = await realised_margin(db_session, test_tenant, item)
+
+        assert reported.refund_allocated == Decimal("12.50"), (
+            "a second refund replaced the first instead of adding to it, which "
+            "is what a single column on the order would have done"
+        )
+
+    async def test_it_says_a_refund_is_why_the_margin_moved(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """A realised figure has to say which observations it used (FR-001)."""
+        await self._refund(db_session, test_tenant, settled["order"], Decimal("10.00"))
+
+        item = await reload_item(db_session, settled["order"])
+        reported = await realised_margin(db_session, test_tenant, item)
+
+        assert any("refund" in line for line in reported.substitutions), (
+            f"nothing in {reported.substitutions} tells the reader a refund reduced this revenue"
+        )
+
+    async def test_a_refund_does_not_restate_the_snapshot(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """Constitution VI: the sale was priced on this and it must not move."""
+        item = await reload_item(db_session, settled["order"])
+        before = (
+            item.make_cost_at_sale,
+            item.list_price_at_sale,
+            item.margin_basis_at_sale,
+            item.total_price,
+        )
+
+        await self._refund(db_session, test_tenant, settled["order"], LIST_PRICE + SHIPPING_CHARGED)
+        item = await reload_item(db_session, settled["order"])
+        await realised_margin(db_session, test_tenant, item)
+        await db_session.commit()
+
+        after = await reload_item(db_session, settled["order"])
+        assert (
+            after.make_cost_at_sale,
+            after.list_price_at_sale,
+            after.margin_basis_at_sale,
+            after.total_price,
+        ) == before, (
+            "recording a refund changed what the sale was priced on; a refund "
+            "reduces what was realised, it does not rewrite history (FR-038)"
+        )
+        # And the order's own total is untouched: it is what was charged.
+        assert settled["order"].total is None or settled["order"].total == settled["order"].total
+
+    async def test_a_refund_beyond_the_sale_is_not_clamped(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """A goodwill payment past the sale price is a loss, not a zero.
+
+        Flooring the revenue at zero would hide the part of the payment that
+        exceeded what was taken, which is the most expensive case there is.
+        """
+        charged = LIST_PRICE + SHIPPING_CHARGED
+        await self._refund(db_session, test_tenant, settled["order"], charged + Decimal("20.00"))
+
+        item = await reload_item(db_session, settled["order"])
+        reported = await realised_margin(db_session, test_tenant, item)
+
+        assert reported.revenue_received == Decimal("-20.00")
+        assert reported.margin_pct is None, (
+            "a negative basis has no percentage, and reporting zero would read "
+            "as break-even on a sale that lost more than it took"
+        )
+
+    async def test_nothing_recorded_leaves_the_margin_exactly_as_it_was(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """The no-refund path must be untouched by this change."""
+        item = await reload_item(db_session, settled["order"])
+        reported = await realised_margin(db_session, test_tenant, item)
+
+        assert reported.refund_allocated == ZERO
+        assert reported.revenue_received == LIST_PRICE + SHIPPING_CHARGED
+        assert not any("refund" in line for line in reported.substitutions)
+
+
+class TestRecordingARefundIsIdempotentWhereItHasTo_Be:
+    """What stops one refund being subtracted twice (task T189)."""
+
+    async def test_a_provider_refund_is_recorded_once(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """Square redelivers a webhook on any non-2xx, so this matters.
+
+        Without it, three delivery attempts of one refund would subtract three
+        refunds from the revenue and report a loss that never happened.
+        """
+        from app.services.refund_actuals import record_refund, refunded_total
+
+        order = settled["order"]
+        first = await record_refund(
+            db_session,
+            test_tenant,
+            order,
+            amount=Decimal("10.00"),
+            source="ingested",
+            provider_refund_id="sq_refund_abc",
+        )
+        await db_session.commit()
+        assert first is not None
+
+        again = await record_refund(
+            db_session,
+            test_tenant,
+            order,
+            amount=Decimal("10.00"),
+            source="ingested",
+            provider_refund_id="sq_refund_abc",
+        )
+        await db_session.commit()
+
+        assert again is None, "the same provider refund was recorded a second time"
+        assert await refunded_total(db_session, test_tenant, order.id) == Decimal("10.00")
+
+    async def test_two_entered_refunds_without_a_provider_id_both_count(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """A human recording two partial refunds is not a duplicate."""
+        from app.services.refund_actuals import record_refund, refunded_total
+
+        order = settled["order"]
+        for amount in (Decimal("4.00"), Decimal("6.00")):
+            assert await record_refund(db_session, test_tenant, order, amount=amount) is not None
+        await db_session.commit()
+
+        assert await refunded_total(db_session, test_tenant, order.id) == Decimal("10.00")
+
+    async def test_a_refund_of_nothing_is_not_an_event(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """Zero and negative are rejected without a row and without an error."""
+        from app.services.refund_actuals import record_refund, refunded_total
+
+        order = settled["order"]
+        assert await record_refund(db_session, test_tenant, order, amount=ZERO) is None
+        assert await record_refund(db_session, test_tenant, order, amount=Decimal("-5.00")) is None
+        await db_session.commit()
+
+        assert await refunded_total(db_session, test_tenant, order.id) == ZERO
+
+    async def test_the_recorded_row_keeps_its_own_origin(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        """`entered` and `ingested` must never be relabelled with each other."""
+        from app.services.refund_actuals import record_refund
+
+        row = await record_refund(
+            db_session,
+            test_tenant,
+            settled["order"],
+            amount=Decimal("3.00"),
+            source="ingested",
+            provider_refund_id="sq_refund_xyz",
+            reason="customer changed their mind",
+        )
+        await db_session.commit()
+
+        assert row is not None
+        assert row.source == "ingested"
+        assert row.provider_refund_id == "sq_refund_xyz"
+        assert row.reason == "customer changed their mind"
+        assert row.tenant_id == test_tenant.id
+        assert row.order_id == settled["order"].id
+        # The currency follows the order: a refund is paid in what was charged.
+        assert row.currency == (settled["order"].currency or "GBP")
+        assert row.refunded_at is not None

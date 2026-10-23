@@ -478,15 +478,28 @@ class ProductionRunDetailResponse(ProductionRunResponse):
 
     @computed_field
     @property
-    def total_material_cost(self) -> float:
-        """Calculate total material cost from all materials."""
-        return float(sum(material.total_cost for material in self.materials))
+    def total_material_cost(self) -> Decimal:
+        """Total material cost across this run's materials.
+
+        The sum is already exact -- every `total_cost` beneath it is a
+        `Decimal`. It used to be coerced to `float` on the way out, which threw
+        that away at the last step and put a binary approximation of the FR-040
+        actuals on the wire (Constitution IV). Pydantic serialises a `Decimal`
+        as a decimal string, which is what the rest of the pricing API sends.
+        """
+        return sum(
+            (material.total_cost for material in self.materials),
+            Decimal("0"),
+        )
 
     @computed_field
     @property
-    def total_estimated_cost(self) -> float:
-        """Calculate total estimated cost from all items."""
-        return float(sum(item.estimated_total_cost or Decimal("0") for item in self.items))
+    def total_estimated_cost(self) -> Decimal:
+        """Total estimated cost across this run's items, exactly."""
+        return sum(
+            (item.estimated_total_cost or Decimal("0") for item in self.items),
+            Decimal("0"),
+        )
 
 
 class ProductionRunListResponse(BaseModel):
@@ -738,15 +751,37 @@ class ProductionRunMaterialResponse(ProductionRunMaterialBase):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @computed_field
+    # The two weights, exact, for the costs below to multiply. Plain properties
+    # rather than `computed_field`s: they are not on the wire, they exist so a
+    # cost is derived from the `Decimal` grams the row holds instead of from the
+    # `float` the weight is reported as. Reporting a weight as a float is fine
+    # -- a gram is not money -- but multiplying a rate by one is not
+    # (Constitution IV, task T144).
     @property
-    def estimated_total_weight(self) -> float:
-        """Calculate total estimated weight (model + flushed + tower)."""
-        return float(
+    def estimated_weight_exact(self) -> Decimal:
+        """Total estimated grams (model + flushed + tower), exactly."""
+        return (
             self.estimated_model_weight_grams
             + self.estimated_flushed_grams
             + self.estimated_tower_grams
         )
+
+    @property
+    def actual_weight_exact(self) -> Decimal:
+        """Total actual grams, from the weighing if there was one, exactly."""
+        if self.spool_weight_before_grams is not None and self.spool_weight_after_grams is not None:
+            return self.spool_weight_before_grams - self.spool_weight_after_grams
+        return (
+            (self.actual_model_weight_grams or Decimal("0"))
+            + (self.actual_flushed_grams or Decimal("0"))
+            + (self.actual_tower_grams or Decimal("0"))
+        )
+
+    @computed_field
+    @property
+    def estimated_total_weight(self) -> float:
+        """Calculate total estimated weight (model + flushed + tower)."""
+        return float(self.estimated_weight_exact)
 
     @computed_field
     @property
@@ -760,13 +795,7 @@ class ProductionRunMaterialResponse(ProductionRunMaterialBase):
     @property
     def actual_total_weight(self) -> float:
         """Get total actual weight (from weighing or manual split totals)."""
-        if self.actual_weight_from_weighing is not None:
-            return self.actual_weight_from_weighing
-        return float(
-            (self.actual_model_weight_grams or Decimal("0"))
-            + (self.actual_flushed_grams or Decimal("0"))
-            + (self.actual_tower_grams or Decimal("0"))
-        )
+        return float(self.actual_weight_exact)
 
     @computed_field
     @property
@@ -789,15 +818,20 @@ class ProductionRunMaterialResponse(ProductionRunMaterialBase):
 
     @computed_field
     @property
-    def estimated_cost(self) -> float:
-        """Calculate estimated cost based on estimated weight."""
-        return float(Decimal(str(self.estimated_total_weight)) * self.cost_per_gram)
+    def estimated_cost(self) -> Decimal:
+        """Estimated material cost: the estimated grams at this spool's rate.
+
+        Both sides were taken through `float` and back via `Decimal(str(...))`
+        before being multiplied, which is a round trip through binary floating
+        point in the middle of a money calculation (Constitution IV).
+        """
+        return self.estimated_weight_exact * self.cost_per_gram
 
     @computed_field
     @property
-    def total_cost(self) -> float:
-        """Calculate total cost of material used (actual)."""
-        return float(Decimal(str(self.actual_total_weight)) * self.cost_per_gram)
+    def total_cost(self) -> Decimal:
+        """Actual material cost: the grams really used at this spool's rate."""
+        return self.actual_weight_exact * self.cost_per_gram
 
 
 # Cancel and Fail Operation Schemas

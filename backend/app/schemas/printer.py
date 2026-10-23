@@ -1,6 +1,6 @@
 """Pydantic schemas for Printer API."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
@@ -190,3 +190,51 @@ class PrinterCostPolicyResponse(BaseModel):
     )
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class PowerReadingIn(BaseModel):
+    """One smart-plug reading of a machine's draw (FR-042, task T159).
+
+    ``source_id`` identifies the reading, not the plug: FR-042d compares
+    proposals by the outcomes behind them, so a reading an operator already
+    rejected must stay identifiable or the same question is asked again
+    tomorrow.
+
+    ``watts`` is a `Decimal`, because the engine multiplies it by an
+    electricity rate to reach a machine cost (Constitution IV).
+    """
+
+    source_id: str = Field(..., min_length=1, max_length=120)
+    watts: Decimal = Field(..., gt=0, le=Decimal("100000"))
+    observed_on: Optional[date] = Field(
+        None, description="The day the reading was taken; today when omitted"
+    )
+
+
+class PowerReadingBatch(BaseModel):
+    """A set of readings for one machine."""
+
+    readings: list[PowerReadingIn] = Field(..., min_length=1, max_length=500)
+
+
+class PowerReadingResult(BaseModel):
+    """What the readings did to the machine's recorded draw.
+
+    A reading never simply overwrites the figure: it becomes a rolling average
+    once enough agree (FR-042a), is held as a proposal beyond the operator's
+    divergence threshold (FR-042b), and never touches a figure the operator
+    set themselves (FR-042g). The reason is in words because each of those
+    outcomes is something an operator will ask about.
+    """
+
+    printer_id: UUID
+    readings_accepted: int
+    applied: bool
+    reason: str
+    observed_value: Optional[Decimal] = None
+    divergence_pct: Optional[Decimal] = None
+    proposal_id: Optional[UUID] = None
+    superseded_proposal_id: Optional[UUID] = None
+    measured_watts: Optional[Decimal] = Field(
+        None, description="The draw in force after the readings were considered"
+    )

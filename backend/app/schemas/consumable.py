@@ -1,6 +1,20 @@
-"""Pydantic schemas for Consumable Inventory API."""
+"""Pydantic schemas for Consumable Inventory API.
+
+Every money field here is a ``Decimal``, which Pydantic puts on the wire as a
+decimal **string**. They were ``float``, and that mattered beyond this file:
+``current_cost_per_unit`` is read by ``app/services/costing.py`` when a
+packaging consumable is linked, so a packaging cost entered as 0.07 reached the
+engine as 0.070000000000000007 and the engine's exactness started from an
+approximation (Constitution IV, FR-047). Tier 0's annotation sweep and the
+float ban in ``tests/unit/pricing/test_no_float_in_money_paths.py`` both stopped
+at ``app/services/``, which is why these survived (task T144).
+
+A quantity stays an ``int`` and a lead time stays an ``int``; this is about
+amounts of money, not about counting things.
+"""
 
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -32,7 +46,9 @@ class ConsumableTypeBase(BaseModel):
     )
 
     # Current pricing
-    current_cost_per_unit: Optional[float] = Field(None, ge=0, description="Current cost per unit")
+    current_cost_per_unit: Optional[Decimal] = Field(
+        None, ge=0, description="Current cost per unit"
+    )
 
     # Stock management
     quantity_on_hand: int = Field(0, ge=0, description="Current stock quantity")
@@ -77,7 +93,7 @@ class ConsumableTypeUpdate(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = Field(None, max_length=100)
     unit_of_measure: Optional[str] = Field(None, max_length=20)
-    current_cost_per_unit: Optional[float] = Field(None, ge=0)
+    current_cost_per_unit: Optional[Decimal] = Field(None, ge=0)
     quantity_on_hand: Optional[int] = Field(None, ge=0)
     reorder_point: Optional[int] = Field(None, ge=0)
     reorder_quantity: Optional[int] = Field(None, ge=0)
@@ -98,7 +114,7 @@ class ConsumableTypeResponse(ConsumableTypeBase):
 
     # Computed fields
     is_low_stock: bool = Field(..., description="Whether stock is below reorder point")
-    stock_value: float = Field(..., description="Total value of stock on hand")
+    stock_value: Decimal = Field(..., description="Total value of stock on hand")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -122,7 +138,7 @@ class ConsumablePurchaseBase(BaseModel):
 
     consumable_type_id: UUID = Field(..., description="Consumable type being purchased")
     quantity_purchased: int = Field(..., ge=1, description="Quantity purchased")
-    total_cost: float = Field(..., ge=0, description="Total cost of purchase")
+    total_cost: Decimal = Field(..., ge=0, description="Total cost of purchase")
 
     # Source
     supplier: Optional[str] = Field(None, max_length=200, description="Supplier/vendor name")
@@ -147,7 +163,7 @@ class ConsumablePurchaseUpdate(BaseModel):
     """Schema for updating a consumable purchase (all fields optional)."""
 
     quantity_purchased: Optional[int] = Field(None, ge=1)
-    total_cost: Optional[float] = Field(None, ge=0)
+    total_cost: Optional[Decimal] = Field(None, ge=0)
     supplier: Optional[str] = Field(None, max_length=200)
     order_reference: Optional[str] = Field(None, max_length=100)
     purchase_url: Optional[str] = Field(None, max_length=500)
@@ -160,7 +176,7 @@ class ConsumablePurchaseResponse(ConsumablePurchaseBase):
 
     id: UUID
     tenant_id: UUID
-    cost_per_unit: float = Field(..., description="Cost per unit")
+    cost_per_unit: Decimal = Field(..., description="Cost per unit")
     quantity_remaining: int = Field(..., description="Remaining quantity from this purchase")
     created_at: datetime
     updated_at: datetime
@@ -223,8 +239,8 @@ class ConsumableUsageResponse(ConsumableUsageBase):
 
     id: UUID
     tenant_id: UUID
-    cost_at_use: Optional[float] = Field(None, description="Cost per unit at time of use")
-    total_cost: float = Field(..., description="Total cost of this usage")
+    cost_at_use: Optional[Decimal] = Field(None, description="Cost per unit at time of use")
+    total_cost: Decimal = Field(..., description="Total cost of this usage")
     created_at: datetime
     updated_at: datetime
 
@@ -282,4 +298,4 @@ class LowStockAlert(BaseModel):
     reorder_point: int
     reorder_quantity: Optional[int]
     preferred_supplier: Optional[str]
-    stock_value: float
+    stock_value: Decimal

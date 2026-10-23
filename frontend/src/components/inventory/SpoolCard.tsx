@@ -7,6 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { SpoolResponse } from '@/types/spool'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 
 interface SpoolCardProps {
   spool: SpoolResponse
@@ -19,6 +21,7 @@ interface SpoolCardProps {
 }
 
 export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate, onView, isDuplicating }: SpoolCardProps) {
+  const { currency } = useCurrency()
   const [expanded, setExpanded] = useState(false)
   const [swipeOffset, setSwipeOffset] = useState(0)
 
@@ -199,7 +202,7 @@ export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate
                     <DetailRow label="Supplier" value={spool.supplier} />
                   )}
                   {spool.purchase_price && (
-                    <DetailRow label="Price" value={`£${spool.purchase_price.toFixed(2)}`} />
+                    <DetailRow label="Price" value={formatMoney(spool.purchase_price, currency.symbol)} />
                   )}
                 </motion.div>
               )}

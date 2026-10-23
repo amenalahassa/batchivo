@@ -50,9 +50,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Iterable, Optional, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import clock
@@ -284,6 +284,50 @@ async def pending_revision_fields(
         db, tenant, state="pending", entity_type=entity_type, entity_id=entity_id
     )
     return frozenset(row.field_name for row in rows)
+
+
+async def pending_revisions_for(
+    db: AsyncSession,
+    tenant: "Tenant",
+    entities: Iterable[tuple[str, uuid.UUID]],
+) -> frozenset[tuple[str, uuid.UUID, str]]:
+    """Which fields across several entities currently have a pending proposal.
+
+    The batch form of :func:`pending_revision_fields`, keyed the same way as
+    :func:`app.services.provenance.origins_for` so that a cost breakdown can
+    resolve both in two queries rather than one per line. A breakdown walks a
+    bundle: a product, its models, their printer configs and whatever is below
+    them, and asking per field would be a query per figure on the screen.
+
+    One query, always tenant-filtered (Constitution I).
+    """
+    pairs = sorted({(entity_type, entity_id) for entity_type, entity_id in entities})
+    if not pairs:
+        return frozenset()
+
+    rows = (
+        (
+            await db.execute(
+                select(
+                    EstimateRevision.entity_type,
+                    EstimateRevision.entity_id,
+                    EstimateRevision.field_name,
+                ).where(
+                    EstimateRevision.tenant_id == tenant.id,
+                    EstimateRevision.state == "pending",
+                    tuple_(
+                        EstimateRevision.entity_type,
+                        EstimateRevision.entity_id,
+                    ).in_(pairs),
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )
+    return frozenset(
+        (entity_type, entity_id, field_name) for entity_type, entity_id, field_name in rows
+    )
 
 
 async def _rejected_run_ids(

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { spoolsApi, materialTypesApi } from '@/lib/api/spools'
 import type { SpoolCreate } from '@/types/spool'
+import { divideMoney, formatMoney } from '@/lib/money'
 import type { SpoolmanDBFilament } from '@/types/spoolmandb'
 import { SpoolmanDBPicker } from './SpoolmanDBPicker'
 import { useNextSKU } from '@/hooks/useSKU'
@@ -145,10 +146,12 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
     setSelectedSpoolmanDBFilament(null)
   }
 
-  // Calculate cost per spool
-  const costPerSpool = formData.purchase_price && quantity > 0
-    ? (formData.purchase_price / quantity).toFixed(2)
-    : '0.00'
+  // What one spool of the batch cost, split from the total the operator
+  // typed. Divided in decimal rather than with `/` on a double: the figure
+  // becomes a spool's `purchase_price`, which `landed_cost.py` turns into the
+  // per-gram price every material line is costed from (Constitution IV,
+  // task T158).
+  const costPerSpool = divideMoney(formData.purchase_price, quantity) ?? '0.00'
 
   // Auto-fill spool ID when nextSKU is fetched
   // formData.spool_id intentionally excluded to prevent re-run when this effect sets it
@@ -630,11 +633,14 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
                   placeholder="41.48"
                   value={formData.purchase_price || ''}
                   onChange={(e) =>
-                    handleInputChange('purchase_price', e.target.value ? parseFloat(e.target.value) : undefined)
+                    // The typed string, not a double: the backend takes a
+                    // `Decimal` and `parseFloat` here would round 24.99 before
+                    // the engine ever saw it (FR-047).
+                    handleInputChange('purchase_price', e.target.value || undefined)
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  {currency}{costPerSpool} per spool
+                  {formatMoney(costPerSpool, currency)} per spool
                 </p>
               </div>
 

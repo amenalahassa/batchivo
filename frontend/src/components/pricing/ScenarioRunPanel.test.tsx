@@ -114,7 +114,7 @@ function renderPanel(props: Record<string, unknown> = {}) {
 async function requestAndWatch(state: ScenarioState, overrides: Partial<ScenarioRun> = {}) {
   vi.mocked(pricingApi.requestScenario).mockResolvedValue(run('queued'))
   vi.mocked(pricingApi.getScenario).mockResolvedValue(run(state, overrides))
-  const user = userEvent.setup()
+  const user = userEvent.setup({ delay: null })
   const rendered = renderPanel()
 
   await user.click(screen.getByRole('button', { name: /run the scenario/i }))
@@ -141,7 +141,7 @@ describe('requesting a scenario', () => {
 
   it('sends the shock and the floor the operator entered', async () => {
     vi.mocked(pricingApi.requestScenario).mockResolvedValue(run('queued'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPanel()
 
     await user.clear(screen.getByLabelText(/material cost change/i))
@@ -163,7 +163,7 @@ describe('requesting a scenario', () => {
     // Constitution IV: a percentage parsed into a number here arrives at the
     // engine as a float, and the engine's whole point is exact arithmetic.
     vi.mocked(pricingApi.requestScenario).mockResolvedValue(run('queued'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPanel()
 
     await user.click(screen.getByRole('button', { name: /run the scenario/i }))
@@ -177,7 +177,7 @@ describe('requesting a scenario', () => {
 
   it('limits the sweep to a channel when given one', async () => {
     vi.mocked(pricingApi.requestScenario).mockResolvedValue(run('queued'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPanel({ salesChannelId: 'chan-7' })
 
     await user.click(screen.getByRole('button', { name: /run the scenario/i }))
@@ -191,7 +191,7 @@ describe('requesting a scenario', () => {
 
   it('reports a refused request without implying anything changed', async () => {
     vi.mocked(pricingApi.requestScenario).mockRejectedValue(new Error('422'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPanel()
 
     await user.click(screen.getByRole('button', { name: /run the scenario/i }))
@@ -417,7 +417,7 @@ describe('earlier scenarios', () => {
       total: 1,
     })
     vi.mocked(pricingApi.getScenario).mockResolvedValue(run('succeeded', { id: 'run-5' }))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPanel()
 
     const history = await screen.findByTestId('scenario-history')

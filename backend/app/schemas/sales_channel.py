@@ -1,13 +1,13 @@
 """Pydantic schemas for Sales Channel API."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.fee_rule import TaxRemitter
+from app.schemas.pricing_literals import TaxRemitter
 
 
 class SalesChannelBase(BaseModel):
@@ -76,6 +76,18 @@ class SalesChannelUpdate(BaseModel):
     rounding_rule: Optional[str] = Field(None, max_length=20)
     currency_code: Optional[str] = Field(None, min_length=3, max_length=3)
     offsite_ads_opt_in: Optional[bool] = None
+
+    # The four planning figures above are effective-dated (FR-003, task T136):
+    # naming any of them opens a new period rather than editing the current
+    # one. This is the day it opens, today by default -- so a rate agreed to
+    # start next month can be entered when it is agreed, not remembered.
+    effective_from: Optional[date] = Field(
+        None,
+        description=(
+            "First day the planning economics in this body apply; today by "
+            "default. Ignored unless one of them is named (FR-003)"
+        ),
+    )
 
 
 class SalesChannelResponse(SalesChannelBase):

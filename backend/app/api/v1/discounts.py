@@ -1,16 +1,27 @@
-"""Discount Codes API endpoints for managing promotional pricing."""
+"""Discount Codes API endpoints for managing promotional pricing.
+
+A discount code is a monetary lever: it moves what a customer pays, and so it
+moves the realised margin on every order that redeems it. FR-007a puts it in
+the same tier as the pricing policy and the fee rules -- creating, changing or
+deleting one requires an administrator or owner, and a viewer attempting it is
+refused with the figure untouched (FR-007d). Reading a code stays open to every
+role, as does validating one at checkout: both are reads (FR-007c).
+
+Every handler queries on the tenant-scoped session, so row-level security is in
+force rather than the application-level `tenant_id` filter being the only belt
+(Constitution I).
+"""
 
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant
-from app.database import get_db
+from app.auth.dependencies import CurrentTenant, RequireAdmin, TenantDB
 from app.models.discount import DiscountCode, DiscountType, DiscountUsage
 from app.schemas.discount import (
     DiscountCodeCreate,
@@ -31,12 +42,12 @@ router = APIRouter()
 
 @router.get("", response_model=DiscountCodeListResponse)
 async def list_discount_codes(
+    db: TenantDB,
+    tenant: CurrentTenant,
     search: Optional[str] = Query(None, description="Search by code or name"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
 ):
     """List all discount codes for the current tenant."""
     # Build base query
@@ -84,8 +95,8 @@ async def list_discount_codes(
 @router.get("/{discount_id}", response_model=DiscountCodeResponse)
 async def get_discount_code(
     discount_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
 ):
     """Get a specific discount code by ID."""
     result = await db.execute(
@@ -104,8 +115,9 @@ async def get_discount_code(
 @router.post("", response_model=DiscountCodeResponse, status_code=201)
 async def create_discount_code(
     data: DiscountCodeCreate,
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
+    _admin: RequireAdmin,
 ):
     """Create a new discount code."""
     # Check for duplicate code
@@ -154,8 +166,9 @@ async def create_discount_code(
 async def update_discount_code(
     discount_id: UUID,
     data: DiscountCodeUpdate,
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
+    _admin: RequireAdmin,
 ):
     """Update a discount code."""
     result = await db.execute(
@@ -212,8 +225,9 @@ async def update_discount_code(
 @router.delete("/{discount_id}", status_code=204)
 async def delete_discount_code(
     discount_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
+    _admin: RequireAdmin,
 ):
     """Delete a discount code."""
     result = await db.execute(
@@ -238,8 +252,8 @@ async def delete_discount_code(
 @router.post("/validate", response_model=DiscountValidationResponse)
 async def validate_discount_code(
     data: DiscountValidationRequest,
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
 ):
     """
     Validate a discount code for checkout.

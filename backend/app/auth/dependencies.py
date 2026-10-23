@@ -386,6 +386,53 @@ async def get_shop_tenant(
 ShopTenant = Annotated[Tenant, Depends(get_shop_tenant)]
 
 
+async def get_shop_db(
+    shop_tenant: Annotated[Tenant, Depends(get_shop_tenant)],
+) -> AsyncGenerator[AsyncSession, None]:
+    """A database session with RLS context set for a **storefront** request.
+
+    `get_tenant_db` cannot serve the storefront: it reads
+    `request.state.tenant_id`, which `TenantContextMiddleware` sets from a JWT,
+    and a shopper has no JWT. So every public shop handler ran on the
+    un-scoped session -- including `POST /shop/checkout/complete`, which writes
+    the order and then the sale snapshot carrying `make_cost_at_sale`,
+    `cost_breakdown_json`, `fees_json` and `postage_paid`. Every storefront
+    sale was therefore written with no tenant scope at the database level,
+    which is the one place this system does not rely on remembering to filter
+    (Constitution I, FR-036).
+
+    The tenant here comes from `get_shop_tenant`, which resolves it from the
+    `X-Shop-Hostname` header, so a handler using this session requires that
+    header -- the same requirement `ShopTenant` and `ShopContext` already
+    impose.
+
+    Resolving the hostname is itself a cross-tenant lookup on `tenants` and
+    stays on the un-scoped session inside `get_shop_tenant`; only the work the
+    handler does afterwards is scoped.
+    """
+    async with async_session_maker() as session:
+        try:
+            if settings.rls_enabled:
+                # SET LOCAL is transaction-scoped and clears itself at the end.
+                await session.execute(
+                    text("SET LOCAL app.current_tenant_id = :tenant_id"),
+                    {"tenant_id": str(shop_tenant.id)},
+                )
+                logger.debug(f"Shop RLS context set: tenant_id={shop_tenant.id}")
+
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+#: An RLS-scoped session for a public storefront route.
+ShopDB = Annotated[AsyncSession, Depends(get_shop_db)]
+
+
 async def get_shop_sales_channel(
     db: Annotated[AsyncSession, Depends(get_db)],
     shop_tenant: Annotated[Tenant, Depends(get_shop_tenant)],

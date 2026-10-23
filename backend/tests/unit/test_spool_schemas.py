@@ -2,6 +2,7 @@
 Tests for Spool Pydantic schemas.
 """
 
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -113,3 +114,72 @@ class TestSpoolUpdate:
     def test_is_labeled_update(self):
         u = SpoolUpdate(is_labeled=True)
         assert u.is_labeled is True
+
+
+class TestThePurchasePriceIsExact:
+    """`purchase_price` was `Optional[float]` on all three schemas while the
+    column behind it was already `Numeric` (task T152).
+
+    It is not an idle figure. `landed_cost.py` divides it across a batch of
+    spools to apportion shipping and duty, and `costing.py:cost_per_gram`
+    divides it by the spool's initial weight to reach the per-gram price every
+    material line on every model is costed from. Both of those are exact. The
+    schema was the one lossy step in the chain: an operator typing 24.99 got
+    24.989999999999998, and the error was already in the per-gram figure before
+    the engine had done any arithmetic (FR-047, Constitution IV).
+    """
+
+    def test_an_entered_price_is_a_decimal(self):
+        s = SpoolBase(**valid_spool(purchase_price="24.99"))
+
+        assert isinstance(s.purchase_price, Decimal)
+        assert s.purchase_price == Decimal("24.99")
+
+    def test_the_figure_an_operator_typed_is_the_figure_stored(self):
+        """The one that a binary double cannot hold. Under `float` this
+        comparison failed in the fifteenth decimal place, which is invisible
+        until it is divided by 1000 grams and multiplied by a few hundred
+        prints."""
+        s = SpoolBase(**valid_spool(purchase_price="24.99"))
+
+        assert str(s.purchase_price) == "24.99"
+        assert s.purchase_price - Decimal("24.99") == Decimal("0")
+
+    def test_a_json_number_is_still_accepted_from_an_older_client(self):
+        """Pydantic coerces it. Converting the annotation must not break a
+        caller that was sending `24.99` unquoted before the schema changed —
+        the point of the task is exactness downstream, not a new 422."""
+        s = SpoolBase(**valid_spool(purchase_price=24.99))
+
+        assert isinstance(s.purchase_price, Decimal)
+        assert s.purchase_price == Decimal("24.99")
+
+    def test_it_crosses_the_wire_as_a_decimal_string(self):
+        """Which is what the exactness is for: a JSON number is parsed back
+        into a double by whatever reads it, undoing the whole change."""
+        s = SpoolBase(**valid_spool(purchase_price="24.99"))
+
+        assert s.model_dump(mode="json")["purchase_price"] == "24.99"
+
+    def test_more_than_two_decimal_places_is_refused(self):
+        """A spool has one price, in whole pence. A third decimal place here is
+        a typo or a unit confusion, not a precision the operator meant."""
+        with pytest.raises(ValidationError):
+            SpoolBase(**valid_spool(purchase_price="24.999"))
+
+    def test_an_update_carries_the_same_exactness(self):
+        u = SpoolUpdate(purchase_price="24.99")
+
+        assert isinstance(u.purchase_price, Decimal)
+        assert u.purchase_price == Decimal("24.99")
+
+    def test_an_update_refuses_a_negative_price(self):
+        with pytest.raises(ValidationError):
+            SpoolUpdate(purchase_price="-1.00")
+
+    def test_a_spool_with_no_price_recorded_is_still_valid(self):
+        """Most spools predate anyone recording what they cost, and
+        `landed_cost.py` treats the absence as unknown rather than as free."""
+        s = SpoolBase(**valid_spool())
+
+        assert s.purchase_price is None

@@ -230,6 +230,7 @@ class PrintQueueService:
         from app.models.sales_channel import SalesChannel
         from app.services import fee_engine
         from app.services.cost_resolution import cost_load_options, product_cost_breakdown
+        from app.services.channel_economics import resolve_channel_economics
         from app.services.costing import (
             CircularReferenceError,
             CostingService,
@@ -340,6 +341,7 @@ class PrintQueueService:
                     channel, context, as_of, rules=list(channel.fee_rules or [])
                 ),
                 policy=policy,
+                economics=await resolve_channel_economics(self.db, channel, as_of),
                 tax=treatment,
                 machine_hours=breakdown.machine_hours,
             )

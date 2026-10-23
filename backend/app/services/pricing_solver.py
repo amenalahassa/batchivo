@@ -41,6 +41,7 @@ from app.observability.tracing import traced
 from app.core import clock
 from app.models.fee_rule import COUNT_BASES, PERIODIC_BASES
 from app.services import fee_engine
+from app.services.channel_economics import ChannelEconomics, channel_defaults
 from app.services.costing import (
     MARGIN_BASIS_LABELS,
     CostingService,
@@ -490,6 +491,7 @@ def solve(
     extras: Decimal = ZERO,
     quantity: int = 1,
     policy: Optional["CostPolicy"] = None,
+    economics: Optional[ChannelEconomics] = None,
     margin_basis: Optional[str] = None,
     rounding_rule: Optional[str] = None,
     snap_to_free_shipping: bool = False,
@@ -519,18 +521,20 @@ def solve(
     shipping = Decimal(str(shipping_revenue))
     other = Decimal(str(extras))
 
-    deduction_rate = (
-        Decimal(str(getattr(channel, "expected_discount_pct", ZERO) or ZERO))
-        + Decimal(str(getattr(channel, "expected_refund_pct", ZERO) or ZERO))
-    ) / HUNDRED
+    # The reserves, the rounding rule and the threshold are effective-dated
+    # (FR-003, task T136): an input resolved by the caller for the date that
+    # applies, not read off the channel row as it stands today. The fallback
+    # keeps a stand-in without a session working.
+    rates = economics if economics is not None else channel_defaults(channel)
+    deduction_rate = rates.deduction_pct / HUNDRED
 
     effective_rounding = rounding_rule
     if effective_rounding is None:
-        effective_rounding = getattr(channel, "rounding_rule", None) or (
+        effective_rounding = rates.rounding_rule or (
             policy.rounding_rule if policy is not None else None
         )
 
-    threshold = getattr(channel, "free_shipping_threshold", None) if snap_to_free_shipping else None
+    threshold = rates.free_shipping_threshold if snap_to_free_shipping else None
 
     inputs: dict[str, object] = {
         "make_cost": cost,
@@ -540,10 +544,8 @@ def solve(
         "quantity": quantity,
         "target_margin_pct": Decimal(str(target_margin_pct)),
         "margin_basis": basis,
-        "expected_discount_pct": Decimal(
-            str(getattr(channel, "expected_discount_pct", ZERO) or ZERO)
-        ),
-        "expected_refund_pct": Decimal(str(getattr(channel, "expected_refund_pct", ZERO) or ZERO)),
+        "expected_discount_pct": rates.expected_discount_pct,
+        "expected_refund_pct": rates.expected_refund_pct,
         "rounding_rule": effective_rounding or DEFAULT_ROUNDING_RULE,
         "free_shipping_threshold": threshold,
         "as_of": reference,
@@ -639,6 +641,7 @@ def solve(
         extras=other,
         quantity=quantity,
         policy=policy,
+        economics=rates,
         margin_basis=basis,
     )
 
@@ -671,6 +674,7 @@ def margin_at(
     quantity: int = 1,
     machine_hours: Optional[Decimal] = None,
     policy: Optional["CostPolicy"] = None,
+    economics: Optional[ChannelEconomics] = None,
     margin_basis: Optional[str] = None,
 ) -> MarginResult:
     """The margin at one price, through the ordinary margin path.
@@ -696,6 +700,7 @@ def margin_at(
         channel=channel,
         fees=stack,
         policy=policy,
+        economics=economics,
         tax=TaxTreatment(),
         postage_paid=Decimal(str(postage_paid)),
         margin_basis=margin_basis,
@@ -719,6 +724,7 @@ def ladder(
     quantity: int = 1,
     machine_hours: Optional[Decimal] = None,
     policy: Optional["CostPolicy"] = None,
+    economics: Optional[ChannelEconomics] = None,
     margin_basis: Optional[str] = None,
 ) -> list[LadderRung]:
     """Margin at each price across a range, for the operator to choose from.
@@ -757,6 +763,7 @@ def ladder(
             quantity=quantity,
             machine_hours=hours,
             policy=policy,
+            economics=economics,
             margin_basis=basis,
         )
         # Read off the margin result rather than divided again here. The same

@@ -36,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, AbstractSet, Any, Mapping, Optional, Sequence
 from uuid import UUID
 
 if TYPE_CHECKING:
@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 from app.observability.tracing import traced
 from app.schemas.model import CostBreakdown, CostLine, ModelCostBreakdown
 from app.schemas.product import ProductCostBreakdown
+from app.services.channel_economics import ChannelEconomics, channel_defaults
 from app.services.fee_engine import (
     FeeCharge,
     FeeStack,
@@ -175,10 +176,19 @@ _LINE_ORDER: tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class _Origin:
-    """An origin reduced to the two things a line needs from it."""
+    """An origin reduced to the three things a line needs from it.
+
+    ``pending`` is FR-042e: an observation has arrived that disputes this
+    figure and is waiting for an operator to accept or reject it. The figure
+    on the line is still the one in force -- telemetry proposes and does not
+    reprice (Constitution VII) -- but a screen showing it must say that it is
+    under review, or the operator reads a number the evidence already
+    contradicts and has no way to know.
+    """
 
     source: str
     as_of: Optional[date]
+    pending: bool = False
 
 
 _DEFAULT_ORIGIN = _Origin(source="assumed", as_of=None)
@@ -192,6 +202,7 @@ class _RawLine:
     amount: Decimal
     source: str = "assumed"
     as_of: Optional[date] = None
+    pending: bool = False
 
     @property
     def risk_class(self) -> str:
@@ -269,6 +280,7 @@ def _positive(value: Optional[Decimal]) -> Optional[Decimal]:
 
 def _origin_of(
     origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]],
+    pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]],
     entity_type: str,
     entity_id: Optional[uuid.UUID],
     field_name: str,
@@ -288,10 +300,14 @@ def _origin_of(
     if origins is None or entity_id is None:
         return _Origin(source=default_source, as_of=None)
 
+    # A proposal is held against a field whether or not anyone ever recorded
+    # an origin for it, so this is read before the early return below.
+    is_pending = pending is not None and (entity_type, entity_id, field_name) in pending
+
     recorded = origins.get((entity_type, entity_id, field_name))
     if recorded is None:
-        return _Origin(source=default_source, as_of=None)
-    return _Origin(source=recorded.source, as_of=recorded.as_of)
+        return _Origin(source=default_source, as_of=None, pending=is_pending)
+    return _Origin(source=recorded.source, as_of=recorded.as_of, pending=is_pending)
 
 
 def _weakest(origins: Sequence[_Origin]) -> _Origin:
@@ -307,7 +323,14 @@ def _weakest(origins: Sequence[_Origin]) -> _Origin:
     weakest = min(origins, key=lambda origin: _SOURCE_RANK.get(origin.source, 0))
     dates = [origin.as_of for origin in origins]
     oldest = None if any(value is None for value in dates) else min(d for d in dates if d)
-    return _Origin(source=weakest.source, as_of=oldest)
+    # Any disputed input makes the line disputed. The symmetry with `source` is
+    # deliberate: a line is as weak as its weakest input and as under-review as
+    # its most disputed one.
+    return _Origin(
+        source=weakest.source,
+        as_of=oldest,
+        pending=any(origin.pending for origin in origins),
+    )
 
 
 def _printer_config_for(
@@ -391,6 +414,7 @@ def _item_lines(
     *,
     printer: Optional["Printer"] = None,
     origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]] = None,
+    pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]] = None,
 ) -> _ItemLines:
     """Every line of one printed item's cost, unrounded.
 
@@ -409,9 +433,15 @@ def _item_lines(
     result.prints_per_plate = prints_per_plate
 
     plate_origin = (
-        _origin_of(origins, "model_printer_config", getattr(config, "id", None), "prints_per_plate")
+        _origin_of(
+            origins,
+            pending,
+            "model_printer_config",
+            getattr(config, "id", None),
+            "prints_per_plate",
+        )
         if config_per_plate is not None
-        else _origin_of(origins, "model", model_id, "prints_per_plate")
+        else _origin_of(origins, pending, "model", model_id, "prints_per_plate")
     )
 
     # ------------------------------------------------------------- material
@@ -426,6 +456,7 @@ def _item_lines(
         material_origins.append(
             _origin_of(
                 origins,
+                pending,
                 "model_printer_config",
                 getattr(config, "id", None),
                 "material_weight_grams",
@@ -439,17 +470,23 @@ def _item_lines(
             material_cost += weight * per_gram
             material_id = getattr(material, "id", None)
             material_origins.append(
-                _origin_of(origins, "model_material", material_id, "weight_grams")
+                _origin_of(origins, pending, "model_material", material_id, "weight_grams")
             )
             material_origins.append(
-                _origin_of(origins, "model_material", material_id, "cost_per_gram")
+                _origin_of(origins, pending, "model_material", material_id, "cost_per_gram")
             )
         material_cost = material_cost / prints_per_plate
 
     if material_cost != ZERO:
         material_at = _weakest(material_origins)
         result.lines.append(
-            _RawLine("material", material_cost, material_at.source, material_at.as_of)
+            _RawLine(
+                "material",
+                material_cost,
+                material_at.source,
+                material_at.as_of,
+                material_at.pending,
+            )
         )
 
     # ---------------------------------------------------------------- waste
@@ -465,9 +502,11 @@ def _item_lines(
             # output exactly as the part weight does.
             waste_cost = waste_grams * average_per_gram / prints_per_plate
             waste_at = _weakest(
-                [_origin_of(origins, "model", model_id, "waste_grams"), plate_origin]
+                [_origin_of(origins, pending, "model", model_id, "waste_grams"), plate_origin]
             )
-            result.lines.append(_RawLine("waste", waste_cost, waste_at.source, waste_at.as_of))
+            result.lines.append(
+                _RawLine("waste", waste_cost, waste_at.source, waste_at.as_of, waste_at.pending)
+            )
 
     # -------------------------------------------------------------- machine
     config_minutes = _positive(_as_decimal(getattr(config, "print_time_minutes", None)))
@@ -484,10 +523,14 @@ def _item_lines(
 
     time_origin = (
         _origin_of(
-            origins, "model_printer_config", getattr(config, "id", None), "print_time_minutes"
+            origins,
+            pending,
+            "model_printer_config",
+            getattr(config, "id", None),
+            "print_time_minutes",
         )
         if config_minutes is not None
-        else _origin_of(origins, "model", model_id, "print_time_minutes")
+        else _origin_of(origins, pending, "model", model_id, "print_time_minutes")
     )
 
     machine_rate: Optional[Decimal] = None
@@ -514,7 +557,7 @@ def _item_lines(
             "measured_watts",
             "electricity_rate_per_kwh",
         ):
-            machine_origins.append(_origin_of(origins, "printer", printer.id, field_name))
+            machine_origins.append(_origin_of(origins, pending, "printer", printer.id, field_name))
 
     if machine_rate is None:
         machine_rate = policy.default_machine_rate_per_hour
@@ -539,6 +582,7 @@ def _item_lines(
                 result.print_hours_per_item * machine_rate,
                 machine_at.source,
                 machine_at.as_of,
+                machine_at.pending,
             )
         )
 
@@ -549,7 +593,7 @@ def _item_lines(
     finishing_rate = override if override is not None else policy.finishing_labor_rate
 
     rate_origin = (
-        _origin_of(origins, "model", model_id, "labor_rate_override")
+        _origin_of(origins, pending, "model", model_id, "labor_rate_override")
         if override is not None
         else _Origin(source="policy", as_of=policy.effective_from)
     )
@@ -566,9 +610,11 @@ def _item_lines(
         if component_hours <= ZERO:
             continue
         line_at = _weakest(
-            [rate_origin, _origin_of(origins, "model", model_id, field_name), plate_origin]
+            [rate_origin, _origin_of(origins, pending, "model", model_id, field_name), plate_origin]
         )
-        result.lines.append(_RawLine(key, component_hours * rate, line_at.source, line_at.as_of))
+        result.lines.append(
+            _RawLine(key, component_hours * rate, line_at.source, line_at.as_of, line_at.pending)
+        )
 
     # ----------------------------------------------------------- components
     component_cost = ZERO
@@ -578,12 +624,22 @@ def _item_lines(
         unit_cost = _as_decimal(getattr(component, "unit_cost", None), ZERO) or ZERO
         component_cost += quantity * unit_cost
         component_id = getattr(component, "id", None)
-        component_origins.append(_origin_of(origins, "model_component", component_id, "quantity"))
-        component_origins.append(_origin_of(origins, "model_component", component_id, "unit_cost"))
+        component_origins.append(
+            _origin_of(origins, pending, "model_component", component_id, "quantity")
+        )
+        component_origins.append(
+            _origin_of(origins, pending, "model_component", component_id, "unit_cost")
+        )
     if component_cost != ZERO:
         component_at = _weakest(component_origins) if component_origins else _DEFAULT_ORIGIN
         result.lines.append(
-            _RawLine("components", component_cost, component_at.source, component_at.as_of)
+            _RawLine(
+                "components",
+                component_cost,
+                component_at.source,
+                component_at.as_of,
+                component_at.pending,
+            )
         )
 
     # ------------------------------------------------------------- overhead
@@ -607,6 +663,7 @@ def _item_lines(
                     result.print_hours_per_item * overhead_rate,
                     overhead_at.source,
                     overhead_at.as_of,
+                    overhead_at.pending,
                 )
             )
     else:
@@ -623,7 +680,7 @@ def _item_lines(
                 + result.amount("labor_packing")
             )
             overhead_at = (
-                _origin_of(origins, "model", model_id, "overhead_percentage")
+                _origin_of(origins, pending, "model", model_id, "overhead_percentage")
                 if model_pct is not None
                 else _Origin(source="policy", as_of=policy.effective_from)
             )
@@ -633,6 +690,7 @@ def _item_lines(
                     base * percentage / Decimal("100"),
                     overhead_at.source,
                     overhead_at.as_of,
+                    overhead_at.pending,
                 )
             )
 
@@ -675,7 +733,7 @@ def _rounded_lines(raw: Sequence[_RawLine]) -> list[CostLine]:
     origins: dict[str, list[_Origin]] = {}
     for line in raw:
         merged[line.key] = merged.get(line.key, ZERO) + line.amount
-        origins.setdefault(line.key, []).append(_Origin(line.source, line.as_of))
+        origins.setdefault(line.key, []).append(_Origin(line.source, line.as_of, line.pending))
 
     order = {key: index for index, key in enumerate(_LINE_ORDER)}
     keys = sorted(merged, key=lambda key: (order.get(key, len(order)), key))
@@ -694,6 +752,7 @@ def _rounded_lines(raw: Sequence[_RawLine]) -> list[CostLine]:
                 risk_class=("at_risk" if key in AT_RISK_KEYS else "not_at_risk"),
                 source=origin.source,  # type: ignore[arg-type]
                 as_of=origin.as_of,
+                has_pending_revision=origin.pending,
             )
         )
     return lines
@@ -919,14 +978,20 @@ def resolve_margin_basis(
     return DEFAULT_MARGIN_BASIS
 
 
-def _basis_amount_for(
+def basis_amount_for(
     basis: str,
     *,
     item_price: Decimal,
     customer_total: Decimal,
     fee_total_exact: Decimal,
 ) -> Decimal:
-    """The denominator each basis puts under the profit (FR-031)."""
+    """The denominator each basis puts under the profit (FR-031).
+
+    Public because `margin_alert` recomputes a settled line's *planned* margin
+    from its snapshot and has to put the same denominator under it. A second
+    copy of this three-way choice is exactly the divergence Constitution III
+    forbids -- two screens disagreeing about one percentage.
+    """
     if basis == "item_price":
         return item_price
     if basis == "net_revenue":
@@ -951,6 +1016,7 @@ class CostingService:
         overhead_percentage: Optional[Decimal] = None,
         printer: Optional["Printer"] = None,
         origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]] = None,
+        pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]] = None,
     ) -> CostBreakdown:
         """The full cost of one printed item, itemised (FR-018).
 
@@ -959,7 +1025,7 @@ class CostingService:
         ``incomplete_reasons`` rather than costed at zero (FR-019).
         """
         resolved = _policy_from(policy, labor_rate, overhead_percentage)
-        raw = _item_lines(model, resolved, printer=printer, origins=origins)
+        raw = _item_lines(model, resolved, printer=printer, origins=origins, pending=pending)
         return _assemble(
             raw.lines,
             expected_yield=raw.expected_yield,
@@ -979,6 +1045,7 @@ class CostingService:
         overhead_percentage: Optional[Decimal] = None,
         printer_for_model: Optional[Mapping[uuid.UUID, "Printer"]] = None,
         origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]] = None,
+        pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]] = None,
         _visited: Optional[set] = None,
         _depth: int = 0,
     ) -> CostBreakdown:
@@ -1029,6 +1096,7 @@ class CostingService:
                         amount=line.amount * quantity,
                         source=line.source,
                         as_of=line.as_of,
+                        pending=line.has_pending_revision,
                     )
                 )
             inherited_premium += breakdown.failure_premium * quantity
@@ -1049,6 +1117,7 @@ class CostingService:
                     policy=resolved,
                     printer=printer,
                     origins=origins,
+                    pending=pending,
                 ),
                 quantity,
             )
@@ -1064,6 +1133,7 @@ class CostingService:
                     policy=resolved,
                     printer_for_model=printer_for_model,
                     origins=origins,
+                    pending=pending,
                     _visited=_visited,
                     _depth=_depth + 1,
                 ),
@@ -1072,18 +1142,22 @@ class CostingService:
 
         # Packaging: materials consumed after the part is good, so never at risk
         # (FR-015, FR-016). The existing packaging path is reused as-is.
-        packaging_cost, packaging_origin = _packaging_cost(product, origins)
+        packaging_cost, packaging_origin = _packaging_cost(product, origins, pending)
         if packaging_cost != ZERO:
             raw.append(
                 _RawLine(
-                    "packaging", packaging_cost, packaging_origin.source, packaging_origin.as_of
+                    "packaging",
+                    packaging_cost,
+                    packaging_origin.source,
+                    packaging_origin.as_of,
+                    packaging_origin.pending,
                 )
             )
 
         assembly_minutes = _as_decimal(getattr(product, "assembly_minutes", None), ZERO) or ZERO
         if assembly_minutes > ZERO:
             assembly_origin = _origin_of(
-                origins, "product", getattr(product, "id", None), "assembly_minutes"
+                origins, pending, "product", getattr(product, "id", None), "assembly_minutes"
             )
             raw.append(
                 _RawLine(
@@ -1091,6 +1165,7 @@ class CostingService:
                     assembly_minutes / Decimal("60") * resolved.print_labor_rate,
                     assembly_origin.source,
                     assembly_origin.as_of,
+                    assembly_origin.pending,
                 )
             )
 
@@ -1181,6 +1256,7 @@ class CostingService:
             labor_cost=labor_cost.quantize(MILLE),
             overhead_cost=overhead_cost.quantize(MILLE),
             total_cost=raw.total.quantize(MILLE),
+            incomplete_reasons=list(dict.fromkeys(raw.incomplete_reasons)),
         )
 
     @staticmethod
@@ -1246,6 +1322,10 @@ class CostingService:
         models_with_actual_cost = 0
         models_total = 0
         seen_model_ids: set = set()
+        # What the engine could not cost, gathered as the traversal goes. A
+        # bundle's total is only as finished as its least finished part, so a
+        # child's reasons are the parent's reasons too (FR-019).
+        incomplete_reasons: list[str] = []
 
         if hasattr(product, "product_models"):
             for pm in product.product_models:
@@ -1260,6 +1340,7 @@ class CostingService:
                         printer=(printer_for_model or {}).get(pm.model.id),
                     )
                     models_cost += Decimal(str(pm.quantity)) * model_cost.total_cost
+                    incomplete_reasons.extend(model_cost.incomplete_reasons)
 
                     # Track unique models for actual cost calculation
                     if pm.model.id not in seen_model_ids:
@@ -1293,6 +1374,7 @@ class CostingService:
                         _depth=_depth + 1,
                     )
                     child_products_cost += Decimal(str(pc.quantity)) * child_cost.total_make_cost
+                    incomplete_reasons.extend(child_cost.incomplete_reasons)
 
         # 3. Packaging cost - use consumable cost if linked, otherwise manual cost
         packaging_cost, _packaging_origin = _packaging_cost(product, None)
@@ -1341,6 +1423,7 @@ class CostingService:
             else None,
             models_with_actual_cost=models_with_actual_cost,
             models_total=models_total,
+            incomplete_reasons=list(dict.fromkeys(incomplete_reasons)),
         )
 
     # ------------------------------------------------------------------
@@ -1356,6 +1439,7 @@ class CostingService:
         channel: "SalesChannel",
         fees: FeeStack,
         policy: Optional[CostPolicy] = None,
+        economics: Optional[ChannelEconomics] = None,
         tax: Optional[TaxTreatment] = None,
         postage_paid: Decimal = ZERO,
         margin_basis: Optional[str] = None,
@@ -1406,17 +1490,22 @@ class CostingService:
         fee_total_exact = fees.total_exact
 
         # --- 2. Reserves against revenue (FR-026) --------------------------
+        # The reserves are effective-dated (FR-003, task T136), so they are an
+        # input resolved by the caller that knows which date applies -- the
+        # sale date for a settled line, today for a quote. Falling back to the
+        # channel's own columns keeps a stand-in without a session working.
+        rates = economics if economics is not None else channel_defaults(channel)
         deductions: list[RevenueDeduction] = []
         for key, label, rate in (
             (
                 "expected_discount",
                 "Expected discounts",
-                Decimal(str(getattr(channel, "expected_discount_pct", ZERO) or ZERO)),
+                rates.expected_discount_pct,
             ),
             (
                 "expected_refund",
                 "Refund reserve",
-                Decimal(str(getattr(channel, "expected_refund_pct", ZERO) or ZERO)),
+                rates.expected_refund_pct,
             ),
         ):
             if rate == ZERO:
@@ -1440,7 +1529,7 @@ class CostingService:
 
         # --- 4. The basis, and the percentage over it ----------------------
         basis = resolve_margin_basis(policy, override=margin_basis)
-        basis_amount = _basis_amount_for(
+        basis_amount = basis_amount_for(
             basis,
             item_price=item_price,
             customer_total=customer_total,
@@ -1529,6 +1618,7 @@ class CostingService:
 def _packaging_cost(
     product: "Product",
     origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]],
+    pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]] = None,
 ) -> tuple[Decimal, _Origin]:
     """Packaging materials for one sellable unit, and where the figure came from.
 
@@ -1540,8 +1630,8 @@ def _packaging_cost(
     if consumable is not None:
         unit_cost = _as_decimal(getattr(consumable, "current_cost_per_unit", None), ZERO) or ZERO
         quantity = _as_decimal(getattr(product, "packaging_quantity", None), ONE) or ONE
-        origin = _origin_of(origins, "product", product_id, "packaging_quantity")
+        origin = _origin_of(origins, pending, "product", product_id, "packaging_quantity")
         return (unit_cost * quantity, origin)
 
     cost = _as_decimal(getattr(product, "packaging_cost", None), ZERO) or ZERO
-    return (cost, _origin_of(origins, "product", product_id, "packaging_cost"))
+    return (cost, _origin_of(origins, pending, "product", product_id, "packaging_cost"))

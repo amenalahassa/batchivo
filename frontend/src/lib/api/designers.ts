@@ -6,6 +6,7 @@
  */
 
 import { apiClient } from '../api'
+import type { Money } from '@/types/pricing'
 
 // ==================== Types ====================
 
@@ -17,7 +18,16 @@ export interface Designer {
   logo_url?: string
   website_url?: string
   social_links?: Record<string, string>
-  membership_cost?: number
+  /**
+   * A decimal string, not a number.
+   *
+   * The backend holds this as `Numeric(10, 2)` and a `Mapped[Decimal]`. It
+   * crossed the wire as a JSON number, and the edit form sent it back through
+   * `parseFloat`, so whatever binary noise the double picked up went into the
+   * column. A recurring operator expense is somebody's money, and
+   * Constitution IV admits no exception for it (FR-047).
+   */
+  membership_cost?: Money
   membership_start_date?: string
   membership_renewal_date?: string
   is_active: boolean
@@ -39,7 +49,7 @@ export interface DesignerCreateRequest {
   logo_url?: string
   website_url?: string
   social_links?: Record<string, string>
-  membership_cost?: number
+  membership_cost?: Money
   membership_start_date?: string
   membership_renewal_date?: string
   is_active?: boolean
@@ -53,7 +63,7 @@ export interface DesignerUpdateRequest {
   logo_url?: string | null
   website_url?: string | null
   social_links?: Record<string, string> | null
-  membership_cost?: number | null
+  membership_cost?: Money | null
   membership_start_date?: string | null
   membership_renewal_date?: string | null
   is_active?: boolean

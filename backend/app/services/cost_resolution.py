@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Iterable, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.schemas.model import CostBreakdown
-from app.services.costing import CostingService
+from app.services.costing import MAX_RECURSION_DEPTH, CostingService
 from app.services.pricing_policy import CostPolicy, resolve_cost_policy
 from app.services.provenance import FieldOrigin, origins_for
 
@@ -32,6 +32,17 @@ logger = logging.getLogger(__name__)
 
 OriginMap = dict[tuple[str, uuid.UUID, str], FieldOrigin]
 
+#: How many bundle levels `cost_load_options()` eager-loads.
+#:
+#: Kept equal to the engine's own `MAX_RECURSION_DEPTH` on purpose, so the
+#: system has **one** limit on bundle nesting rather than two that can drift.
+#: A bundle deeper than the loader reaches would otherwise meet an unloaded
+#: collection inside the synchronous engine and fail with SQLAlchemy's
+#: `MissingGreenlet` instead of the `MaxDepthExceededError` the guard exists to
+#: raise -- so the guard would be unreachable and the real limit would be this
+#: number, undocumented.
+BUNDLE_LOAD_DEPTH = MAX_RECURSION_DEPTH
+
 
 def cost_load_options() -> list:
     """Eager-load options for every relationship a cost read walks.
@@ -43,9 +54,18 @@ def cost_load_options() -> list:
     caller that costs a product uses it: the product endpoints, and the
     catalogue sweep behind a scenario.
 
-    Three levels of bundle are loaded. The engine's own depth guard refuses
-    deeper nesting with a 409 naming the chain, so a fourth level would be
-    loading data only to refuse it.
+    The bundle chain is generated rather than written out, to the same depth the
+    engine's own guard allows (`MAX_RECURSION_DEPTH`). Writing it out by hand is
+    how the two fell out of step: the list stopped declaring `child_products`
+    two levels down while the engine kept walking, so a three-level bundle
+    reached an unloaded collection. `ProductComponent.child_product` is lazy
+    precisely so that this declaration is the only thing that loads a bundle --
+    an eager link on the model re-entered `Product` and its dozen `selectin`
+    relationships at every level.
+
+    Declaring the full depth is close to free: a `selectin` level issues no
+    SELECT when the level above it returned no rows, so a flat catalogue pays
+    for the levels it actually has, not for the limit.
     """
     from sqlalchemy.orm import selectinload
 
@@ -54,50 +74,35 @@ def cost_load_options() -> list:
     from app.models.product_component import ProductComponent
     from app.models.product_model import ProductModel
 
-    return [
-        selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.materials),
-        selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.components),
-        selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.printer_configs),
-        selectinload(Product.packaging_consumable),
-        # Level 1: child products, with their own cost-bearing relationships.
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.materials),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.components),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.printer_configs),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.packaging_consumable),
-        # Level 2: grandchildren.
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.product_models)
-        .selectinload(ProductModel.model)
-        .selectinload(Model.materials),
-        selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.child_products)
-        .selectinload(ProductComponent.child_product)
-        .selectinload(Product.packaging_consumable),
-    ]
+    def chain(prefix, *path):
+        """Extend `prefix` (or start fresh when it is None) along `path`."""
+        loader = prefix
+        for relationship in path:
+            loader = (
+                selectinload(relationship) if loader is None else loader.selectinload(relationship)
+            )
+        return loader
+
+    def cost_inputs(prefix) -> list:
+        """What one product level costs from, whatever path reached it."""
+        return [
+            chain(prefix, Product.product_models, ProductModel.model, Model.materials),
+            chain(prefix, Product.product_models, ProductModel.model, Model.components),
+            chain(prefix, Product.product_models, ProductModel.model, Model.printer_configs),
+            chain(prefix, Product.packaging_consumable),
+        ]
+
+    options: list = []
+    prefix = None
+    # One pass per bundle level the engine may descend into. Each level loads
+    # its own cost inputs and the component rows that reach the next, so the
+    # traversal never meets a collection it cannot read.
+    for _ in range(BUNDLE_LOAD_DEPTH + 1):
+        options.extend(cost_inputs(prefix))
+        prefix = chain(prefix, Product.child_products, ProductComponent.child_product)
+        options.append(prefix)
+
+    return options
 
 
 def _model_entities(model: "Model") -> set[tuple[str, uuid.UUID]]:
@@ -167,6 +172,22 @@ async def resolve_origins(
     return await origins_for(db, tenant, entities)
 
 
+async def resolve_pending_revisions(
+    db: AsyncSession,
+    tenant: "Tenant",
+    entities: Iterable[tuple[str, uuid.UUID]],
+) -> frozenset[tuple[str, uuid.UUID, str]]:
+    """Which of these entities' fields have a proposal awaiting review.
+
+    Resolved here, beside the origins, for the same reason: the engine does
+    not query. Both are gathered once over the whole bundle and handed in, so
+    a breakdown costs two queries however many lines it has.
+    """
+    from app.services import variance_service
+
+    return await variance_service.pending_revisions_for(db, tenant, entities)
+
+
 async def model_cost_breakdown(
     db: AsyncSession,
     tenant: "Tenant",
@@ -177,8 +198,12 @@ async def model_cost_breakdown(
 ) -> CostBreakdown:
     """The structured breakdown for one printed item."""
     resolved = policy or await resolve_cost_policy(db, tenant)
-    origins = await resolve_origins(db, tenant, _model_entities(model))
-    return CostingService.item_breakdown(model, policy=resolved, printer=printer, origins=origins)
+    entities = _model_entities(model)
+    origins = await resolve_origins(db, tenant, entities)
+    pending = await resolve_pending_revisions(db, tenant, entities)
+    return CostingService.item_breakdown(
+        model, policy=resolved, printer=printer, origins=origins, pending=pending
+    )
 
 
 async def product_cost_breakdown(
@@ -195,5 +220,9 @@ async def product_cost_breakdown(
     endpoint turns each into a 409 naming the offending chain.
     """
     resolved = policy or await resolve_cost_policy(db, tenant)
-    origins = await resolve_origins(db, tenant, _product_entities(product))
-    return CostingService.product_breakdown(product, policy=resolved, origins=origins)
+    entities = _product_entities(product)
+    origins = await resolve_origins(db, tenant, entities)
+    pending = await resolve_pending_revisions(db, tenant, entities)
+    return CostingService.product_breakdown(
+        product, policy=resolved, origins=origins, pending=pending
+    )

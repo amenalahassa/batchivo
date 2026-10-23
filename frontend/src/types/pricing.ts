@@ -68,6 +68,13 @@ export interface CostLine {
   source: ProvenanceSource
   /** ISO 8601 date the figure was set or observed. */
   as_of: string | null
+  /**
+   * An observation disputing one of this line's inputs is held for review
+   * (FR-042e). The amount is still the figure in force — telemetry proposes
+   * and never reprices — but the line says so, rather than showing a number
+   * the evidence already contradicts as though nothing were in question.
+   */
+  has_pending_revision: boolean
 }
 
 /**
@@ -199,6 +206,63 @@ export type PrinterCostPolicyUpdate = Partial<
     | 'maintenance_reserve_total'
     | 'measured_watts'
     | 'electricity_rate_per_kwh'
+  >
+>
+
+/**
+ * One printed item's operational figures, each with where it came from.
+ *
+ * These are the Tier 1 columns the engine costs on every read — purge waste,
+ * expected yield, the failure mode and the four-way labor split. They are
+ * *measurements* of a printed item rather than monetary policy, so a member
+ * may record them (FR-007b) while the labor rate beside them on the same table
+ * needs an administrator (FR-007a).
+ *
+ * `incomplete_reasons` names an input the engine needs and does not have. A
+ * missing print time silently removes the machine and overhead lines, which is
+ * exactly how the superseded model understated a nine-hour print — so it is
+ * reported rather than costed at zero (FR-019).
+ */
+export interface ModelCostProfile {
+  model_id: string
+  print_time_minutes: number | null
+  prints_per_plate: number
+  waste_grams: Money
+  expected_yield: Money
+  failure_mode: FailureMode
+  labor_hours_per_plate: Money
+  labor_hours_per_item: Money
+  finishing_hours_per_item: Money
+  packing_hours_per_item: Money
+  /** One entry per numeric figure above (FR-001). */
+  origins: CostProfileFieldOrigin[]
+  incomplete_reasons: string[]
+}
+
+/** Where one figure on the profile came from, and whether it may be typed over. */
+export interface CostProfileFieldOrigin {
+  field_name: string
+  source: ProvenanceSource
+  /** ISO 8601 date the figure was set or observed; null means never recorded. */
+  as_of: string | null
+  /** Past the tenant's staleness threshold. Still in use, still shown (FR-005). */
+  is_stale: boolean
+  /** False for an observed figure, which is refreshed from its source (FR-004). */
+  editable: boolean
+}
+
+export type ModelCostProfileUpdate = Partial<
+  Pick<
+    ModelCostProfile,
+    | 'print_time_minutes'
+    | 'prints_per_plate'
+    | 'waste_grams'
+    | 'expected_yield'
+    | 'failure_mode'
+    | 'labor_hours_per_plate'
+    | 'labor_hours_per_item'
+    | 'finishing_hours_per_item'
+    | 'packing_hours_per_item'
   >
 >
 
@@ -750,6 +814,59 @@ export interface EstimateRevisionList {
   revisions: EstimateRevision[]
   total: number
   pending_count: number
+}
+
+// ---------------------------------------------------------------------------
+// Realised margin against plan (FR-042, US7 scenario 3)
+// ---------------------------------------------------------------------------
+
+/** One cost line that came in different from plan. */
+export interface LineMovement {
+  /** The breakdown line, or 'fees'. */
+  key: string
+  /** What the snapshot costed it at. */
+  planned: Money
+  /** What it actually came to. */
+  realised: Money
+  /** Realised less planned; positive means dearer. */
+  delta: Money
+}
+
+/**
+ * What one settled line earned, beside the margin it was sold at.
+ *
+ * A percentage is `null`, never zero, where fees consumed the whole basis:
+ * break-even and unanswerable are different facts, and reporting the second as
+ * the first reads as a sale that merely made no money.
+ */
+export interface MarginDivergence {
+  order_id: string
+  order_item_id: string
+  product_id: string | null
+  product_name: string | null
+  sold_on: string | null
+  /** The basis both percentages are on (FR-031b). */
+  margin_basis: string
+  planned_margin_pct: Money | null
+  realised_margin_pct: Money | null
+  /** Realised less planned, in points. Negative is a shortfall. */
+  divergence_points: Money | null
+  /** The operator's own threshold, from the pricing policy. */
+  threshold_points: Money
+  diverges: boolean
+  shortfall: boolean
+  planned_profit: Money
+  realised_profit: Money
+  /** Which lines moved, heaviest first -- what US7 scenario 3 asks for. */
+  movements: LineMovement[]
+}
+
+export interface MarginDivergenceList {
+  divergences: MarginDivergence[]
+  total: number
+  /** How many are past the threshold and should be acted on. */
+  alerting: number
+  threshold_points: Money
 }
 
 // ---------------------------------------------------------------------------

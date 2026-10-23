@@ -28,6 +28,7 @@ import {
 
 import { getOrders, shipOrder, deliverOrder, cancelOrder, type Order } from '@/lib/api/orders'
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
@@ -108,9 +109,12 @@ function exportToCSV(orders: Order[]) {
     order.customer_name,
     order.customer_email,
     order.items.map(i => `${i.quantity}x ${i.product_name}`).join('; '),
-    order.subtotal.toFixed(2),
-    order.shipping_cost.toFixed(2),
-    order.total.toFixed(2),
+    // `formatMoney` with no symbol, because these are decimal strings now and
+    // `.toFixed()` would have to put them through a binary double first
+    // (Constitution IV).
+    formatMoney(order.subtotal, ''),
+    formatMoney(order.shipping_cost, ''),
+    formatMoney(order.total, ''),
     [
       order.shipping_address_line1,
       order.shipping_address_line2,

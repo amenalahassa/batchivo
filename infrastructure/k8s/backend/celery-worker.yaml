@@ -3,17 +3,19 @@
 # A price-shock scenario sweeps the whole catalogue, so it cannot run on a
 # request thread (FR-044a). This is the worker that runs it.
 #
-# ## The broker URL is the whole point of this file
+# ## The broker URL
 #
 # `backend/app/config.py` defaults `celery_broker_url` to
 # `redis://localhost:6379/1`, which inside a pod resolves to the pod itself --
 # nothing is listening, so every scenario would sit queued for ever. research.md
-# D4 carried that forward as a deployment note, and this is where it is paid:
-# both URLs point at the cluster Redis service.
+# D4 carried that forward as a deployment note.
 #
-# Database 1 is the broker and 2 the result backend, keeping them clear of the
-# application cache on database 0 (`REDIS_URL` in backend-config). A flush of
-# one must not take the others with it.
+# It is paid in `backend-config` (deployment.yaml), not here, because the API
+# publishes to the same broker this worker consumes. Setting it on the worker
+# alone -- which is what shipped -- left the *publisher* on the localhost
+# default, so a scenario was acknowledged and never arrived (task T149). Both
+# pods read the one ConfigMap, and database 1 is the broker with 2 the result
+# backend, clear of the application cache on database 0.
 #
 # ## Why no probes and no service
 #
@@ -78,11 +80,20 @@ spec:
           # forks a process holding an event loop, and the child inherits a loop
           # it cannot use. One task at a time is also the honest concurrency for
           # a sweep that is bound by the database rather than by CPU.
+          #
+          # `--beat` runs the scheduler in this same process, which is what
+          # fires the daily realised-margin sweep (FR-042). It is safe here
+          # only because the strategy above is Recreate with one replica: two
+          # beats would send every scheduled task twice. If this deployment
+          # ever scales past one, beat moves to its own single-replica
+          # deployment and this flag comes off.
           command:
             - celery
             - -A
             - app.tasks.celery_app
             - worker
+            - --beat
+            - --schedule=/tmp/celerybeat-schedule
             - --loglevel=info
             - --pool=solo
             - --queues=celery
@@ -100,12 +111,12 @@ spec:
                 name: rls-credentials
                 optional: true
           env:
-            # The note research.md D4 carried forward: the configured default
-            # points at localhost and must not reach production.
-            - name: CELERY_BROKER_URL
-              value: "redis://redis:6379/1"
-            - name: CELERY_RESULT_BACKEND
-              value: "redis://redis:6379/2"
+            # `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` used to be set
+            # here. They now live in `backend-config` above, because the API
+            # publishes to the same broker this worker consumes and only one of
+            # the two had them — so a scenario was acknowledged by the API and
+            # never arrived (task T149). Two copies of one address drift; one
+            # copy, read by both, cannot.
             - name: DB_USER
               valueFrom:
                 secretKeyRef:

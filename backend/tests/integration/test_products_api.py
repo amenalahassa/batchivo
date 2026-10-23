@@ -1,10 +1,16 @@
 """Integration tests for products API endpoints."""
 
-import pytest
-from httpx import AsyncClient
+from decimal import Decimal
 from uuid import uuid4
 
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import update
+
+from app.models.model import Model
+from app.models.model_material import ModelMaterial
 from app.models.product import Product
+from app.models.product_model import ProductModel
 
 
 class TestProductsEndpoints:
@@ -278,34 +284,129 @@ class TestProductShopFields:
 
 
 class TestProductCostCalculation:
-    """Test product cost calculation features."""
+    """`GET /products/{id}/cost`, the endpoint every costed screen reads.
+
+    Both tests in this class used to skip themselves (tasks T187, T188).
+
+    The first skipped on a 404 or 501, and that endpoint has existed since
+    Tier 0 at `app/api/v1/products.py:603` -- so the branch was dead code that
+    would have converted the endpoint's *removal* into a skip rather than a
+    failure. The second had no body at all, only
+    `pytest.skip("implement when models exist")`, and `Model`, `ProductModel`
+    and `Product.product_models` are the foundation this whole feature costs
+    from. A permanent skip reads in every test report as an uncovered
+    requirement (Constitution II).
+
+    SC-008 (the three screens agreeing on one cost) and US1/AC2 are covered in
+    depth by `tests/api/test_cost_consistency.py` and
+    `tests/integration/test_cost_graph_coherence.py`. What these two add is
+    the HTTP surface: that the route answers, and that a product holding a
+    model is costed through it from that model's own bill of materials.
+    """
 
     @pytest.mark.asyncio
     async def test_product_cost_calculation(
         self, client: AsyncClient, auth_headers: dict, test_product: Product
     ):
-        """Test cost calculation returns expected breakdown."""
+        """The endpoint answers with a breakdown, not a bare figure."""
         response = await client.get(
             f"/api/v1/products/{test_product.id}/cost", headers=auth_headers
         )
 
-        # Cost endpoint might not exist yet, so accept 404 or 501
-        if response.status_code in [404, 501]:
-            pytest.skip("Cost calculation endpoint not implemented yet")
-
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         data = response.json()
 
-        # Verify cost breakdown structure
-        assert "total_make_cost" in data or "material_cost" in data
+        # The shape FR-019 and FR-001 require: a total, the lines behind it,
+        # how much of it is evidence, and what was missing.
+        assert "total_make_cost" in data
+        assert "lines" in data
+        assert "observed_share" in data
+        assert "incomplete_reasons" in data
+
+        # Money crosses this API as a decimal string, so a reader can hold it
+        # exactly (FR-047). `test_product` has nothing beneath it, which is a
+        # complete answer of zero rather than a gap -- a product with no bill
+        # of materials costs nothing to make, and the engine says so without
+        # inventing a reason.
+        assert isinstance(data["total_make_cost"], str)
+        assert Decimal(str(data["total_make_cost"])) == Decimal("0")
+        assert data["incomplete_reasons"] == []
 
     @pytest.mark.asyncio
     async def test_product_with_models_shows_cost(
-        self, client: AsyncClient, auth_headers: dict, db_session
+        self, client: AsyncClient, auth_headers: dict, db_session, test_tenant, test_spool
     ):
-        """Test product with associated models shows cost breakdown."""
-        # This test will be skipped if the models relationship isn't implemented
-        pytest.skip("Product-Model relationship test - implement when models exist")
+        """A product holding a model is costed from that model's own BOM.
+
+        40 g at £0.025/g is £1.00 of material, which must appear on the
+        `material` line and in the total. Exact equality, not a tolerance: the
+        engine is decimal end to end and the figure crosses the wire as a
+        decimal string (Constitution IV).
+        """
+        model = Model(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            sku=f"COSTED-M-{uuid4().hex[:8].upper()}",
+            name="A model with a bill of materials",
+            is_active=True,
+        )
+        db_session.add(model)
+        await db_session.flush()
+
+        db_session.add(
+            ModelMaterial(
+                id=uuid4(),
+                model_id=model.id,
+                spool_id=test_spool.id,
+                weight_grams=Decimal("40"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+
+        product = Product(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            sku=f"COSTED-P-{uuid4().hex[:8].upper()}",
+            name="A product holding that model",
+            is_active=True,
+        )
+        db_session.add(product)
+        await db_session.flush()
+
+        db_session.add(
+            ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1)
+        )
+        await db_session.commit()
+
+        response = await client.get(f"/api/v1/products/{product.id}/cost", headers=auth_headers)
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+
+        lines = {line["key"]: Decimal(str(line["amount"])) for line in data["lines"]}
+        assert "material" in lines, f"no material line in {sorted(lines)}"
+        assert lines["material"] == Decimal("1.00"), (
+            f"40 g at 0.025 is 1.00, not {lines['material']}"
+        )
+        assert Decimal(str(data["total_make_cost"])) >= Decimal("1.00"), (
+            "the total must at least contain the material it is made of"
+        )
+
+        # Two quantities of the same model is twice the material: the quantity
+        # on `ProductModel` is what makes this a product rather than a model.
+        await db_session.execute(
+            update(ProductModel).where(ProductModel.product_id == product.id).values(quantity=2)
+        )
+        await db_session.commit()
+
+        doubled = await client.get(f"/api/v1/products/{product.id}/cost", headers=auth_headers)
+        assert doubled.status_code == 200, doubled.text
+        doubled_lines = {
+            line["key"]: Decimal(str(line["amount"])) for line in doubled.json()["lines"]
+        }
+        assert doubled_lines["material"] == Decimal("2.00"), (
+            f"two of the model is 2.00 of material, not {doubled_lines['material']}"
+        )
 
 
 class TestProductListDetailConsistency:

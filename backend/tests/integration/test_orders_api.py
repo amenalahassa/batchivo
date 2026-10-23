@@ -203,7 +203,10 @@ class TestCreateOrder:
                 "shipping_postcode": "LS1 1AA",
                 "shipping_country": "United Kingdom",
                 "shipping_method": "Royal Mail Tracked 48",
-                "shipping_cost": 3.5,
+                # Sent as decimal strings. The API validates them as `Decimal`
+                # and would coerce a JSON number, but a client that sends one
+                # has already put the amount through a binary double.
+                "shipping_cost": "3.50",
                 "sales_channel_id": str(test_sales_channel_for_orders.id),
                 "payment_provider": "manual",
                 "payment_status": "completed",
@@ -213,7 +216,7 @@ class TestCreateOrder:
                     {
                         "product_id": str(test_product_for_orders.id),
                         "quantity": 2,
-                        "unit_price": 12.25,
+                        "unit_price": "12.25",
                     }
                 ],
             },
@@ -224,13 +227,20 @@ class TestCreateOrder:
         assert data["order_number"].startswith("TEST-")
         assert data["status"] == OrderStatus.PENDING
         assert data["customer_email"] == "manual@example.com"
-        assert data["subtotal"] == 24.5
-        assert data["shipping_cost"] == 3.5
-        assert data["total"] == 28.0
+        # Decimal **strings**, not JSON numbers. These five figures were
+        # `float` on `OrderResponse` until T201 retyped them; comparing them
+        # as `Decimal` rather than by string keeps the assertion about the
+        # value while `test_money_serialisation.py` owns the wire format.
+        assert Decimal(data["subtotal"]) == Decimal("24.50")
+        assert Decimal(data["shipping_cost"]) == Decimal("3.50")
+        assert Decimal(data["total"]) == Decimal("28.00")
+        assert isinstance(data["total"], str), (
+            "an order total crossed the wire as a JSON number (Constitution IV)"
+        )
         assert data["payment_provider"] == "manual"
         assert data["payment_status"] == "completed"
         assert data["items"][0]["product_sku"] == test_product_for_orders.sku
-        assert data["items"][0]["total_price"] == 24.5
+        assert Decimal(data["items"][0]["total_price"]) == Decimal("24.50")
 
     async def test_create_order_requires_authentication(
         self,
@@ -690,7 +700,12 @@ class TestRefundOrder:
             assert "refunded" in data["message"].lower()
             assert data["refund_id"] == "refund_123"
             assert data["refund_status"] == "COMPLETED"
-            assert data["refund_amount"] == pytest.approx(34.98, rel=0.01)
+            # A decimal string, exactly, not a float within a tolerance: the
+            # refund is what the customer was given back and the figure the
+            # operator reconciles a statement against (task T190,
+            # Constitution IV). `pytest.approx(34.98, rel=0.01)` accepted
+            # anything from £34.63 to £35.33.
+            assert data["refund_amount"] == "34.98"
 
     @pytest.mark.asyncio
     async def test_refund_order_partial(self, client: AsyncClient, test_order: Order):
@@ -706,12 +721,14 @@ class TestRefundOrder:
 
             response = await client.post(
                 f"/api/v1/orders/{test_order.id}/refund",
-                json={"reason": "Partial refund for damaged item", "amount": 10.00},
+                json={"reason": "Partial refund for damaged item", "amount": "10.00"},
             )
 
             assert response.status_code == 200
             data = response.json()
-            assert data["refund_amount"] == 10.00
+            # Quantised to the currency's precision at the edge, so £10 is sent
+            # as "10.00" and not "10".
+            assert data["refund_amount"] == "10.00"
 
     @pytest.mark.asyncio
     async def test_refund_order_amount_exceeds_total(self, client: AsyncClient, test_order: Order):

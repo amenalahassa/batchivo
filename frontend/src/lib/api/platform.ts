@@ -5,6 +5,7 @@
  * These endpoints are only accessible to platform administrators.
  */
 
+import type { Money } from '@/types/pricing'
 import { apiClient } from '../api'
 
 // ==================== Types ====================
@@ -29,7 +30,15 @@ export interface TenantDetail extends Tenant {
   user_count: number
   product_count: number
   order_count: number
-  total_revenue: number
+  /**
+   * A decimal string, not a number.
+   *
+   * It is a `SUM` over every settled order's `Numeric` total -- the figure
+   * that accumulates the most error of any in the system -- so it crosses the
+   * wire exactly and is rendered with `formatMoney` rather than parsed into a
+   * double here (task T186, Constitution IV).
+   */
+  total_revenue: Money
 }
 
 /**

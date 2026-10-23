@@ -28,6 +28,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { ProductPricingEditor } from './ProductPricingEditor'
 import * as productsApi from '@/lib/api/products'
+import type { TenantRole } from '@/lib/auth'
 
 vi.mock('@/lib/api/products', () => ({
   addProductPricing: vi.fn(),
@@ -40,9 +41,39 @@ vi.mock('@/lib/api/sales-channels', () => ({
   listSalesChannels: vi.fn(),
 }))
 
+// The price finder has its own tests. Here it is stubbed so this file can
+// assert what the editor *hands* it: whether a solved price may be applied is
+// the editor's decision, and it is the one FR-007a governs.
+const finderProps: { onApply?: (price: string) => void; open?: boolean }[] = []
+
+vi.mock('@/components/pricing/PriceFinderDialog', () => ({
+  PriceFinderDialog: (props: { onApply?: (price: string) => void; open?: boolean }) => {
+    finderProps.push(props)
+    return null
+  },
+}))
+
 vi.mock('@/hooks/useCurrency', () => ({
   useCurrency: () => ({
+    // The whole hook's shape, not only the formatter: the price finder is
+    // handed the symbol on its own, and a mock missing it fails every test in
+    // this file for a reason that has nothing to do with pricing.
+    currency: { code: 'CAD', symbol: 'CA$' },
     formatCurrency: (value: string | number) => `CA$${Number(value).toFixed(2)}`,
+  }),
+}))
+
+// The role the mocked `useAuth` reports. The editor reads it to decide whether
+// a solved price may be applied to the price itself, which is monetary policy
+// (FR-007a). Mocked rather than wrapped in a real `AuthProvider`, which would
+// reach for a token: the screen under test is the pricing editor, not the
+// session.
+let currentRole: TenantRole | null = 'admin'
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { email: 'operator@example.com', role: currentRole },
+    logout: vi.fn(),
   }),
 }))
 
@@ -112,6 +143,8 @@ function renderEditor(pricing: productsApi.ProductPricing[], makeCost = '20.30')
 
 beforeEach(() => {
   vi.clearAllMocks()
+  currentRole = 'admin'
+  finderProps.length = 0
   vi.mocked(listSalesChannels).mockResolvedValue({
     channels: [
       { id: ETSY, name: 'Golden Marketplace', platform_type: 'etsy' },
@@ -190,7 +223,7 @@ describe('quantity tiers', () => {
   it('says plainly that a tier means that quantity or more', async () => {
     // The ambiguity this removes is worth money: whether a ten-unit order gets
     // the "10+" price depends on it.
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([])
 
     await user.click(screen.getByRole('button', { name: /add pricing/i }))
@@ -200,7 +233,7 @@ describe('quantity tiers', () => {
 
   it('sends the tier when adding a price', async () => {
     vi.mocked(productsApi.addProductPricing).mockResolvedValue(priceRow())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([])
 
     await user.click(screen.getByRole('button', { name: /add pricing/i }))
@@ -223,7 +256,7 @@ describe('quantity tiers', () => {
 
   it('defaults a new price to the base tier', async () => {
     vi.mocked(productsApi.addProductPricing).mockResolvedValue(priceRow())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([])
 
     await user.click(screen.getByRole('button', { name: /add pricing/i }))
@@ -243,7 +276,7 @@ describe('quantity tiers', () => {
     // The tier is part of the row's identity. Editing it in place would make
     // two tiers collide, which the API refuses; the field is disabled instead
     // so the operator adds a tier rather than discovering a 409.
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ min_quantity: 10 })])
 
     await user.click(await screen.findByRole('button', { name: /edit price for/i }))
@@ -278,7 +311,7 @@ describe('quantity tiers', () => {
   })
 
   it('keeps every channel selectable, since a channel can carry several tiers', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ min_quantity: 1 })])
 
     await user.click(screen.getByRole('button', { name: /add pricing/i }))
@@ -327,7 +360,7 @@ describe('effective periods', () => {
   })
 
   it('says that changing a price opens a new period', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /edit price for/i }))
@@ -338,7 +371,7 @@ describe('effective periods', () => {
   it('does not prefill the old period start when editing', async () => {
     // Reusing the current period's start date overlaps it, which the API
     // refuses. Blank means today, which is what a price change means.
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ valid_from: '2026-07-01' })])
 
     await user.click(await screen.findByRole('button', { name: /edit price for/i }))
@@ -348,7 +381,7 @@ describe('effective periods', () => {
 
   it('omits the date entirely when left blank, rather than sending an empty string', async () => {
     vi.mocked(productsApi.updateProductPricing).mockResolvedValue(priceRow())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ id: 'p1' })])
 
     await user.click(await screen.findByRole('button', { name: /edit price for/i }))
@@ -367,7 +400,7 @@ describe('effective periods', () => {
 
   it('sends a backdated start when one is given', async () => {
     vi.mocked(productsApi.addProductPricing).mockResolvedValue(priceRow())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([])
 
     await user.click(screen.getByRole('button', { name: /add pricing/i }))
@@ -436,7 +469,7 @@ describe('price history', () => {
 
   it('fetches the history for the channel whose button was clicked', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([
       priceRow({ id: 'e', sales_channel_id: ETSY }),
       priceRow({ id: 's', sales_channel_id: SHOPIFY, channel_name: 'Own Shop' }),
@@ -451,7 +484,7 @@ describe('price history', () => {
 
   it('shows every past price, not only the current one', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -462,7 +495,7 @@ describe('price history', () => {
 
   it('marks which period is current and which are superseded', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -473,7 +506,7 @@ describe('price history', () => {
 
   it('shows a closed period with both its ends', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -497,7 +530,7 @@ describe('price history', () => {
     // a past price valued against today's cost, which is the restatement
     // FR-038 exists to prevent -- and it would look entirely reasonable.
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -514,7 +547,7 @@ describe('price history', () => {
 
   it('explains why there is no margin, rather than leaving it unexplained', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue(history)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -524,7 +557,7 @@ describe('price history', () => {
 
   it('reports an empty history plainly', async () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue([])
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -536,7 +569,7 @@ describe('price history', () => {
     vi.mocked(productsApi.getProductPricingHistory).mockResolvedValue([
       priceRow({ id: 'h', min_quantity: 25, valid_to: '2026-06-30', is_current: false }),
     ])
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /price history for/i }))
@@ -554,7 +587,7 @@ describe('closing a period', () => {
   it('describes removal as closing a period, not deleting a record', async () => {
     // An operator who believes "remove" deletes the record will not trust the
     // history that follows it.
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /stop selling at/i }))
@@ -564,7 +597,7 @@ describe('closing a period', () => {
   })
 
   it('says that orders already placed keep their price', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow()])
 
     await user.click(await screen.findByRole('button', { name: /stop selling at/i }))
@@ -573,7 +606,7 @@ describe('closing a period', () => {
   })
 
   it('names the tier it is about to close', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ min_quantity: 10 })])
 
     await user.click(await screen.findByRole('button', { name: /stop selling at 10\+/i }))
@@ -584,7 +617,7 @@ describe('closing a period', () => {
 
   it('closes the period through the API', async () => {
     vi.mocked(productsApi.removeProductPricing).mockResolvedValue(undefined)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ id: 'to-close' })])
 
     await user.click(await screen.findByRole('button', { name: /stop selling at/i }))
@@ -618,7 +651,7 @@ describe('the figures already on this screen', () => {
 
   it('invalidates the history after a price change, so it is not stale', async () => {
     vi.mocked(productsApi.updateProductPricing).mockResolvedValue(priceRow())
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const { queryClient } = renderEditor([priceRow({ id: 'p1' })])
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -633,5 +666,52 @@ describe('the figures already on this screen', () => {
         queryKey: ['product-pricing-history', PRODUCT_ID],
       })
     })
+  })
+})
+
+describe('who may apply a solved price (FR-007a)', () => {
+  /** Open the finder on the one priced channel, and report its props. */
+  async function openFinder() {
+    const user = userEvent.setup({ delay: null })
+    renderEditor([priceRow()])
+    await user.click(await screen.findByRole('button', { name: /find a price for/i }))
+    return finderProps[finderProps.length - 1]
+  }
+
+  it('offers an admin a way to take the price', async () => {
+    expect(typeof (await openFinder())?.onApply).toBe('function')
+  })
+
+  it('offers an owner the same', async () => {
+    currentRole = 'owner'
+
+    expect(typeof (await openFinder())?.onApply).toBe('function')
+  })
+
+  it('leaves the finder read-only for a viewer', async () => {
+    // Reading the ladder is open to every role (FR-007c); taking the price is
+    // a write. A control that looks enabled and then fails on save is worse
+    // than one plainly not offered (FR-007d).
+    currentRole = 'viewer'
+
+    const props = await openFinder()
+
+    expect(props?.open).toBe(true)
+    expect(props?.onApply).toBeUndefined()
+  })
+
+  it('leaves it read-only for a member, whose remit is operational', async () => {
+    // FR-007b: a member sets print time and waste, not what a thing sells for.
+    currentRole = 'member'
+
+    expect((await openFinder())?.onApply).toBeUndefined()
+  })
+
+  it('leaves it read-only when no role is known at all', async () => {
+    // A missing role is read-only, never permissive: a session that has not
+    // reported one must not be assumed to be an admin.
+    currentRole = null
+
+    expect((await openFinder())?.onApply).toBeUndefined()
   })
 })

@@ -2,8 +2,16 @@
  * App route configuration tests.
  * Verifies the /inventory → /filaments redirect and route configuration.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { Route, RootRoute, Navigate } from '@tanstack/react-router'
+
+/*
+ * These are the real route classes, instantiated to check the route tree
+ * App.tsx builds. The stub in `src/test/setup.ts` cannot stand in for them,
+ * so this file takes the real module and pays its import; see the note there
+ * for why every other test file does not.
+ */
+vi.unmock('@tanstack/react-router')
 
 describe('App routing — inventory redirect', () => {
   it('navigating to /inventory redirects to /filaments', () => {

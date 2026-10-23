@@ -3,6 +3,7 @@ Tests for platform admin Pydantic schemas.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -78,14 +79,23 @@ class TestTenantDetailResponse:
         assert t.user_count == 0
         assert t.product_count == 0
         assert t.order_count == 0
-        assert t.total_revenue == 0.0
+        assert t.total_revenue == Decimal("0")
 
     def test_with_stats(self):
         t = TenantDetailResponse(
-            **self._base(user_count=5, product_count=50, order_count=200, total_revenue=9999.99)
+            **self._base(
+                user_count=5,
+                product_count=50,
+                order_count=200,
+                total_revenue=Decimal("9999.99"),
+            )
         )
         assert t.user_count == 5
-        assert t.total_revenue == 9999.99
+        # `Decimal("9999.99") == 9999.99` is False, and this assertion read
+        # `== 9999.99` until the field stopped being a `float` (task T186).
+        # That it now fails against the float is the fix showing itself: a
+        # revenue total summed from `Numeric` columns crosses the wire exact.
+        assert t.total_revenue == Decimal("9999.99")
 
 
 class TestPaginatedTenantsResponse:

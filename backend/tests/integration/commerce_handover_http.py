@@ -13,7 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.api.v1 import customer_account, customer_auth, payments, shop
-from app.auth.customer_dependencies import create_customer_refresh_token, get_current_customer
+from app.auth.customer_dependencies import (
+    create_customer_refresh_token,
+    get_current_customer,
+    get_customer_db,
+)
 from app.auth.dependencies import get_shop_sales_channel, get_shop_tenant
 from app.database import get_db
 from app.models.webhook_event import WebhookEvent
@@ -43,6 +47,7 @@ async def probe_http(engine, check):
     app.dependency_overrides[get_shop_tenant] = lambda: tenant
     app.dependency_overrides[get_shop_sales_channel] = lambda: (tenant, None)
     app.dependency_overrides[get_current_customer] = lambda: customer
+    app.dependency_overrides[get_customer_db] = database
     product = uuid4()
     async with engine.begin() as conn:
         await conn.execute(

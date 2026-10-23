@@ -1,7 +1,20 @@
 /**
  * TypeScript types for Consumable Inventory API
  * These match the Pydantic schemas in backend/app/schemas/consumable.py
+ *
+ * Every money field is a decimal **string**, not a number. The backend holds
+ * them as `Decimal` and serialises them as strings, because
+ * `current_cost_per_unit` is read by the costing engine and a cost that
+ * arrives as a JavaScript number has already lost the exactness the engine
+ * computes with (Constitution IV, task T144). Render them with `formatMoney`
+ * and do arithmetic on them with the helpers in `@/lib/money` -- never with
+ * `parseFloat` and `*`.
+ *
+ * A quantity, a reorder point and a lead time stay numbers: they count things.
  */
+
+/** A money amount as the exact decimal string the API sent, e.g. "20.30". */
+type Money = string
 
 // =============================================================================
 // ConsumableType Types
@@ -18,7 +31,7 @@ export interface ConsumableTypeBase {
   unit_of_measure: string // each, ml, g, pack
 
   // Current pricing
-  current_cost_per_unit?: number | null // Current cost per unit
+  current_cost_per_unit?: Money | null // Current cost per unit
 
   // Stock management
   quantity_on_hand: number // Current stock quantity
@@ -45,7 +58,7 @@ export interface ConsumableTypeUpdate {
   description?: string | null
   category?: string | null
   unit_of_measure?: string
-  current_cost_per_unit?: number | null
+  current_cost_per_unit?: Money | null
   quantity_on_hand?: number
   reorder_point?: number | null
   reorder_quantity?: number | null
@@ -65,7 +78,7 @@ export interface ConsumableTypeResponse extends ConsumableTypeBase {
 
   // Computed fields
   is_low_stock: boolean // Whether stock is below reorder point
-  stock_value: number // Total value of stock on hand
+  stock_value: Money // Total value of stock on hand
 }
 
 // List response for consumable types
@@ -94,7 +107,7 @@ export interface ConsumableTypeListParams {
 export interface ConsumablePurchaseBase {
   consumable_type_id: string // UUID of consumable type
   quantity_purchased: number
-  total_cost: number
+  total_cost: Money
 
   // Source
   supplier?: string | null
@@ -111,7 +124,7 @@ export type ConsumablePurchaseCreate = ConsumablePurchaseBase
 // Update purchase request
 export interface ConsumablePurchaseUpdate {
   quantity_purchased?: number
-  total_cost?: number
+  total_cost?: Money
   supplier?: string | null
   order_reference?: string | null
   purchase_url?: string | null
@@ -123,7 +136,7 @@ export interface ConsumablePurchaseUpdate {
 export interface ConsumablePurchaseResponse extends ConsumablePurchaseBase {
   id: string // UUID
   tenant_id: string // UUID
-  cost_per_unit: number
+  cost_per_unit: Money
   quantity_remaining: number // For FIFO tracking
   created_at: string // ISO 8601 datetime
   updated_at: string // ISO 8601 datetime
@@ -178,8 +191,8 @@ export type ConsumableUsageCreate = ConsumableUsageBase
 export interface ConsumableUsageResponse extends ConsumableUsageBase {
   id: string // UUID
   tenant_id: string // UUID
-  cost_at_use?: number | null // Cost per unit at time of use
-  total_cost: number // Total cost of this usage
+  cost_at_use?: Money | null // Cost per unit at time of use
+  total_cost: Money // Total cost of this usage
   created_at: string // ISO 8601 datetime
   updated_at: string // ISO 8601 datetime
 }
@@ -226,7 +239,7 @@ export interface LowStockAlert {
   reorder_point: number
   reorder_quantity?: number | null
   preferred_supplier?: string | null
-  stock_value: number
+  stock_value: Money
 }
 
 // =============================================================================

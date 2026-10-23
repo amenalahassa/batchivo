@@ -4,7 +4,9 @@ Customers have separate auth from admin Users.
 Customer tokens include customer_id and tenant_id.
 """
 
+import logging
 import uuid
+from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 
@@ -12,13 +14,15 @@ import jwt
 from fastapi import Depends, Header, HTTPException, status
 from jwt.exceptions import PyJWTError
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import get_db
+from app.database import async_session_maker, get_db
 from app.models.customer import Customer
 from app.models.tenant import Tenant
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -210,7 +214,53 @@ async def get_optional_customer(
     return result.scalar_one_or_none()
 
 
+async def get_customer_db(
+    customer: Annotated[Customer, Depends(get_current_customer)],
+) -> AsyncGenerator[AsyncSession, None]:
+    """A database session with RLS context set for a **customer** request.
+
+    Neither existing session dependency fits the customer account surface.
+    `get_tenant_db` reads `request.state.tenant_id`, which
+    `TenantContextMiddleware` sets from a *staff* JWT, and a shopper has none.
+    `get_shop_db` resolves its tenant from the `X-Shop-Hostname` header, which
+    is supplied by the client and unauthenticated, and making it required here
+    would turn fourteen working endpoints into 422s for any storefront that
+    does not send it.
+
+    The customer's own access token already carries `tenant_id`, and
+    `get_current_customer` has verified the signature and loaded the matching
+    row before this runs. So the tenant used to scope the session is the one
+    the token was issued for -- stronger provenance than a header, and no new
+    requirement on the caller.
+
+    Until this existed, all fourteen handlers ran on the un-scoped session,
+    four of them serving a customer their own order money with an
+    application-level `Order.tenant_id == customer.tenant_id` filter and a
+    lowercase email match as the only belt (Constitution I).
+    """
+    async with async_session_maker() as session:
+        try:
+            if settings.rls_enabled:
+                # SET LOCAL is transaction-scoped and clears itself at the end.
+                await session.execute(
+                    text("SET LOCAL app.current_tenant_id = :tenant_id"),
+                    {"tenant_id": str(customer.tenant_id)},
+                )
+                logger.debug(f"Customer RLS context set: tenant_id={customer.tenant_id}")
+
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
 # Type aliases for cleaner route signatures
 CurrentCustomer = Annotated[Customer, Depends(get_current_customer)]
 CurrentCustomerTenant = Annotated[Tenant, Depends(get_current_customer_tenant)]
 OptionalCustomer = Annotated[Optional[Customer], Depends(get_optional_customer)]
+
+#: An RLS-scoped session for an authenticated customer route.
+CustomerDB = Annotated[AsyncSession, Depends(get_customer_db)]

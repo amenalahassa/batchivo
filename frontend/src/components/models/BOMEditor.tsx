@@ -13,6 +13,8 @@ import { HelpCircle, Info, Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { addModelMaterial, removeModelMaterial, type ModelMaterial } from '@/lib/api/models'
 import { spoolsApi } from '@/lib/api/spools'
+import { divideMoney, formatMoney, multiplyMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -127,20 +129,23 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
   const handleSpoolSelect = (spoolId: string) => {
     const spool = spoolsData?.spools.find((s) => s.id === spoolId)
     if (spool) {
-      // Calculate cost per gram from spool
-      const purchasePrice = spool.purchase_price || 0
+      // Cost per gram, prefilled from what the spool cost. Divided in
+      // decimal: the figure the operator accepts here becomes the material
+      // line, and `parseFloat(a) / b` is the conversion T151 took out of the
+      // display two dozen lines below (Constitution IV, task T158).
       const initialWeight = spool.initial_weight || 0
       if (initialWeight > 0) {
-        const costPerGram = (purchasePrice / initialWeight).toFixed(4)
-        form.setValue('cost_per_gram', costPerGram)
+        const costPerGram = divideMoney(spool.purchase_price, initialWeight, 4)
+        if (costPerGram !== null) form.setValue('cost_per_gram', costPerGram)
       }
     }
   }
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(4)}`
-  }
+  // Four places, because a per-gram filament cost is fractions of a penny. It
+  // renders the decimal string the API sent and never becomes a double
+  // (Constitution IV, task T151).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, '£', { places: 4 })
 
   return (
     <div className="space-y-4">
@@ -284,7 +289,14 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
               <div className="flex items-center gap-4">
                 <div className="text-right">
                   <div className="font-semibold">
-                    {formatCurrency((parseFloat(material.weight_grams) * parseFloat(material.cost_per_gram)).toFixed(3))}
+                    {/*
+                      Weight times a per-gram cost -- the engine's own material
+                      line (`costing.py`). As two `parseFloat`s and a `*` the
+                      two can differ in the fourth place while reporting the
+                      same inputs; multiplied exactly they cannot (FR-047,
+                      FR-048, task T151).
+                    */}
+                    {formatCurrency(multiplyMoney(material.cost_per_gram, material.weight_grams))}
                   </div>
                 </div>
                 <AlertDialog>

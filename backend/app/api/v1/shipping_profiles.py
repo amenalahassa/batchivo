@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.models.shipping_profile import ShippingProfile
-from app.schemas.fee_rule import (
+from app.schemas.shipping_profile import (
     ShippingProfileCreate,
     ShippingProfileListResponse,
     ShippingProfileResponse,

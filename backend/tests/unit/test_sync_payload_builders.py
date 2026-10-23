@@ -320,13 +320,16 @@ class TestEtsyBuildListingData:
         etsy_p = make_pricing(12.00, platform_type="etsy")
         product = make_product(pricing=[shopify_p, etsy_p])
         data = self._build(product)
-        assert data["price"] == 12.0
+        assert data["price"] == Decimal("12.00")
 
     def test_price_falls_back_to_any_active_pricing(self):
+        # `== 9.99` before T191, which held only because the figure had been
+        # pushed through `float()`: `Decimal("9.99") == 9.99` is False, since
+        # the float is not 9.99 (task T191, Constitution IV).
         shopify_p = make_pricing(9.99, platform_type="shopify")
         product = make_product(pricing=[shopify_p])
         data = self._build(product)
-        assert data["price"] == 9.99
+        assert data["price"] == Decimal("9.99")
 
     def test_price_none_when_no_pricing(self):
         product = make_product(pricing=[])
@@ -416,3 +419,89 @@ class TestEtsyBuildListingData:
         product = make_product()
         data = self._build(product)
         assert data["who_made"] == "i_did"
+
+
+# ---------------------------------------------------------------------------
+# The Etsy price stays exact from the column to the API (task T191)
+# ---------------------------------------------------------------------------
+
+
+class TestEtsyPriceIsExact:
+    """What a customer is offered, and how far it is from what was set.
+
+    `list_price` is the exact `Numeric` column the temporal price rows are kept
+    in. The builder read it through `float()`, added a variant adjustment
+    computed with `int / 100` -- binary division -- and the publisher then
+    turned the result back into cents with `int(price * 100)`, which truncates.
+    Three lossy steps between the operator's figure and the shopper's
+    (Constitution IV, FR-047).
+    """
+
+    def _build(self, product):
+        return EtsySyncService._build_etsy_listing_data(etsy_service(), product)
+
+    def test_the_price_is_a_decimal_not_a_float(self):
+        product = make_product(pricing=[make_pricing("19.99", platform_type="etsy")])
+        data = self._build(product)
+
+        assert isinstance(data["price"], Decimal), (
+            f"the price is a {type(data['price']).__name__}; an exact Numeric "
+            f"column read through float() is the one lossy step in an "
+            f"otherwise exact chain"
+        )
+        assert data["price"] == Decimal("19.99")
+
+    def test_a_variant_adjustment_is_added_exactly(self):
+        """£19.99 plus 250p is £22.49, not 22.489999999999998."""
+        variants = [make_variant(size="L", display_order=0, price_adjustment_pence=250)]
+        product = make_product(
+            pricing=[make_pricing("19.99", platform_type="etsy")],
+            variants=variants,
+        )
+        data = self._build(product)
+
+        assert data["variants"][0]["price"] == Decimal("22.49")
+        assert isinstance(data["variants"][0]["price"], Decimal)
+
+    def test_a_variant_with_no_price_configured_is_the_adjustment_alone(self):
+        variants = [make_variant(size="L", display_order=0, price_adjustment_pence=499)]
+        product = make_product(pricing=[], variants=variants)
+        data = self._build(product)
+
+        assert data["price"] is None
+        assert data["variants"][0]["price"] == Decimal("4.99")
+
+    def test_the_conversion_back_to_cents_does_not_lose_a_penny(self):
+        """`int(19.99 * 100)` is 1998, and that was the price Etsy was sent.
+
+        The arithmetic is checked here rather than through the publisher,
+        because publishing itself is outside this feature -- the spec places
+        writing prices to connected channels beyond it. What is in scope is
+        that the number handed to the API is the number the operator set.
+        """
+        from app.core.money import pounds_to_pence
+
+        assert pounds_to_pence(Decimal("19.99")) == 1999
+        assert int(19.99 * 100) == 1998, (
+            "if this ever changes, float truncation stopped losing a penny "
+            "and this guard can be reconsidered"
+        )
+
+        # And through the builder, for a variant: 19.99 + 2.50.
+        variants = [make_variant(size="L", display_order=0, price_adjustment_pence=250)]
+        product = make_product(
+            pricing=[make_pricing("19.99", platform_type="etsy")], variants=variants
+        )
+        data = self._build(product)
+        assert pounds_to_pence(data["variants"][0]["price"]) == 2249
+
+    def test_a_third_decimal_rounds_half_up_rather_than_down(self):
+        """A solved per-unit price is not always two places.
+
+        Truncating it would always favour the shop's customer over the shop,
+        by up to a penny per unit, silently.
+        """
+        from app.core.money import pounds_to_pence
+
+        assert pounds_to_pence(Decimal("19.995")) == 2000
+        assert pounds_to_pence(Decimal("19.994")) == 1999

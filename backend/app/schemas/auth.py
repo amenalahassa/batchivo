@@ -56,6 +56,12 @@ class UserResponse(BaseModel):
     currency_code: str = "GBP"
     currency_symbol: str = "£"
     is_platform_admin: bool = False
+    # The role in the tenant above, so the console can disable a control the
+    # API would refuse anyway (FR-007c, FR-007d): a viewer sees every cost and
+    # margin, and every editable control greyed out rather than absent. The
+    # role is never the authorisation -- that stays with `require_role` on the
+    # endpoint -- it only decides what the screen offers.
+    role: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

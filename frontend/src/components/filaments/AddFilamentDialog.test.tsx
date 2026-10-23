@@ -87,7 +87,7 @@ describe('AddFilamentDialog', () => {
   })
 
   it('clicking bulk card shows bulk form', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
     await user.click(screen.getByText('Batch of identical spools'))
     expect(screen.getByText('Add filament — batch')).toBeInTheDocument()
@@ -95,7 +95,7 @@ describe('AddFilamentDialog', () => {
   })
 
   it('clicking batch card shows batch form', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
     await user.click(screen.getByText('Multiple color variants'))
     expect(screen.getByText('Add filament — color variants')).toBeInTheDocument()
@@ -103,7 +103,7 @@ describe('AddFilamentDialog', () => {
   })
 
   it('back button from bulk form returns to mode selector', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
     await user.click(screen.getByText('Batch of identical spools'))
     expect(screen.getByText('Add filament — batch')).toBeInTheDocument()
@@ -113,7 +113,7 @@ describe('AddFilamentDialog', () => {
   })
 
   it('back button from batch form returns to mode selector', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
     await user.click(screen.getByText('Multiple color variants'))
     expect(screen.getByText('Add filament — color variants')).toBeInTheDocument()
@@ -123,14 +123,14 @@ describe('AddFilamentDialog', () => {
   })
 
   it('Submit all is disabled when batch rows are empty', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
     await user.click(screen.getByText('Multiple color variants'))
     expect(screen.getByRole('button', { name: /submit all/i })).toBeDisabled()
   })
 
   it('Add color appends a row and enables Submit all', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
 
     await user.click(screen.getByText('Multiple color variants'))
@@ -152,7 +152,7 @@ describe('AddFilamentDialog', () => {
   })
 
   it('Submit all calls batchCreate mutation with accumulated entries', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderDialog()
 
     await user.click(screen.getByText('Multiple color variants'))

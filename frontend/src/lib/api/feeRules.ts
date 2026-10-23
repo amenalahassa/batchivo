@@ -9,6 +9,7 @@ import type {
   FeeRuleCreate,
   FeeRuleListResponse,
   FeeRuleUpdate,
+  MarginDivergenceList,
   ProductMargin,
   ShippingProfile,
   ShippingProfileCreate,
@@ -116,6 +117,35 @@ export const feeRulesApi = {
       period_end: params.periodEnd,
     })
     return apiClient.get<ChannelPnL>(`/api/v1/reconciliation/channel-pnl?${query.toString()}`)
+  },
+
+  /**
+   * What settled lines actually earned, against the margin they were sold at.
+   *
+   * This is the in-app half of the FR-042 alert. The sweep in
+   * `app/tasks/margin_alerts.py` emails the operator; this is what they open
+   * when they get the email, and what the console shows without one. Passing
+   * `onlyAlerting` narrows it to the lines past their own threshold -- the
+   * ones FR-042 says they must be alerted about.
+   *
+   * Open to every role (FR-007c): the threshold is monetary policy, but
+   * reading its consequence is not.
+   */
+  getMarginDivergence: async (params?: {
+    productId?: string
+    since?: string
+    onlyAlerting?: boolean
+    limit?: number
+  }): Promise<MarginDivergenceList> => {
+    const query = new URLSearchParams()
+    if (params?.productId) query.append('product_id', params.productId)
+    if (params?.since) query.append('since', params.since)
+    if (params?.onlyAlerting) query.append('only_alerting', 'true')
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    const queryString = query.toString()
+    return apiClient.get<MarginDivergenceList>(
+      `/api/v1/reconciliation/margin-divergence${queryString ? `?${queryString}` : ''}`,
+    )
   },
 
   listShippingProfiles: async (

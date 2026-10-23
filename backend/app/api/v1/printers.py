@@ -4,12 +4,13 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
-from app.database import get_db
 from app.schemas.printer import (
+    PowerReadingBatch,
+    PowerReadingResult,
     PrinterCostPolicyResponse,
     PrinterCostPolicyUpdate,
     PrinterCreate,
@@ -19,6 +20,7 @@ from app.schemas.printer import (
     PrinterUpdate,
 )
 from app.services.printer_service import PrinterService
+from app.tasks.power import PowerReading, ingest_power_readings
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +55,7 @@ async def create_printer(
     printer_data: PrinterCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> PrinterResponse:
     """
     Create a new printer.
@@ -70,7 +72,7 @@ async def create_printer(
 async def list_printers(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Max items to return"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
@@ -91,7 +93,7 @@ async def get_printer(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> PrinterResponse:
     """
     Get printer details by ID.
@@ -117,7 +119,7 @@ async def update_printer(
     printer_data: PrinterUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> PrinterResponse:
     """
     Update an existing printer.
@@ -142,7 +144,7 @@ async def delete_printer(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """
     Delete a printer (soft delete by setting is_active=False).
@@ -256,3 +258,75 @@ async def update_printer_cost_policy(
     )
 
     return await _cost_policy_response(printer, db, tenant)
+
+
+@router.post(
+    "/{printer_id}/power-readings",
+    response_model=PowerReadingResult,
+    status_code=status.HTTP_200_OK,
+)
+async def record_power_readings(
+    printer_id: UUID,
+    batch: PowerReadingBatch,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    db: TenantDB,
+) -> PowerReadingResult:
+    """Record smart-plug readings of this machine's draw. Any member may.
+
+    A measured draw is a measurement rather than a decision, so FR-007b puts
+    it with the member who takes it. It is the one cost input where a cheap
+    sensor beats any estimate: a printer's nameplate rating is roughly twice
+    its printing draw, so an operator who typed the nameplate is over-costing
+    every print on that machine.
+
+    The readings do not overwrite the figure. They go through
+    `variance_service` like any other observation -- a rolling average once
+    enough of them agree (FR-042a), held as a proposal beyond the operator's
+    divergence threshold (FR-042b), and never touching a figure the operator
+    set themselves (FR-042g). A plug reporting kilowatts where watts were
+    expected lands in the second case, which is the whole reason a reading
+    does not simply overwrite.
+
+    Before this route the ingestion existed and nothing called it: no
+    endpoint, no schedule, no caller in `app/`, so `measured_watts` could
+    never acquire an observed origin and the power-draw share SC-010 counts
+    was unreachable in a running system (task T159).
+
+    Done in the request rather than queued. The work is a handful of rows and
+    an operator posting a reading wants the answer -- applied, or held, and
+    why -- rather than a job id; the Celery task over the same function stays
+    the entry point for a bulk plug integration.
+    """
+    service = PrinterService(db, tenant, user)
+    printer = await service.get_printer(printer_id)
+
+    if not printer:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Printer not found",
+        )
+
+    readings: list[PowerReading] = [
+        (entry.source_id, entry.watts, entry.observed_on) for entry in batch.readings
+    ]
+    decision = await ingest_power_readings(db, tenant, printer, readings, user=user)
+    await db.commit()
+    await db.refresh(printer)
+
+    logger.info(
+        f"Printer {printer.id}: considered {len(readings)} power reading(s) -- "
+        f"{'applied' if decision.applied else 'not applied'}: {decision.reason}"
+    )
+
+    return PowerReadingResult(
+        printer_id=printer.id,
+        readings_accepted=len(decision.run_ids),
+        applied=decision.applied,
+        reason=decision.reason,
+        observed_value=decision.observed_value,
+        divergence_pct=decision.divergence,
+        proposal_id=decision.proposal.id if decision.proposal is not None else None,
+        superseded_proposal_id=decision.superseded_id,
+        measured_watts=printer.measured_watts,
+    )

@@ -24,6 +24,7 @@ import {
   type ProductUpdateRequest,
 } from '@/lib/api/products'
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney } from '@/lib/money'
 import { listDesigners } from '@/lib/api/designers'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -344,7 +345,7 @@ export function ProductForm({ product, mode }: ProductFormProps) {
                                 {consumable.name}
                                 {consumable.current_cost_per_unit && (
                                   <span className="ml-2 text-muted-foreground">
-                                    (£{consumable.current_cost_per_unit.toFixed(2)}/ea)
+                                    ({formatMoney(consumable.current_cost_per_unit, '£')}/ea)
                                   </span>
                                 )}
                               </SelectItem>

@@ -21,6 +21,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.dependencies import get_tenant_db
 from app.config import get_settings
 from app.database import get_db
 from app.main import app
@@ -360,6 +361,7 @@ class TestUnauthorizedResponses:
             yield db_session
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.state.limiter.enabled = False
 
         try:
@@ -391,6 +393,7 @@ class TestUnauthorizedResponses:
             yield db_session
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.state.limiter.enabled = False
 
         try:
@@ -452,6 +455,7 @@ class TestForbiddenResponses:
             return test_tenant
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.dependency_overrides[get_current_user] = override_get_current_user
         app.dependency_overrides[get_current_tenant] = override_get_current_tenant
         app.state.limiter.enabled = False
@@ -489,6 +493,7 @@ class TestForbiddenResponses:
             return test_tenant
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.dependency_overrides[get_current_user] = override_get_current_user
         app.dependency_overrides[get_current_tenant] = override_get_current_tenant
         app.state.limiter.enabled = False
@@ -550,6 +555,7 @@ class TestCrossTenantAccess:
             return test_user
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.dependency_overrides[get_current_user] = override_get_current_user
         app.state.limiter.enabled = False
 
@@ -700,6 +706,7 @@ class TestRoleBasedAccessControl:
             return test_tenant
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.dependency_overrides[get_current_user] = override_get_current_user
         app.dependency_overrides[get_current_tenant] = override_get_current_tenant
         app.state.limiter.enabled = False
@@ -736,6 +743,7 @@ class TestRoleBasedAccessControl:
             return test_tenant
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.dependency_overrides[get_current_user] = override_get_current_user
         app.dependency_overrides[get_current_tenant] = override_get_current_tenant
         app.state.limiter.enabled = False
@@ -858,6 +866,7 @@ class TestAuthenticationHeaders:
             yield db_session
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.state.limiter.enabled = False
 
         try:
@@ -890,6 +899,7 @@ class TestAuthenticationHeaders:
             yield db_session
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
         app.state.limiter.enabled = False
 
         try:

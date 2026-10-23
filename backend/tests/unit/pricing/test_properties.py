@@ -9,12 +9,20 @@ every later tier is built against them and a regression fails loudly.
 No hypothesis dependency: the sweeps below are deterministic and seeded, so a
 failure is reproducible from the test name alone.
 
-Properties covered (tasks.md T008):
+Properties covered (tasks.md T008, completed in T135):
   * margin is monotonic in price
   * cost is monotonic in material weight
   * cost is monotonic in labor hours
-  * a yield of 1.0 is a no-op
+  * cost is monotonic in print hours, and only the machine and overhead lines
+    move with them
+  * a yield of 1.0 is a no-op under both failure modes, and a worse yield never
+    costs less
   * a bundle's cost equals the sum of its children
+
+The print-hour and engine-level yield properties stood as skipped placeholders
+until the Tier 1 engine existed. The engine arrived; the placeholders did not
+follow it, so for several tiers the quickstart's cross-tier suite listed two
+invariants that nothing asserted. They are implemented here.
 """
 
 import random
@@ -28,7 +36,13 @@ import pytest
 from app.schemas.model import CostBreakdown
 from app.services import fee_engine
 from app.services.costing import CostingService
-from tests.unit.pricing.conftest import make_channel, make_fee_rule, make_policy
+from tests.unit.pricing.conftest import (
+    make_channel,
+    make_fee_rule,
+    make_model,
+    make_policy,
+    make_printer,
+)
 
 SEED = 20261011
 
@@ -288,9 +302,80 @@ class TestCostMonotonicInHours:
                 assert total >= previous, f"cost fell at {minutes} assembly minutes"
             previous = total
 
-    @pytest.mark.skip(reason="machine occupancy arrives with Tier 1 (tasks T035, T043)")
-    def test_machine_hours(self) -> None:  # pragma: no cover - placeholder
-        """Print hours must be monotonic in cost once the machine line exists."""
+    def test_print_hours_are_monotonic_in_item_cost(self) -> None:
+        """A longer print never costs less than a shorter one.
+
+        The machine line and the per-machine-hour overhead both scale with
+        print time, so a cost that fell as the print got longer would mean a
+        sign error in one of them. US2's whole point is that slow prints stop
+        looking as cheap as fast ones; this is the property that says so for
+        every duration rather than for the one in the golden case.
+        """
+        previous = None
+        for minutes in range(0, 1200, 30):
+            model = make_model(print_time_minutes=minutes)
+            total = CostingService.item_breakdown(
+                model, policy=make_policy(), printer=make_printer()
+            ).total_make_cost
+            if previous is not None:
+                assert total >= previous, f"cost fell at {minutes} print minutes"
+            previous = total
+
+    def test_only_the_machine_and_overhead_lines_move_with_print_hours(self) -> None:
+        """US2's independent test: vary print hours and nothing else moves.
+
+        Material, waste, labour and packaging are quantities per part; none is
+        a function of duration. If one of them tracked print time, the engine
+        would be charging the same input twice.
+        """
+        short = CostingService.item_breakdown(
+            make_model(print_time_minutes=120), policy=make_policy(), printer=make_printer()
+        )
+        long = CostingService.item_breakdown(
+            make_model(print_time_minutes=600), policy=make_policy(), printer=make_printer()
+        )
+
+        moved = {
+            line.key
+            for line in long.lines
+            if line.amount
+            != next((other.amount for other in short.lines if other.key == line.key), None)
+        }
+        assert moved <= {"machine", "overhead"}, (
+            f"print time moved lines it should not touch: {sorted(moved - {'machine', 'overhead'})}"
+        )
+        assert "machine" in moved, "the machine line did not move with print time"
+
+    def test_machine_cost_scales_about_linearly_with_hours(self) -> None:
+        """Five times the hours, about five times the occupancy charge.
+
+        US2 scenario 2 says "roughly five times", and roughly is the honest
+        word: the machine and overhead lines are each a rate times hours, but
+        the breakdown rounds every line to the cent for presentation, and at
+        two hours the charge is small enough that the rounding shows up in the
+        ratio (5.019, not 5.000). Asserting an exact 5 would assert that the
+        lines carry more precision than they are published with, so the
+        tolerance is 1% -- ample for the rounding, far too tight for a sign
+        error or a wrong factor.
+        """
+        two_hours = CostingService.item_breakdown(
+            make_model(print_time_minutes=120), policy=make_policy(), printer=make_printer()
+        )
+        ten_hours = CostingService.item_breakdown(
+            make_model(print_time_minutes=600), policy=make_policy(), printer=make_printer()
+        )
+
+        def occupancy(breakdown: CostBreakdown) -> Decimal:
+            return sum(
+                (line.amount for line in breakdown.lines if line.key in {"machine", "overhead"}),
+                Decimal("0"),
+            )
+
+        assert occupancy(two_hours) > Decimal("0"), "no occupancy charge to compare"
+        ratio = occupancy(ten_hours) / occupancy(two_hours)
+        assert abs(ratio - Decimal("5")) < Decimal("0.05"), (
+            f"ten hours cost {ratio}x two hours, not roughly 5x"
+        )
 
 
 # ============================================================================
@@ -350,9 +435,64 @@ class TestYieldOfOneIsANoOp:
             "this test was standing in for -- move the assertion there"
         )
 
-    @pytest.mark.skip(reason="engine-level yield arrives with Tier 1 (tasks T036, T043)")
-    def test_engine_yield_of_one_matches_no_yield_at_all(self) -> None:  # pragma: no cover
-        """Costing at yield 1.0 must equal costing with yield absent."""
+    def test_engine_yield_of_one_matches_no_yield_at_all(self) -> None:
+        """Costing at yield 1.0 equals costing with no yield recorded.
+
+        The spec's first edge case: "a yield of 100% must be a no-op on cost
+        under either failure mode". If the two differ, the premium formula has
+        an off-by-one that every yield figure then carries.
+        """
+        for mode in ("per_part", "per_plate"):
+            perfect = CostingService.item_breakdown(
+                make_model(expected_yield=Decimal("1"), failure_mode=mode),
+                policy=make_policy(),
+                printer=make_printer(),
+            )
+            assert perfect.failure_premium == Decimal("0"), (
+                f"a perfect yield charged a premium under {mode}"
+            )
+            assert perfect.total_make_cost == (
+                perfect.at_risk_subtotal + perfect.not_at_risk_subtotal
+            ), f"a perfect yield changed the total under {mode}"
+
+    def test_the_two_failure_modes_agree_at_one_print_per_plate(self) -> None:
+        """The boundary case that proves the two formulas consistent.
+
+        With one part per plate there is no difference between losing the part
+        and losing the plate, so SC-002b requires the same make-cost. Above one
+        per plate they must diverge, which the next test holds.
+        """
+        per_part = CostingService.item_breakdown(
+            make_model(prints_per_plate=1, failure_mode="per_part"),
+            policy=make_policy(),
+            printer=make_printer(),
+        )
+        per_plate = CostingService.item_breakdown(
+            make_model(prints_per_plate=1, failure_mode="per_plate"),
+            policy=make_policy(),
+            printer=make_printer(),
+        )
+
+        assert per_plate.total_make_cost == per_part.total_make_cost
+
+    def test_a_lower_yield_never_lowers_cost(self) -> None:
+        """Cost is monotonic in yield, the other way round.
+
+        A failure premium that shrank as the yield worsened would be the most
+        expensive kind of sign error: it would make the least reliable items
+        look like the cheapest ones to print.
+        """
+        previous = None
+        for percent in range(100, 9, -5):
+            yield_figure = Decimal(percent) / Decimal("100")
+            total = CostingService.item_breakdown(
+                make_model(expected_yield=yield_figure),
+                policy=make_policy(),
+                printer=make_printer(),
+            ).total_make_cost
+            if previous is not None:
+                assert total >= previous, f"cost fell as yield dropped to {yield_figure}"
+            previous = total
 
 
 # ============================================================================

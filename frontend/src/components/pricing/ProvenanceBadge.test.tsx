@@ -59,6 +59,7 @@ function line(overrides: Partial<CostLine> = {}): CostLine {
     risk_class: 'at_risk',
     source: 'measured',
     as_of: daysAgo(2),
+    has_pending_revision: false,
     ...overrides,
   }
 }
@@ -477,7 +478,7 @@ describe('EstimateProposalList', () => {
     vi.mocked(pricingApi.acceptEstimateRevision).mockResolvedValue(
       revision({ state: 'accepted' }),
     )
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderList()
 
     await user.click(await screen.findByRole('button', { name: /accept the observed/i }))
@@ -493,7 +494,7 @@ describe('EstimateProposalList', () => {
       total: 1,
       pending_count: 1,
     })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderList()
 
     await user.click(await screen.findByRole('button', { name: /reject the observed/i }))
@@ -510,7 +511,7 @@ describe('EstimateProposalList', () => {
       total: 1,
       pending_count: 1,
     })
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderList()
 
     await user.click(await screen.findByRole('button', { name: /reject the observed/i }))
@@ -529,7 +530,7 @@ describe('EstimateProposalList', () => {
     vi.mocked(pricingApi.rejectEstimateRevision).mockResolvedValue(
       revision({ state: 'rejected' }),
     )
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderList()
 
     await user.click(await screen.findByRole('button', { name: /reject the observed/i }))
@@ -551,7 +552,7 @@ describe('EstimateProposalList', () => {
     vi.mocked(pricingApi.acceptEstimateRevision).mockResolvedValue(
       revision({ state: 'accepted' }),
     )
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const { queryClient } = renderList()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
 
@@ -570,7 +571,7 @@ describe('EstimateProposalList', () => {
       pending_count: 1,
     })
     vi.mocked(pricingApi.acceptEstimateRevision).mockRejectedValue(new Error('409'))
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderList()
 
     await user.click(await screen.findByRole('button', { name: /accept the observed/i }))

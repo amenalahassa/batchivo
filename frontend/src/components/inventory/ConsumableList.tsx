@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney } from '@/lib/money'
 import type { ConsumableTypeListParams } from '@/types/consumable'
 import { CONSUMABLE_CATEGORIES } from '@/types/consumable'
 import {
@@ -111,11 +112,6 @@ export function ConsumableList() {
   // Calculate total pages
   const totalPages = consumableData ? Math.ceil(consumableData.total / params.page_size!) : 0
 
-  // Format currency
-  const formatCurrency = (value: number | null | undefined) => {
-    if (value === null || value === undefined) return '-'
-    return `£${value.toFixed(2)}`
-  }
 
   return (
     <div className="space-y-4">
@@ -323,13 +319,13 @@ export function ConsumableList() {
                       <div>
                         <span className="text-muted-foreground">Cost/Unit:</span>
                         <span className="ml-2 font-mono">
-                          {formatCurrency(consumable.current_cost_per_unit)}
+                          {formatMoney(consumable.current_cost_per_unit, '£')}
                         </span>
                       </div>
                       <div>
                         <span className="text-muted-foreground">Value:</span>
                         <span className="ml-2 font-mono">
-                          {formatCurrency(consumable.stock_value)}
+                          {formatMoney(consumable.stock_value, '£')}
                         </span>
                       </div>
                     </div>
@@ -413,10 +409,10 @@ export function ConsumableList() {
                           {consumable.quantity_on_hand} {consumable.unit_of_measure}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(consumable.current_cost_per_unit)}
+                          {formatMoney(consumable.current_cost_per_unit, '£')}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(consumable.stock_value)}
+                          {formatMoney(consumable.stock_value, '£')}
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">

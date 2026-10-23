@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.shop_resolver import resolve_tenant_by_slug
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, scope_session_to_tenant
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.sales_channel import SalesChannel
 from app.services.sale_snapshot import write_sale_snapshot
@@ -209,10 +209,29 @@ async def shopify_webhook(
         logger.warning("shopify_webhook_secret not set — skipping HMAC validation")
 
     # Resolve tenant
+    #
+    # This lookup is itself cross-tenant -- it searches `tenants` by slug -- so
+    # it runs before the session is scoped, exactly as `get_shop_tenant` does
+    # for the storefront.
     tenant = await resolve_tenant_by_slug(db, tenant_slug)
     if not tenant:
         logger.warning(f"Shopify webhook received for unknown tenant slug: {tenant_slug}")
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # Engage row-level security, now that there is a tenant to engage it for
+    # (task T184, Constitution I).
+    #
+    # This handler creates the order, its line items and the FR-036 sale
+    # snapshot carrying `make_cost_at_sale`, `cost_breakdown_json`, `fees_json`
+    # and `fx_rate` -- every one of them written on a session with no
+    # `app.current_tenant_id` set, which left application-level filtering as
+    # the only belt on the path that records what a sale earned.
+    #
+    # A request-time dependency cannot do this: a webhook carries no JWT for
+    # `get_tenant_db` and no `X-Shop-Hostname` for `get_shop_db`, and the
+    # tenant is only known here, from the path segment. `SET LOCAL` is
+    # transaction-scoped and every write below shares this transaction.
+    await scope_session_to_tenant(db, tenant.id)
 
     if topic not in ("orders/create", "orders/updated"):
         logger.info(f"Ignoring Shopify topic: {topic}")

@@ -21,7 +21,8 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import ShopContext, ShopTenant
+from app.auth.dependencies import ShopContext, ShopDB, ShopTenant
+from app.core.money import pence_to_pounds
 from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.category import Category, product_categories
@@ -34,6 +35,8 @@ from app.models.review import Review
 from app.services.cart import CartItem, CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
 from app.services.commerce_handover import legacy_product_write_guard, legacy_shop_write_guard
+from app.services.postage import postage_for_product
+from app.services.sale_snapshot import write_sale_snapshot
 from app.services.search_service import SearchService, get_search_service
 from app.services.shipping_service import ShippingService, get_shipping_service
 from app.services.temporal_pricing import storefront_price
@@ -44,6 +47,11 @@ from app.services.stock_reservation import (
 )
 
 router = APIRouter()
+
+# Module level, because the checkout handler shadows `logging` with its own
+# local import further down and a `logging.getLogger` call above that line
+# would read an unassigned local.
+logger = logging.getLogger(__name__)
 
 # ============================================
 # Schemas
@@ -247,13 +255,13 @@ class ApiResponse(BaseModel):
 async def get_products(
     response: Response,
     shop_context: ShopContext,
+    db: ShopDB,
     category: Optional[str] = None,
     designer: Optional[str] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
     page: int = 1,
     limit: int = 200,
-    db: AsyncSession = Depends(get_db),
     search_service: SearchService = Depends(get_search_service),
 ):
     """
@@ -477,7 +485,7 @@ async def get_products(
 async def get_product(
     product_id: str,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """Get single product details. Accepts a UUID or seo_slug (including Shopify-style slug-N suffixes)."""
     import re as _re
@@ -606,7 +614,7 @@ async def get_product(
 async def get_related_products(
     product_id: str,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     limit: int = 4,
 ):
     """
@@ -761,7 +769,7 @@ async def get_related_products(
 
 
 @router.get("/categories")
-async def get_categories(db: AsyncSession = Depends(get_db)):
+async def get_categories(db: ShopDB):
     """Get product categories for shop navigation."""
     from sqlalchemy import func
 
@@ -800,7 +808,7 @@ async def get_categories(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/designers")
-async def get_designers(db: AsyncSession = Depends(get_db)):
+async def get_designers(db: ShopDB):
     """
     Get active designers for shop display.
 
@@ -847,7 +855,7 @@ async def get_designers(db: AsyncSession = Depends(get_db)):
 @router.get("/designers/{slug}")
 async def get_designer_by_slug(
     slug: str,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Get a single designer by slug with their products.
@@ -890,7 +898,7 @@ async def get_designer_by_slug(
 
 
 @router.get("/dragons")
-async def get_dragons(db: AsyncSession = Depends(get_db)):
+async def get_dragons(db: ShopDB):
     """Get dragon products for the Dragons collection page.
 
     Returns products where is_dragon=True. This is separate from is_featured
@@ -1006,7 +1014,7 @@ async def create_cart(request: dict, cart_service: CartService = Depends(get_car
 async def add_to_cart(
     session_id: str,
     request: AddToCartRequest,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
 ):
@@ -1166,7 +1174,7 @@ async def validate_discount(
     request: Request,
     data: ValidateDiscountRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Validate a discount code for checkout.
@@ -1210,7 +1218,7 @@ async def create_checkout_session(
     http_request: Request,
     request: CreateCheckoutRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     checkout_service: CheckoutSessionService = Depends(get_checkout_session_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
@@ -1247,7 +1255,10 @@ async def create_checkout_session(
         # Validate discount code using resolved shop tenant
         validation_request = DiscountValidationRequest(
             code=request.discountCode,
-            subtotal=subtotal / 100,  # Convert from pence to pounds for validation
+            # `cart.subtotal` is already a `Decimal`, so this division was
+            # exact; it goes through the shared converter so there is one place
+            # the hundred lives rather than twenty-two (task T182).
+            subtotal=pence_to_pounds(subtotal),
             customer_email=request.shippingAddress.email,
         )
 
@@ -1331,7 +1342,7 @@ async def complete_checkout(
     http_request: Request,
     request: CompleteCheckoutRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     checkout_service: CheckoutSessionService = Depends(get_checkout_session_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
@@ -1467,10 +1478,17 @@ async def complete_checkout(
         payment_status="completed",
     )
     db.add(db_order)
+    # The order's own key before its lines reference it. `id` carries a
+    # Python-side `uuid4` default that is assigned at flush, so reading
+    # `db_order.id` before this line yields `None` and every line is written
+    # with a null `order_id` -- which, together with the missing `tenant_id`
+    # below, meant a storefront sale could not record its lines at all.
+    await db.flush()
 
     # Create order items
     for item in cart.items:
         db_item = OrderItemModel(
+            tenant_id=shop_tenant.id,
             order_id=db_order.id,
             product_id=UUID(item.product_id) if item.product_id else None,
             product_sku=item.product_sku or "UNKNOWN",
@@ -1481,15 +1499,52 @@ async def complete_checkout(
         )
         db.add(db_item)
 
-    # Deduct inventory for each item
+    # Deduct inventory for each item, and total what posting this order costs.
+    #
+    # `shipping_cost` above is what the customer was charged. `postage_paid` is
+    # the other side of it, read from the operator's shipping profiles by the
+    # weight of each product in the cart -- a parcel per line, which is what
+    # the profiles are keyed on. Where no profile covers a weight the figure
+    # stays zero rather than being guessed at (FR-024, task T157).
+    postage_total = Decimal("0")
     for item in cart.items:
         if item.product_id:
             product_result = await db.execute(
                 select(Product).where(Product.id == UUID(item.product_id))
             )
             product = product_result.scalar_one_or_none()
-            if product and product.units_in_stock is not None:
-                product.units_in_stock = max(0, product.units_in_stock - item.quantity)
+            if product:
+                postage_total += await postage_for_product(db, shop_tenant, product) * item.quantity
+                if product.units_in_stock is not None:
+                    product.units_in_stock = max(0, product.units_in_stock - item.quantity)
+
+    db_order.postage_paid = postage_total
+
+    # Freeze what each line earned, as it stands (FR-036, task T157).
+    #
+    # The console's order path and the Shopify webhook both did this and the
+    # storefront's own checkout did not, so a sale made through the shop
+    # carried no `make_cost_at_sale` -- and `realised_margin` and
+    # `margin_alert` both select on that column being set, which left every
+    # storefront sale invisible to the margin this feature exists to report.
+    #
+    # Inside the sale's transaction, before the commit: a snapshot of an order
+    # that rolled back would be a frozen margin for a sale that never happened.
+    # An order the snapshot cannot fully cost is still recorded -- the gaps are
+    # reported, never costed at zero (FR-019).
+    #
+    # `sales_tax_collected` stays at its default. The storefront's totals are
+    # tax-inclusive with no tax line of their own, so any figure written here
+    # would be one nobody charged; FR-028d's liability is recorded where the
+    # amount is actually known.
+    await db.flush()
+    await db.refresh(db_order, ["items"])
+    snapshot = await write_sale_snapshot(db, shop_tenant, db_order)
+    if snapshot.incomplete:
+        logger.warning(
+            f"Storefront order {db_order.order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
+        )
 
     await db.commit()
     await db.refresh(db_order)
@@ -1551,13 +1606,16 @@ async def complete_checkout(
                 {
                     "name": item.product_name,
                     "quantity": item.quantity,
-                    "price": float(item.unit_price) / 100,
+                    "price": pence_to_pounds(item.unit_price),
                 }
                 for item in cart.items
             ],
-            subtotal=float(session.subtotal) / 100,
-            shipping_cost=float(session.shipping_cost) / 100,
-            total=float(session.total) / 100,
+            # The session's figures are pence; the `float()` around the
+            # division was the lossy step, on the amounts a customer is told
+            # they were charged (task T190, FR-047).
+            subtotal=pence_to_pounds(session.subtotal),
+            shipping_cost=pence_to_pounds(session.shipping_cost),
+            total=pence_to_pounds(session.total),
             shipping_address={
                 "address_line1": shipping["line1"],
                 "address_line2": shipping.get("line2"),
@@ -1638,7 +1696,7 @@ async def get_order(
     email: str,
     shop_context: ShopContext,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """Look up an order only in the resolved storefront and sales channel."""
     tenant, channel = shop_context
@@ -1696,6 +1754,11 @@ async def get_product_image(
     product_id: str,
     image_filename: str,
     request: Request,
+    # The one route in this router that stays on the un-scoped session. It is
+    # served straight to a browser from an `<img src>`, which cannot send the
+    # `X-Shop-Hostname` header a scoped session resolves its tenant from. It
+    # reads one row of cache metadata and writes nothing, so what is at stake
+    # is an ETag, not a figure (Constitution I).
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1803,7 +1866,7 @@ class ShopPage(BaseModel):
 async def get_public_page(
     slug: str,
     shop_tenant: ShopTenant,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Get a published page by slug.
@@ -1838,7 +1901,7 @@ async def get_public_page(
 @router.get("/pages")
 async def list_public_pages(
     shop_tenant: ShopTenant,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     List all published pages.
@@ -1922,9 +1985,9 @@ class ShopReviewSubmitResponse(BaseModel):
 @router.get("/products/{product_id}/reviews", response_model=ShopReviewList)
 async def get_product_reviews(
     product_id: str,
+    db: ShopDB,
     page: int = 1,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Get approved reviews for a product.
@@ -2026,7 +2089,7 @@ async def submit_product_review(
     request: Request,
     product_id: str,
     review: ShopReviewCreate,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Submit a review for a product.
@@ -2114,7 +2177,7 @@ async def submit_product_review(
 async def mark_review_helpful(
     product_id: str,
     review_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Mark a review as helpful.
@@ -2156,7 +2219,7 @@ async def mark_review_helpful(
 @router.get("/sitemap.xml", response_class=PlainTextResponse)
 async def get_sitemap(
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Generate a dynamic XML sitemap for the shop.

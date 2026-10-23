@@ -26,7 +26,6 @@ from sqlalchemy.orm import selectinload
 
 from app.core import clock
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
-from app.database import get_db
 from app.models.designer import Designer
 from app.models.fee_rule import FeeRule
 from app.models.model import Model
@@ -37,18 +36,15 @@ from app.models.product_model import ProductModel
 from app.models.product_pricing import ProductPricing
 from app.models.product_variant import ProductVariant
 from app.models.sales_channel import SalesChannel
-from app.models.shipping_profile import ShippingProfile
 from app.models.tenant import Tenant
-from app.schemas.fee_rule import (
-    FeeChargeResponse,
+from app.schemas.fee_rule import FeeChargeResponse
+from app.schemas.price_ladder import PriceLadderResponse, PriceLadderRungResponse
+from app.schemas.price_solve import (
     PriceAdjustmentResponse,
-    PriceLadderResponse,
-    PriceLadderRungResponse,
     PriceSolveRequest,
     PriceSolveResponse,
-    ProductMarginResponse,
-    RevenueDeductionResponse,
 )
+from app.schemas.product_margin import ProductMarginResponse, RevenueDeductionResponse
 from app.schemas.model import CostBreakdown
 from app.schemas.product import (
     ProductComponentCreate,
@@ -75,6 +71,7 @@ from app.schemas.product_image import (
     ProductImageListResponse,
 )
 from app.services import fee_engine, pricing_solver, temporal_pricing
+from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
 from app.services.cost_resolution import cost_load_options, product_cost_breakdown
 from app.services.costing import (
     MARGIN_BASIS_LABELS,
@@ -83,6 +80,7 @@ from app.services.costing import (
     MaxDepthExceededError,
     resolve_margin_basis,
 )
+from app.services.postage import postage_for_product
 from app.services.pricing_policy import CostPolicy, resolve_cost_policy
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
 from app.services.shopify_sync import (
@@ -260,7 +258,7 @@ async def create_product(
     user: CurrentUser,
     tenant: CurrentTenant,
     _: RequireAdmin,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductDetailResponse:
     """
     Create a new product (sellable item).
@@ -365,7 +363,7 @@ async def create_product(
 async def list_products(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     skip: int = Query(0, ge=0, description="Number of items to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Max items to return"),
     search: Optional[str] = Query(
@@ -424,7 +422,6 @@ async def list_products(
                 policy=policy,
             )
             total_make_cost = cost_breakdown.total_make_cost
-            suggested_price = total_make_cost * Decimal("2.5")
 
             designer = getattr(product, "designer", None)
 
@@ -463,7 +460,7 @@ async def list_products(
                 "created_at": product.created_at,
                 "updated_at": product.updated_at,
                 "total_make_cost": total_make_cost,
-                "suggested_price": suggested_price.quantize(Decimal("0.01")),
+                "incomplete_reasons": cost_breakdown.incomplete_reasons,
                 "designer_name": designer.name if designer else None,
                 "designer_slug": designer.slug if designer else None,
                 "designer_logo_url": designer.logo_url if designer else None,
@@ -515,7 +512,6 @@ async def list_products(
             policy=policy,
         )
         total_make_cost = cost_breakdown.total_make_cost
-        suggested_price = total_make_cost * Decimal("2.5")  # 2.5x markup
 
         # Get designer info
         designer = getattr(product, "designer", None)
@@ -556,7 +552,7 @@ async def list_products(
             "created_at": product.created_at,
             "updated_at": product.updated_at,
             "total_make_cost": total_make_cost,
-            "suggested_price": suggested_price.quantize(Decimal("0.01")),
+            "incomplete_reasons": cost_breakdown.incomplete_reasons,
             # Designer info
             "designer_name": designer.name if designer else None,
             "designer_slug": designer.slug if designer else None,
@@ -577,7 +573,7 @@ async def get_product(
     product_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductDetailResponse:
     """
     Get product detail with models, child products (bundles), pricing, and cost breakdown.
@@ -787,6 +783,7 @@ async def get_product_margin(
         channel=channel,
         fees=stack,
         policy=policy,
+        economics=await resolve_channel_economics(db, channel, reference),
         tax=treatment,
         postage_paid=postage,
         machine_hours=breakdown.machine_hours,
@@ -841,35 +838,14 @@ async def _postage_for(
     tenant: Tenant,
     product: Product,
 ) -> Decimal:
-    """Postage for one parcel of this product, from the shipping profiles.
+    """Postage for one parcel of this product.
 
-    Falls back to zero when the operator has recorded no profile covering the
-    product's weight, or no weight at all. That is a gap rather than a figure,
-    and it is reported through the breakdown's own incomplete reasons rather
-    than guessed at here: inventing postage would put a number on a screen that
-    no carrier ever quoted.
+    Delegates to :func:`app.services.postage.postage_for_product`, which the
+    storefront checkout reads too (task T157). A route keeping its own copy
+    would let the margin this screen reports and the postage frozen onto a
+    settled order disagree about one parcel (Constitution III).
     """
-    grams = getattr(product, "weight_grams", None)
-    if grams is None:
-        return Decimal("0")
-
-    profiles = (
-        (
-            await db.execute(
-                select(ShippingProfile)
-                .where(ShippingProfile.tenant_id == tenant.id)
-                .order_by(ShippingProfile.weight_bracket_min_grams)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    weight = Decimal(str(grams))
-    for profile in profiles:
-        if profile.covers(weight):
-            return Decimal(str(profile.postage_cost))
-    return Decimal("0")
+    return await postage_for_product(db, tenant, product)
 
 
 async def _planned_profit(
@@ -917,6 +893,7 @@ async def _planned_profit(
         channel=channel,
         fees=fee_engine.compute(channel, context, reference, rules=rules),
         policy=policy if policy is not None else await resolve_cost_policy(db, tenant),
+        economics=await resolve_channel_economics(db, channel, reference),
         tax=treatment,
         postage_paid=await _postage_for(db, tenant, product),
     )
@@ -937,8 +914,9 @@ async def _planned_profit(
 class _PricingContext:
     """Everything a price question about one product on one channel needs.
 
-    The solver and the ladder ask the same four things of the database -- the
-    product, the channel, the policy in effect and the fee rules -- and both
+    The solver and the ladder ask the same five things of the database -- the
+    product, the channel, the policy and economics in effect and the fee rules
+    -- and both
     then need the make-cost and the postage. Resolving that once here is what
     keeps them from drifting apart, and from drifting away from the margin
     endpoint above, which resolves the same figures the same way.
@@ -953,6 +931,7 @@ class _PricingContext:
         rules: list[FeeRule],
         breakdown: CostBreakdown,
         postage: Decimal,
+        economics: ChannelEconomics,
     ) -> None:
         self.product = product
         self.channel = channel
@@ -961,6 +940,10 @@ class _PricingContext:
         self.rules = rules
         self.breakdown = breakdown
         self.postage = postage
+        # The channel's planning figures as at the reference date (FR-003,
+        # task T136), not as the channel row stands today: a quote dated last
+        # month must still explain itself under the reserves then in force.
+        self.economics = economics
 
 
 async def _pricing_context(
@@ -1062,7 +1045,8 @@ async def _pricing_context(
     )
 
     postage = await _postage_for(db, tenant, product)
-    return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage)
+    economics = await resolve_channel_economics(db, channel, reference)
+    return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage, economics)
 
 
 def _rendered_inputs(inputs: dict) -> dict[str, str]:
@@ -1125,6 +1109,7 @@ async def solve_product_price(
         extras=request.extras,
         quantity=request.quantity,
         policy=ctx.policy,
+        economics=ctx.economics,
         margin_basis=request.margin_basis,
         # `apply_rounding=False` still quantises to the cent; what it turns off
         # is the operator's rule, which is the part that moves the price by
@@ -1241,6 +1226,7 @@ async def get_product_price_ladder(
             quantity=quantity,
             machine_hours=ctx.breakdown.machine_hours,
             policy=ctx.policy,
+            economics=ctx.economics,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1271,7 +1257,7 @@ async def update_product(
     product_data: ProductUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductDetailResponse:
     """
     Update an existing product.
@@ -1340,7 +1326,7 @@ async def delete_product(
     user: CurrentUser,
     tenant: CurrentTenant,
     _: RequireAdmin,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     purge: bool = Query(
         False,
         description="Hard-delete the product from the database. Only allowed on inactive products.",
@@ -1392,7 +1378,7 @@ async def add_product_model(
     model_data: ProductModelCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductModelResponse:
     """
     Add a model to product composition.
@@ -1462,7 +1448,7 @@ async def update_product_model(
     model_data: ProductModelCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductModelResponse:
     """
     Update a model's quantity in product composition.
@@ -1515,7 +1501,7 @@ async def remove_product_model(
     product_model_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """
     Remove a model from product composition.
@@ -1589,7 +1575,7 @@ async def add_product_pricing(
     pricing_data: ProductPricingCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductPricingResponse:
     """
     Add pricing for a product on a sales channel.
@@ -1749,7 +1735,7 @@ async def update_product_pricing(
     pricing_data: ProductPricingUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductPricingResponse:
     """Change a product's price, or delist it (task T097).
 
@@ -1855,7 +1841,7 @@ async def remove_product_pricing(
     pricing_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """Delist a product from a channel by closing its current price period.
 
@@ -1953,7 +1939,7 @@ async def add_product_component(
     component_data: ProductComponentCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductComponentResponse:
     """
     Add a child product to this product (create a bundle/set).
@@ -2052,7 +2038,7 @@ async def update_product_component(
     component_data: ProductComponentUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductComponentResponse:
     """
     Update a child product's quantity in the bundle.
@@ -2117,7 +2103,7 @@ async def remove_product_component(
     component_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """
     Remove a child product from the bundle.
@@ -2153,7 +2139,7 @@ async def list_product_images(
     product_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductImageListResponse:
     """
     List all images for a product.
@@ -2190,7 +2176,7 @@ async def upload_product_image(
     product_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     file: UploadFile = File(..., description="Image file (JPEG, PNG, or WebP)"),
     alt_text: str = Query("", max_length=255, description="Alt text for accessibility"),
     image_storage: ImageStorage = Depends(get_image_storage),
@@ -2279,7 +2265,7 @@ async def import_product_image_from_url(
     body: ImportImageFromUrlRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     image_storage: ImageStorage = Depends(get_image_storage),
 ) -> ProductImageResponse:
     """
@@ -2370,7 +2356,7 @@ async def update_product_image(
     image_data: ProductImageUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductImageResponse:
     """
     Update image alt text or display order.
@@ -2407,7 +2393,7 @@ async def set_primary_image(
     image_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductImageResponse:
     """
     Set an image as the primary image for the product.
@@ -2451,7 +2437,7 @@ async def delete_product_image(
     image_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     image_storage: ImageStorage = Depends(get_image_storage),
 ):
     """
@@ -2506,10 +2492,10 @@ async def delete_product_image(
 async def rotate_product_image(
     product_id: UUID,
     image_id: UUID,
+    db: TenantDB,
     degrees: int = Query(default=90, description="Rotation degrees (90, 180, or 270 clockwise)"),
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
     image_storage: ImageStorage = Depends(get_image_storage),
 ) -> ProductImageResponse:
     """
@@ -2564,8 +2550,8 @@ async def rotate_product_image(
 @router.post("/{product_id}/sync/etsy", response_model=SyncToEtsyResponse)
 async def sync_product_to_etsy(
     product_id: UUID,
+    db: TenantDB,
     request: SyncToEtsyRequest = SyncToEtsyRequest(),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     _admin: RequireAdmin = None,
@@ -2636,8 +2622,8 @@ async def sync_product_to_etsy(
 @router.post("/{product_id}/sync/shopify", response_model=SyncToShopifyResponse)
 async def sync_product_to_shopify(
     product_id: UUID,
+    db: TenantDB,
     request: SyncToShopifyRequest = SyncToShopifyRequest(),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     _admin: RequireAdmin = None,
@@ -2708,7 +2694,7 @@ async def sync_product_to_shopify(
 @router.get("/{product_id}/sync-status", response_model=ProductSyncStatusResponse)
 async def get_product_sync_status(
     product_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -2779,7 +2765,7 @@ async def list_product_variants(
     product_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> list[ProductVariantResponse]:
     """List all size variants for a product."""
     await _get_product_for_tenant(product_id, tenant.id, db)
@@ -2806,7 +2792,7 @@ async def create_product_variant(
     data: ProductVariantCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductVariantResponse:
     """Add a size variant to a product."""
     product = await _get_product_for_tenant(product_id, tenant.id, db)
@@ -2861,7 +2847,7 @@ async def update_product_variant(
     data: ProductVariantUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ProductVariantResponse:
     """Update a size variant."""
     await _get_product_for_tenant(product_id, tenant.id, db)
@@ -2894,7 +2880,7 @@ async def delete_product_variant(
     variant_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> None:
     """Delete a size variant."""
     await _get_product_for_tenant(product_id, tenant.id, db)

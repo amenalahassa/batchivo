@@ -3,6 +3,8 @@
  * These match the Pydantic schemas in backend/app/schemas/spool.py
  */
 
+import type { Money } from '@/types/pricing'
+
 // Base spool fields (used for creation and responses)
 export interface SpoolBase {
   spool_id: string
@@ -31,7 +33,12 @@ export interface SpoolBase {
 
   // Purchase info
   purchase_date?: string | null // ISO 8601 date string
-  purchase_price?: number | null
+  // A decimal **string**, not a number. The column is `Numeric` and
+  // `SpoolBase.purchase_price` is a `Decimal`, which Pydantic serialises as a
+  // string -- and the figure feeds `landed_cost.py` and the per-gram material
+  // price, so a double here is the one lossy step in that chain
+  // (Constitution IV, task T158).
+  purchase_price?: Money | null
   supplier?: string | null
 
   // Batch tracking
@@ -75,7 +82,7 @@ export interface SpoolUpdate {
   empty_spool_weight?: number | null
 
   purchase_date?: string | null
-  purchase_price?: number | null
+  purchase_price?: Money | null
   supplier?: string | null
 
   purchased_quantity?: number
@@ -128,7 +135,14 @@ export interface MaterialType {
   code: string
   description?: string | null
   typical_density?: number | null
-  typical_cost_per_kg?: number | null
+  /**
+   * A decimal string, not a number. T154 converted this to `Decimal` at
+   * `app/schemas/material.py`, so it crosses the wire as a string -- the same
+   * mismatch T158 found on `purchase_price`, left on the sibling field. It
+   * prefills a spool's purchase price rather than entering the engine
+   * directly, so the exposure is narrow and the type was still wrong (FR-047).
+   */
+  typical_cost_per_kg?: Money | null
   min_temp?: number | null
   max_temp?: number | null
   bed_temp?: number | null

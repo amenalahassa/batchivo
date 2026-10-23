@@ -94,7 +94,7 @@ describe('ChannelProfitabilityPanel', () => {
   })
 
   it('does not query an inverted period, and says why', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<ChannelProfitabilityPanel channelId={CHANNEL_ID} />)
 
     await waitFor(() => expect(getChannelPnLMock).toHaveBeenCalledTimes(1))

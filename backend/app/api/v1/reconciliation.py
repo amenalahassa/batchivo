@@ -28,16 +28,20 @@ from app.models.fee_actual import FeeActual
 from app.models.fee_rule import FeeRule
 from app.models.order import Order
 from app.models.sales_channel import SalesChannel
-from app.schemas.fee_rule import (
+from app.schemas.channel_pnl import (
     AbsorbedCostResponse,
     CategoryReconciliationResponse,
     ChannelPnLResponse,
-    FeeActualCreate,
-    FeeActualResponse,
 )
-from app.services import channel_pnl, fee_engine
+from app.schemas.fee_actual import FeeActualCreate, FeeActualResponse
+from app.schemas.margin_alert import (
+    LineMovementResponse,
+    MarginDivergenceListResponse,
+    MarginDivergenceResponse,
+)
+from app.services import channel_pnl, fee_engine, margin_alert
 from app.services.channel_pnl import ReconciliationConflict
-from app.services.costing import MARGIN_BASIS_LABELS, resolve_margin_basis
+from app.services.costing import resolve_margin_basis
 from app.services.pricing_policy import resolve_cost_policy
 
 logger = logging.getLogger(__name__)
@@ -378,21 +382,21 @@ async def get_channel_pnl(
     unabsorbed = sum((cost.total for cost in absorbed if cost.is_unabsorbed), ZERO)
 
     # --- Margin, on the basis in effect ------------------------------------
+    # Derived by `channel_pnl`, not here. This route used to subtract its own
+    # profit and choose its own denominator with a three-way `if`, which made
+    # it a second implementation of the percentage `CostingService.margin`
+    # already owns -- the divergence Constitution III forbids (task T160).
     policy = await resolve_cost_policy(db, tenant)
-    basis = resolve_margin_basis(policy)
-    absorbed_charged = sum((cost.total for cost in absorbed if not cost.is_unabsorbed), ZERO)
-    profit = revenue - planned_fee_total - postage - absorbed_charged
-    if basis == "net_revenue":
-        basis_amount = revenue - planned_fee_total
-    elif basis == "item_price":
-        basis_amount = revenue - shipping_revenue
-    else:
-        basis_amount = revenue
-    margin_pct = (
-        (profit / basis_amount * Decimal("100")).quantize(Decimal("0.0001"))
-        if basis_amount > ZERO
-        else None
+    margin = channel_pnl.period_margin(
+        revenue_tax_exclusive=revenue,
+        shipping_revenue=shipping_revenue,
+        planned_fee_total=planned_fee_total,
+        postage_paid=postage,
+        absorbed_costs=absorbed,
+        basis=resolve_margin_basis(policy),
     )
+    profit = margin.profit
+    margin_pct = margin.margin_pct
 
     return ChannelPnLResponse(
         channel_id=channel.id,
@@ -446,6 +450,83 @@ async def get_channel_pnl(
         make_cost_total=ZERO,
         profit=profit.quantize(CENT),
         margin_pct=margin_pct,
-        margin_basis=basis,
-        margin_basis_label=MARGIN_BASIS_LABELS[basis],
+        margin_basis=margin.basis,
+        margin_basis_label=margin.basis_label,
+    )
+
+
+@router.get("/margin-divergence", response_model=MarginDivergenceListResponse)
+async def get_margin_divergence(
+    tenant: CurrentTenant,
+    db: TenantDB,
+    _user: CurrentUser,
+    product_id: UUID | None = Query(None, description="Narrow to one product's settled lines"),
+    since: date | None = Query(None, description="Only orders placed on or after this date"),
+    only_alerting: bool = Query(
+        False,
+        description=(
+            "Return only the lines past the operator's threshold -- what FR-042 "
+            "says they must be alerted about"
+        ),
+    ),
+    limit: int = Query(200, ge=1, le=1000),
+) -> MarginDivergenceListResponse:
+    """What settled lines actually earned, against the margin they were sold at.
+
+    FR-042's second clause asks that the operator be alerted when a product's
+    realised margin diverges from plan beyond their own threshold, and US7
+    scenario 3 asks that they be told *which lines moved*. Both come from here.
+
+    Open to every role (FR-007c). The threshold is monetary policy and is set
+    on the pricing-policy screen; reading the consequence of it is not.
+
+    Nothing is written. A realised margin is recomputed from records that
+    already exist (Constitution V) and no snapshot is touched (FR-038): a
+    divergence is an observation about history, not a correction to it.
+    """
+    found = await margin_alert.divergences(
+        db,
+        tenant,
+        product_id=product_id,
+        since=since,
+        only_diverging=only_alerting,
+        limit=limit,
+    )
+    policy = await resolve_cost_policy(db, tenant)
+
+    return MarginDivergenceListResponse(
+        divergences=[
+            MarginDivergenceResponse(
+                order_id=row.order_id,
+                order_item_id=row.order_item_id,
+                product_id=row.product_id,
+                product_name=row.product_name,
+                sold_on=row.sold_on,
+                margin_basis=row.margin_basis,
+                planned_margin_pct=row.planned_margin_pct,
+                realised_margin_pct=row.realised_margin_pct,
+                divergence_points=row.divergence_points,
+                threshold_points=row.threshold_points,
+                diverges=row.diverges,
+                shortfall=row.shortfall,
+                planned_profit=row.planned_profit,
+                realised_profit=row.realised_profit,
+                movements=[
+                    LineMovementResponse(
+                        key=movement.key,
+                        planned=movement.planned,
+                        realised=movement.realised,
+                        delta=movement.delta,
+                    )
+                    for movement in row.movements
+                ],
+                fees_source=row.fees_source,
+                substitutions=row.substitutions,
+                gaps=row.gaps,
+            )
+            for row in found
+        ],
+        total=len(found),
+        alerting=sum(1 for row in found if row.diverges),
+        threshold_points=policy.margin_alert_threshold_pct,
     )

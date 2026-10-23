@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.auth.dependencies import get_shop_sales_channel
+from app.auth.dependencies import get_shop_db, get_shop_sales_channel
 from app.database import get_db
 from app.main import app
 from app.models.order import Order
@@ -70,6 +70,9 @@ async def test_order_lookup_boundary(db_session, test_tenant, case):
 
     app.dependency_overrides[get_shop_sales_channel] = context
     app.dependency_overrides[get_db] = session
+    # See the note in test_shop_cache_headers.py: the storefront's session
+    # comes from `get_shop_db`.
+    app.dependency_overrides[get_shop_db] = session
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             result = await client.get(

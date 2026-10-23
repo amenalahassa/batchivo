@@ -5,6 +5,9 @@
  * Shows fee structure and monthly costs for each channel.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
+import { compareMoney, formatMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -47,6 +50,7 @@ const PLATFORM_TYPES: PlatformType[] = [
 ]
 
 export function SalesChannelList() {
+  const { currency } = useCurrency()
   const [search, setSearch] = useState('')
   const [platformFilter, setPlatformFilter] = useState<PlatformType | 'all'>('all')
   const [isActive, setIsActive] = useState<boolean | undefined>(undefined)
@@ -66,10 +70,13 @@ export function SalesChannelList() {
     setSearch(value)
   }
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(2)}`
-  }
+  // Rendered from the decimal string the API sent, in the tenant's own
+  // currency. A channel's monthly cost is a figure `channel_pnl.py` absorbs
+  // over a period's orders (FR-025), so a `parseFloat` here and an exact
+  // decimal there is two answers to one question (Constitution IV, task
+  // T162).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currency.symbol)
 
   const channels = data?.channels || []
   const activeCount = channels.filter((c) => c.is_active).length
@@ -239,7 +246,7 @@ export function SalesChannelList() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-                    {parseFloat(channel.monthly_cost) > 0 && (
+                    {compareMoney(channel.monthly_cost, '0') > 0 && (
                       <span>Monthly: {formatCurrency(channel.monthly_cost)}</span>
                     )}
                   </div>

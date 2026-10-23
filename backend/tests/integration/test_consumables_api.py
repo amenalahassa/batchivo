@@ -1,5 +1,6 @@
 """Comprehensive integration tests for Consumables API - all fields and operations."""
 
+from decimal import Decimal
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
@@ -113,7 +114,9 @@ class TestConsumableTypesBasicCRUD:
         assert data["description"] == "A consumable with all fields for testing"
         assert data["category"] == "hardware"
         assert data["unit_of_measure"] == "each"
-        assert data["current_cost_per_unit"] == 2.50
+        # Money is a decimal string on the wire, not a JSON number
+        # (Constitution IV, task T144), so this is exact rather than close.
+        assert Decimal(data["current_cost_per_unit"]) == Decimal("2.50")
         assert data["quantity_on_hand"] == 200
         assert data["reorder_point"] == 50
         assert data["reorder_quantity"] == 100
@@ -225,7 +228,7 @@ class TestConsumableTypesAllFieldsPersistence:
         assert data["description"] == "Testing field persistence"
         assert data["category"] == "finishing"
         assert data["unit_of_measure"] == "ml"
-        assert data["current_cost_per_unit"] == 15.99
+        assert Decimal(data["current_cost_per_unit"]) == Decimal("15.99")
         assert data["quantity_on_hand"] == 500
         assert data["reorder_point"] == 100
         assert data["reorder_quantity"] == 200
@@ -372,7 +375,7 @@ class TestConsumablePurchasesCRUD:
         assert response.status_code in [200, 201]
         data = response.json()
         assert data["quantity_purchased"] == 50
-        assert data["total_cost"] == 299.50
+        assert Decimal(data["total_cost"]) == Decimal("299.50")
         assert data["supplier"] == "Test Supplier"
 
     @pytest.mark.asyncio
@@ -569,8 +572,9 @@ class TestConsumableTypesComputedFields:
         )
         assert response.status_code == 200
         data = response.json()
-        # stock_value = quantity_on_hand * current_cost_per_unit
-        expected_value = test_consumable_type.quantity_on_hand * (
-            test_consumable_type.current_cost_per_unit or 0
+        # stock_value = quantity_on_hand * current_cost_per_unit, exactly: both
+        # sides are Decimal and the wire carries the decimal string (task T144).
+        expected_value = Decimal(test_consumable_type.quantity_on_hand) * (
+            test_consumable_type.current_cost_per_unit or Decimal("0")
         )
-        assert data["stock_value"] == expected_value
+        assert Decimal(data["stock_value"]) == expected_value

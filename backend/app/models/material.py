@@ -1,6 +1,8 @@
 """Material type reference data models."""
 
-from sqlalchemy import String, Text
+from decimal import Decimal
+
+from sqlalchemy import Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -46,7 +48,19 @@ class MaterialType(Base, UUIDMixin, TimestampMixin):
         comment="Typical density in g/cm³ (e.g., 1.24 for PLA)",
     )
 
-    typical_cost_per_kg: Mapped[float | None] = mapped_column(
+    # Money, so `Numeric` and `Decimal` rather than the binary float this was
+    # (task T154, FR-047). T024's sweep converted every money column in this
+    # package that was already `Numeric`; this one was declared without a type
+    # at all, so SQLAlchemy inferred `Float` from the `float` annotation and
+    # the sweep passed it over.
+    #
+    # Exposure is narrow -- it prefills a spool's purchase price rather than
+    # entering the engine -- but the figure it prefills is the one
+    # `costing.py:cost_per_gram` divides by a weight, so the inexactness was
+    # one keystroke from the cost of every print. `typical_density` beside it
+    # stays a float: a density is a measurement, not an amount of money.
+    typical_cost_per_kg: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
         nullable=True,
         comment="Typical cost per kilogram (for defaults)",
     )

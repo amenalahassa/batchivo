@@ -13,6 +13,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Loader2, Pencil, Copy, QrCode } from 'lucide-react'
 import { SpoolUsageHistory } from './SpoolUsageHistory'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 
 interface ViewSpoolDialogProps {
   open: boolean
@@ -29,6 +31,8 @@ export function ViewSpoolDialog({
   onEdit,
   onDuplicate,
 }: ViewSpoolDialogProps) {
+  const { currency } = useCurrency()
+
   // Fetch the specific spool
   const { data: spool, isLoading } = useQuery({
     queryKey: ['spool', spoolId],
@@ -165,7 +169,7 @@ export function ViewSpoolDialog({
                   {spool.purchase_price && (
                     <DetailItem
                       label="Price"
-                      value={`£${spool.purchase_price.toFixed(2)}`}
+                      value={formatMoney(spool.purchase_price, currency.symbol)}
                     />
                   )}
                   {spool.supplier && (

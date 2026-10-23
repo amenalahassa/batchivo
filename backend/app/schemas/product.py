@@ -166,6 +166,16 @@ class ProductCostBreakdown(BaseModel):
         0, description="Number of models with actual production cost data"
     )
     models_total: int = Field(0, description="Total number of distinct models in product")
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: Carried here so the flat shape is as honest as the itemised one: a
+    #: screen reading this breakdown must be able to tell a cost from a floor
+    #: (FR-019). It is projected from the same engine pass as the amounts
+    #: above, never recomputed.
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the total is a floor",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -291,9 +301,25 @@ class ProductResponse(ProductBase):
     updated_at: datetime
     # Computed fields for list views
     total_make_cost: Optional[Decimal] = Field(None, description="Total make cost (all components)")
-    suggested_price: Optional[Decimal] = Field(
-        None, description="Suggested retail price (2.5x markup)"
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: A list screen is where a product is picked, so it is where an item that
+    #: is missing its print time or its machine rate must say so rather than
+    #: show a finished-looking figure built from a zero. `total_make_cost`
+    #: above is still the cost of the lines the engine could resolve; this is
+    #: the part it could not, and a non-empty list means the figure is a floor,
+    #: not a cost (FR-019).
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the cost is a floor (FR-019)",
     )
+    # No suggested price here, deliberately. This used to publish
+    # `total_make_cost * 2.5`, a price derived in a route from a markup no
+    # operator configured -- and cost plus a flat markup lands several points
+    # below the margin actually asked for, which is what the solver exists to
+    # get right. A price belongs to the pricing engine: `POST /products/{id}/
+    # solve-price` and the ladder behind `PriceSolverPanel` and `PriceLadder`
+    # on the pricing editor (FR-007/FR-048, Constitution III and IV).
     # Designer info (populated from join)
     designer_name: Optional[str] = Field(None, description="Designer name")
     designer_slug: Optional[str] = Field(None, description="Designer slug for URLs")

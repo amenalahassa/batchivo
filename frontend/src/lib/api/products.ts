@@ -107,7 +107,14 @@ export interface Product {
   updated_at: string
   // Computed fields for list views
   total_make_cost?: string
-  suggested_price?: string
+  /**
+   * What the engine could not cost. Non-empty means `total_make_cost` is a
+   * floor rather than a cost, and the row must say so (FR-019).
+   */
+  incomplete_reasons?: string[]
+  // No suggested_price. The backend used to serve total_make_cost * 2.5 and
+  // this rendered it as "SRP"; a price comes from the pricing engine now --
+  // the solver and ladder on the pricing editor (FR-007/FR-048).
   // Shop display fields
   shop_visible: boolean
   shop_description?: string
@@ -436,39 +443,22 @@ export async function removeProductComponent(productId: string, componentId: str
 }
 
 // ==================== Helpers ====================
-
-/**
- * Format currency value for display
- * @param value - The numeric value to format
- * @param symbol - Optional currency symbol (defaults to £ for backward compatibility)
- */
-export function formatCurrency(value: string | number, symbol: string = '£'): string {
-  const numValue = typeof value === 'string' ? parseFloat(value) : value
-  if (isNaN(numValue)) {
-    return `${symbol}0.00`
-  }
-  return `${symbol}${numValue.toFixed(2)}`
-}
-
-/**
- * Calculate total model cost for a product
- */
-export function calculateTotalModelsCost(models: ProductModel[]): number {
-  return models.reduce((total, pm) => {
-    const modelCost = parseFloat(pm.model_cost || '0')
-    return total + (modelCost * pm.quantity)
-  }, 0)
-}
-
-/**
- * Calculate total child product cost for a product (bundles)
- */
-export function calculateTotalChildProductsCost(childProducts: ProductComponent[]): number {
-  return childProducts.reduce((total, pc) => {
-    const productCost = parseFloat(pc.child_product_cost || '0')
-    return total + (productCost * pc.quantity)
-  }, 0)
-}
+//
+// Three helpers used to live here and all three are gone, with no caller
+// anywhere in `src/` at the time of removal:
+//
+// - `calculateTotalModelsCost` and `calculateTotalChildProductsCost` summed a
+//   bill-of-materials cost in the browser as `parseFloat(cost) * quantity`.
+//   That recursive cost has one authority, `app/services/costing.py`, which
+//   walks bundles with its own cycle detection and depth guard. Constitution
+//   III calls a second implementation of a domain calculation a defect whether
+//   or not its output currently agrees -- and an exported one with no reader is
+//   one import away from having one.
+// - `formatCurrency` was a third money renderer doing `parseFloat(value)
+//   .toFixed(2)` behind a hardcoded `£`. `formatMoney` in `@/lib/money` is the
+//   one renderer, and `useCurrency()` delegates to it for the tenant's symbol.
+//
+// Read a cost from the API; render it with `formatMoney` (FR-048).
 
 // ==================== Product Images ====================
 

@@ -667,3 +667,129 @@ class TestDecidingAProposalOverHttp:
         response = await unauthenticated_client.post(f"/api/v1/estimate-revisions/{held.id}/accept")
 
         assert response.status_code == 401
+
+
+class TestAMemberEditIsAttributedToThem:
+    """`spec.md:199` — a member edits an item figure that feeds a price.
+
+    "Permitted (FR-007b), and the resulting cost change is attributed to them
+    in the figure's provenance, so a margin shift is traceable without granting
+    them policy rights."
+
+    Implemented, and asserted nowhere until task T196 — so the permission tier
+    and the attribution were each a refactor away from regressing quietly, and
+    the two have to be proven *together*: a member who may edit but is not
+    recorded leaves an untraceable margin shift, and an attribution that only
+    works for an admin satisfies FR-001 while breaking FR-007b.
+
+    Deliberately a **member** throughout rather than the admin `client`
+    fixture, which is the gap this class fills.
+    """
+
+    async def test_a_member_edit_records_them_as_the_measurer(
+        self, as_role, db_session, subject
+    ) -> None:
+        """The cost profile is the item surface a price is computed from."""
+        from sqlalchemy import select
+
+        from app.models.pricing_input_provenance import PricingInputProvenance
+
+        async with as_role(UserRole.MEMBER) as client:
+            me = (await client.get("/api/v1/users/me")).json()
+            response = await client.put(
+                f"/api/v1/models/{subject.id}/cost-profile",
+                json={"waste_grams": "7.5"},
+            )
+
+        assert response.status_code == 200, response.text
+
+        row = (
+            await db_session.execute(
+                select(PricingInputProvenance).where(
+                    PricingInputProvenance.entity_type == "model",
+                    PricingInputProvenance.entity_id == subject.id,
+                    PricingInputProvenance.field_name == "waste_grams",
+                )
+            )
+        ).scalar_one()
+
+        assert row.source == "measured"
+        assert row.measured_by_user_id is not None, (
+            "a member changed a figure that feeds a price and nothing records "
+            "who; a margin shift with no attribution is untraceable (FR-001)"
+        )
+        assert str(row.measured_by_user_id) == me["id"], (
+            "the edit is attributed to somebody other than the member who made it"
+        )
+
+    async def test_the_member_keeps_no_policy_rights_by_making_the_edit(
+        self, as_role, subject
+    ) -> None:
+        """The other half of FR-007b: permitted, but not promoted.
+
+        If editing an item figure granted policy rights, the separation the
+        requirement exists to maintain would be gone the first time a member
+        touched a waste figure.
+        """
+        async with as_role(UserRole.MEMBER) as client:
+            edited = await client.put(
+                f"/api/v1/models/{subject.id}/cost-profile",
+                json={"waste_grams": "7.5"},
+            )
+            assert edited.status_code == 200, edited.text
+
+            policy = await client.put(
+                _write_url(ENTITY_TYPE, subject.id, FIELD),
+                json={"source": "policy"},
+            )
+
+        assert policy.status_code == 403, policy.text
+
+    async def test_a_member_write_records_the_role_that_authorised_it(
+        self, as_role, db_session, subject
+    ) -> None:
+        """`authorised_by_role`, which was never non-null (task T195).
+
+        The column existed, `record_origin` accepted it, and its only caller
+        passed `None` explicitly — so the provenance screen showed an empty
+        authority for every figure while the tier that permitted the write was
+        resolved and discarded. A member and an admin are recorded distinctly,
+        which is the point: it says under what authority the figure was set.
+        """
+        from sqlalchemy import select
+
+        from app.models.pricing_input_provenance import PricingInputProvenance
+
+        async def role_recorded_for(role: UserRole) -> str | None:
+            async with as_role(role) as client:
+                response = await client.put(
+                    _write_url(ENTITY_TYPE, subject.id, FIELD),
+                    json={"source": "measured"},
+                )
+            assert response.status_code == 200, response.text
+
+            # The column, read as a scalar rather than through an identity-map
+            # object: the row was written on the request's own session and
+            # re-reading it as an entity here refreshes lazily, outside the
+            # greenlet the async driver needs.
+            return (
+                (
+                    await db_session.execute(
+                        select(PricingInputProvenance.authorised_by_role).where(
+                            PricingInputProvenance.entity_type == ENTITY_TYPE,
+                            PricingInputProvenance.entity_id == subject.id,
+                            PricingInputProvenance.field_name == FIELD,
+                        )
+                    )
+                )
+                .scalars()
+                .one()
+            )
+
+        assert await role_recorded_for(UserRole.MEMBER) == "member", (
+            "the role that authorised the write was not recorded; the column "
+            "existed and its only caller passed None (task T195, FR-001)"
+        )
+        # The same field written again by an admin records the higher tier,
+        # so a reader can tell a measurement from a decision.
+        assert await role_recorded_for(UserRole.ADMIN) == "admin"

@@ -4,6 +4,8 @@
  * Mirrors the backend Pydantic schemas for type safety
  */
 
+import type { Money } from '@/types/pricing';
+
 export type ProductionRunStatus = 'in_progress' | 'completed' | 'failed' | 'cancelled';
 
 /**
@@ -106,9 +108,16 @@ export interface ProductionRun extends ProductionRunBase {
   created_at: string;
   updated_at: string;
 
-  // Cost analysis (calculated on completion)
-  cost_per_gram_actual?: number | null;
-  successful_weight_grams?: number | null;
+  // Cost analysis (calculated on completion).
+  //
+  // Decimal strings, not numbers. The backend types these `Decimal` and this
+  // app serialises a Decimal as a JSON **string**, so `number` here was a lie
+  // the compiler could not catch -- and `Number()` on the way to the screen
+  // put the FR-040 realised actuals through a binary double, which is the one
+  // conversion that can make this figure disagree with the engine's
+  // (Constitution II and IV, FR-047).
+  cost_per_gram_actual?: Money | null;
+  successful_weight_grams?: Money | null;
 
   // Computed fields
   variance_grams?: number | null;
@@ -132,8 +141,8 @@ export interface ProductionRunDetail extends ProductionRun {
   total_items_successful: number;
   total_items_failed: number;
   overall_success_rate?: number | null;
-  total_material_cost: number;
-  total_estimated_cost: number;
+  total_material_cost: Money;
+  total_estimated_cost: Money;
 }
 
 /**
@@ -156,11 +165,11 @@ export interface ProductionRunItemBase {
   quantity: number;
   bed_position?: string | null;
 
-  // Estimated costs
-  estimated_material_cost?: number | null;
-  estimated_component_cost?: number | null;
-  estimated_labor_cost?: number | null;
-  estimated_total_cost?: number | null;
+  // Estimated costs, as the decimal strings the API sends.
+  estimated_material_cost?: Money | null;
+  estimated_component_cost?: Money | null;
+  estimated_labor_cost?: Money | null;
+  estimated_total_cost?: Money | null;
 
   // Notes
   notes?: string | null;
@@ -190,9 +199,12 @@ export interface ProductionRunItem extends ProductionRunItemBase {
   created_at: string;
   updated_at: string;
 
-  // Cost analysis (calculated on run completion)
-  model_weight_grams?: number | null;
-  actual_cost_per_unit?: number | null;
+  // Cost analysis (calculated on run completion). `actual_cost_per_unit` is
+  // a realised actual -- one of the two figures this system is allowed to
+  // store -- so rendering it through a double is exactly the loss the
+  // exception was made to avoid (FR-040).
+  model_weight_grams?: Money | null;
+  actual_cost_per_unit?: Money | null;
 
   // Nested model details
   model?: ModelSummary | null;
@@ -214,7 +226,7 @@ export interface ProductionRunMaterialBase {
   estimated_model_weight_grams: number;
   estimated_flushed_grams: number;
   estimated_tower_grams: number;
-  cost_per_gram: number;
+  cost_per_gram: Money;
 }
 
 /**
@@ -262,8 +274,8 @@ export interface ProductionRunMaterial extends ProductionRunMaterialBase {
   actual_total_weight: number;
   variance_grams: number;
   variance_percentage: number;
-  estimated_cost: number;
-  total_cost: number;
+  estimated_cost: Money;
+  total_cost: Money;
 }
 
 // Query filters

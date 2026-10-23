@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -27,7 +28,18 @@ class SpoolBase(BaseModel):
 
     # Purchase info
     purchase_date: Optional[datetime] = Field(None, description="Purchase date")
-    purchase_price: Optional[float] = Field(None, ge=0, description="Purchase price")
+    # `Decimal`, not `float`. The column behind it is already `Numeric`
+    # (`app/models/spool.py:79`) and everything downstream is exact:
+    # `landed_cost.py` divides it across a batch and
+    # `costing.py:cost_per_gram` divides it by a weight to reach the per-gram
+    # figure every material line is priced from. A binary double here was the
+    # one lossy step in that chain -- the operator types 24.99, the schema
+    # stores 24.989999999999998, and the per-gram price is wrong in the sixth
+    # decimal place before the engine has done anything (FR-047,
+    # Constitution IV).
+    purchase_price: Optional[Decimal] = Field(
+        None, ge=0, decimal_places=2, description="Purchase price"
+    )
     supplier: Optional[str] = Field(None, max_length=100, description="Supplier name")
 
     # Organization
@@ -58,7 +70,7 @@ class SpoolUpdate(BaseModel):
 
     # Purchase info
     purchase_date: Optional[datetime] = None
-    purchase_price: Optional[float] = Field(None, ge=0)
+    purchase_price: Optional[Decimal] = Field(None, ge=0, decimal_places=2)
     supplier: Optional[str] = Field(None, max_length=100)
 
     # Organization

@@ -4,6 +4,7 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -63,6 +64,36 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+async def scope_session_to_tenant(session: AsyncSession, tenant_id) -> None:
+    """Engage row-level security on an already-open session (task T184).
+
+    The RLS session dependencies -- `get_tenant_db` and `get_shop_db` -- scope
+    a session before the handler runs, from a JWT or from the
+    `X-Shop-Hostname` header. A webhook has neither: the Shopify ingest
+    endpoint resolves its tenant from the `{tenant_slug}` path segment, which
+    is a cross-tenant lookup on `tenants` that cannot itself be scoped. So the
+    tenant becomes known partway through the request, after the session is
+    open, and the only place left to issue the statement is there.
+
+    `SET LOCAL` is transaction-scoped, so this applies from here until the
+    transaction ends and clears itself. Call it after the tenant is resolved
+    and **before the first write**, in the same transaction as those writes; a
+    rollback clears it, so a handler that continues after one calls this again
+    (as `filament_types.py` does).
+
+    A no-op when `rls_enabled` is off, which is the development default --
+    application-level `tenant_id` filtering is the second belt there, exactly
+    as in the dependencies.
+    """
+    if not settings.rls_enabled:
+        return
+    await session.execute(
+        text("SET LOCAL app.current_tenant_id = :tenant_id"),
+        {"tenant_id": str(tenant_id)},
+    )
+    logger.debug(f"RLS context set on an open session: tenant_id={tenant_id}")
 
 
 @asynccontextmanager

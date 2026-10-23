@@ -31,6 +31,10 @@ from app.models.product_variant import FulfilmentType, ProductSizeSystem, Produc
 
 # Sales channels
 from app.models.sales_channel import SalesChannel
+from app.models.sales_channel_economics import (
+    ECONOMICS_FIELDS,
+    SalesChannelEconomics,
+)
 
 # External listings (marketplace integrations)
 from app.models.external_listing import ExternalListing
@@ -106,6 +110,7 @@ from app.models.tenant_pricing_policy import (
 
 # Channel economics (Tier 2)
 from app.models.fee_actual import FEE_ACTUAL_SOURCES, FeeActual
+from app.models.refund_actual import REFUND_ACTUAL_SOURCES, RefundActual
 from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES, FeeRule
 from app.models.shipping_profile import ShippingProfile
 
@@ -157,6 +162,8 @@ __all__ = [
     "ProductSizeSystem",
     # Sales
     "SalesChannel",
+    "SalesChannelEconomics",
+    "ECONOMICS_FIELDS",
     # External listings
     "ExternalListing",
     # Orders
@@ -230,6 +237,8 @@ __all__ = [
     "COUNT_BASES",
     "PERIODIC_BASES",
     "FeeActual",
+    "REFUND_ACTUAL_SOURCES",
+    "RefundActual",
     "FEE_ACTUAL_SOURCES",
     "ShippingProfile",
     # Exchange rates

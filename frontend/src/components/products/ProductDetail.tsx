@@ -58,10 +58,12 @@ import {
 import { ProductModelsEditor } from './ProductModelsEditor'
 import { ProductComponentsEditor } from './ProductComponentsEditor'
 import { ProductPricingEditor } from './ProductPricingEditor'
-import { makeCostOf, makeCostNumber } from '@/lib/pricing/makeCost'
+import { compareMoney, formatMoney, formatPercent } from '@/lib/money'
+import { makeCostOf } from '@/lib/pricing/makeCost'
 import { ProductImagesEditor } from './ProductImagesEditor'
 import { ProductCategoriesEditor } from './ProductCategoriesEditor'
 import { ProductionHistoryTable } from './ProductionHistoryTable'
+import { CostBreakdownSection } from '@/components/pricing/CostBreakdownSection'
 import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
 
 interface ProductDetailProps {
@@ -104,7 +106,8 @@ function DetailItem({ label, value }: { label: string; value: string | React.Rea
 export function ProductDetail({ productId }: ProductDetailProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency } = useCurrency()
+  const currencySymbol = currency.symbol
 
   const { data: product, isLoading, error } = useQuery({
     queryKey: ['product', productId],
@@ -148,36 +151,33 @@ export function ProductDetail({ productId }: ProductDetailProps) {
     )
   }
 
-  // Parse cost breakdown
+  // The four buckets, as the exact decimal strings the engine sent. They used
+  // to be `parseFloat`ed here and formatted from the resulting doubles, which
+  // is the one conversion that can make this screen and the breakdown below
+  // disagree in the last cent (Constitution IV). Nothing is computed from
+  // them, so there is no reason for them to leave string space at all.
   const costBreakdown = product.cost_breakdown
-  const modelsCost = parseFloat(costBreakdown?.models_cost || '0')
-  const childProductsCost = parseFloat(costBreakdown?.child_products_cost || '0')
-  const packagingCost = parseFloat(costBreakdown?.packaging_cost || '0')
-  const assemblyCost = parseFloat(costBreakdown?.assembly_cost || '0')
+  const modelsCost = costBreakdown?.models_cost ?? null
+  const childProductsCost = costBreakdown?.child_products_cost ?? null
+  const packagingCost = costBreakdown?.packaging_cost ?? null
+  const assemblyCost = costBreakdown?.assembly_cost ?? null
   // Read through the one accessor the three screens share, so the figure
   // shown here, in the list and in the pricing editor is the same one.
+  // As the exact decimal string. The `makeCostNumber` float beside it had one
+  // remaining reader -- the invented suggested prices -- and went with them.
   const totalMakeCostExact = makeCostOf(product)
-  const totalMakeCost = makeCostNumber(product)
 
   // Check if this is a bundle (has child products)
   const hasChildProducts = (product.child_products?.length || 0) > 0
 
-  // Calculate suggested retail prices using common pricing formulas
-  // 2.5x markup (150% profit margin) - common for handmade/craft items
-  const recommendedPrice = totalMakeCost * 2.5
-  // Alternative: 40% profit margin formula: cost / (1 - 0.40) = cost / 0.60
-  const marginBasedPrice = totalMakeCost / 0.60
-  // 3x markup for premium pricing
-  const premiumPrice = totalMakeCost * 3.0
-
-  // Find best pricing (highest margin)
+  // Find best pricing (highest margin), comparing the decimal strings by
+  // value. Through `parseFloat` two margins that differ below a double's
+  // precision can order the wrong way round, and the result is not a rounding
+  // error -- it is this screen naming the wrong channel as the best one.
   const activePricing = product.pricing?.filter((p) => p.is_active) || []
   const bestPricing = activePricing.reduce(
-    (best, current) => {
-      const currentMargin = parseFloat(current.margin_percentage || '0')
-      const bestMargin = parseFloat(best?.margin_percentage || '0')
-      return currentMargin > bestMargin ? current : best
-    },
+    (best, current) =>
+      compareMoney(current.margin_percentage, best?.margin_percentage) > 0 ? current : best,
     activePricing[0] || null
   )
 
@@ -265,54 +265,77 @@ export function ProductDetail({ productId }: ProductDetailProps) {
         <StatCard
           icon={Layers}
           label="Models Cost"
-          value={formatCurrency(modelsCost)}
+          value={formatMoney(modelsCost, currencySymbol)}
           subValue={`${product.models?.length || 0} model${product.models?.length !== 1 ? 's' : ''}`}
         />
         {hasChildProducts && (
           <StatCard
             icon={Package}
             label="Child Products"
-            value={formatCurrency(childProductsCost)}
+            value={formatMoney(childProductsCost, currencySymbol)}
             subValue={`${product.child_products?.length || 0} product${product.child_products?.length !== 1 ? 's' : ''}`}
           />
         )}
         <StatCard
           icon={Box}
           label="Packaging"
-          value={formatCurrency(packagingCost)}
+          value={formatMoney(packagingCost, currencySymbol)}
         />
+        {/*
+          The rate was written into this label as "£10/hr" -- the same
+          hardcoded figure Tier 0 deleted from the engine, left behind on a
+          screen. It belonged to nobody and contradicted the configured rate
+          as soon as the operator set one (FR-002). The minutes are a fact
+          about the product, so they stay; the rate is the policy's to state,
+          and the breakdown below names it with its origin.
+        */}
         <StatCard
           icon={Clock}
           label="Assembly"
-          value={formatCurrency(assemblyCost)}
-          subValue={`${product.assembly_minutes || 0} min @ £10/hr`}
+          value={formatMoney(assemblyCost, currencySymbol)}
+          subValue={`${product.assembly_minutes || 0} min`}
         />
         <StatCard
           icon={Calculator}
           label="Total Make Cost"
-          value={formatCurrency(totalMakeCost)}
+          value={formatMoney(totalMakeCostExact, currencySymbol)}
         />
       </div>
 
-      {/* Suggested Retail Pricing */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatCard
-          icon={TrendingUp}
-          label="Recommended Price"
-          value={formatCurrency(recommendedPrice)}
-          subValue="2.5× markup (150% margin)"
-        />
-        <StatCard
-          label="Alternative Price"
-          value={formatCurrency(marginBasedPrice)}
-          subValue="40% profit margin"
-        />
-        <StatCard
-          label="Premium Price"
-          value={formatCurrency(premiumPrice)}
-          subValue="3× markup (200% margin)"
-        />
-      </div>
+      {/*
+        The itemised make-cost, every line with where its inputs came from and
+        when (FR-018, FR-001), and the share of the total that is observed
+        rather than assumed (FR-046, SC-004). The stat cards above are a
+        summary of four buckets; this is the figure an operator can defend.
+      */}
+      <CostBreakdownSection
+        productId={product.id}
+        currencySymbol={currencySymbol}
+      />
+
+      {/*
+        Three "suggested retail prices" stood here -- make-cost times 2.5,
+        divided by 0.60, and times 3.0, computed as JavaScript floats from
+        markups nobody configured. They were a second pricing implementation
+        on a screen (Constitution III), they ignored every fee, reserve and
+        tax the engine accounts for, and an operator had no way to tell that
+        the figure beside their real margin was invented. FR-007 is explicit
+        that what a customer will pay is a market judgement the system must
+        not compute.
+
+        What replaces them is not another number. The solver answers "what
+        price reaches this margin" against the price the percentage fees are
+        actually charged on (FR-032), and the ladder shows margin across a
+        range so the judgement stays the operator's (FR-007) -- both per
+        channel, because a price without a channel has no fees. They live
+        behind "Find a price" on each row of Sales Channel Pricing below.
+      */}
+      <p className="text-sm text-muted-foreground">
+        To set a price, use <span className="font-medium">Find a price</span> on a
+        channel in <span className="font-medium">Sales Channel Pricing</span> below:
+        it solves for a target margin against that channel's own fees, or shows
+        margin across a ladder of prices.
+      </p>
 
       {/* Pricing Stats Grid */}
       {bestPricing && (
@@ -320,18 +343,18 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           <StatCard
             icon={DollarSign}
             label="Best Price"
-            value={formatCurrency(bestPricing.list_price)}
+            value={formatMoney(bestPricing.list_price, currencySymbol)}
             subValue={bestPricing.channel_name}
           />
           <StatCard
             icon={TrendingUp}
             label="Net Revenue"
-            value={formatCurrency(bestPricing.net_revenue || '0')}
+            value={formatMoney(bestPricing.net_revenue, currencySymbol)}
             subValue={`After ${bestPricing.platform_type} fees`}
           />
           <StatCard
             label="Profit"
-            value={formatCurrency(bestPricing.profit || '0')}
+            value={formatMoney(bestPricing.profit, currencySymbol)}
             subValue="After all costs"
           />
           {/* FR-031b: a percentage never appears without the basis that
@@ -340,7 +363,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
               rather than left for the reader to assume. */}
           <StatCard
             label="Margin"
-            value={`${parseFloat(bestPricing.margin_percentage || '0').toFixed(1)}%`}
+            value={formatPercent(bestPricing.margin_percentage)}
             subValue={
               <MarginBasisLabel basis="customer_total" short className="font-normal" />
             }
@@ -367,16 +390,15 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           </CardHeader>
           <CardContent>
             {(() => {
-              const theoreticalCost = totalMakeCost
-              const actualCost = costBreakdown.total_actual_cost
-                ? parseFloat(costBreakdown.total_actual_cost)
-                : null
-              const variance = costBreakdown.cost_variance_percentage
-                ? parseFloat(costBreakdown.cost_variance_percentage)
-                : null
-              const modelsActualCost = costBreakdown.models_actual_cost
-                ? parseFloat(costBreakdown.models_actual_cost)
-                : null
+              // All four are the engine's own figures, kept as the decimal
+              // strings it sent. Only `variance` becomes a number, and only to
+              // decide which way the arrow points -- the figure beside the
+              // arrow is still rendered from the string (Constitution IV).
+              const theoreticalCost = totalMakeCostExact
+              const actualCost = costBreakdown.total_actual_cost || null
+              const variancePct = costBreakdown.cost_variance_percentage || null
+              const variance = variancePct === null ? null : compareMoney(variancePct, '0')
+              const modelsActualCost = costBreakdown.models_actual_cost || null
               const hasFullData = costBreakdown.models_with_actual_cost === costBreakdown.models_total
 
               return (
@@ -384,13 +406,13 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     <div className="rounded-lg border bg-card p-4">
                       <div className="text-sm text-muted-foreground">Theoretical Cost</div>
-                      <div className="text-2xl font-bold mt-1">{formatCurrency(theoreticalCost)}</div>
+                      <div className="text-2xl font-bold mt-1">{formatMoney(theoreticalCost, currencySymbol)}</div>
                       <div className="text-xs text-muted-foreground mt-1">BOM-based estimate</div>
                     </div>
                     <div className="rounded-lg border bg-card p-4">
                       <div className="text-sm text-muted-foreground">Models Actual Cost</div>
                       <div className="text-2xl font-bold mt-1">
-                        {modelsActualCost !== null ? formatCurrency(modelsActualCost) : 'N/A'}
+                        {modelsActualCost !== null ? formatMoney(modelsActualCost, currencySymbol) : 'N/A'}
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">
                         From {costBreakdown.models_with_actual_cost} model{costBreakdown.models_with_actual_cost !== 1 ? 's' : ''}
@@ -399,7 +421,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                     {hasFullData && actualCost !== null && (
                       <div className="rounded-lg border bg-card p-4">
                         <div className="text-sm text-muted-foreground">Total Actual Cost</div>
-                        <div className="text-2xl font-bold mt-1">{formatCurrency(actualCost)}</div>
+                        <div className="text-2xl font-bold mt-1">{formatMoney(actualCost, currencySymbol)}</div>
                         <div className="text-xs text-muted-foreground mt-1">Including packaging & assembly</div>
                       </div>
                     )}
@@ -408,7 +430,7 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                         <div className="text-sm text-muted-foreground">Variance</div>
                         <div className={`text-2xl font-bold mt-1 flex items-center gap-1 ${variance > 0 ? 'text-destructive' : variance < 0 ? 'text-green-600' : ''}`}>
                           {variance > 0 ? <TrendingUp className="h-5 w-5" /> : variance < 0 ? <TrendingDown className="h-5 w-5" /> : <Minus className="h-5 w-5" />}
-                          {Math.abs(variance).toFixed(1)}%
+                          {formatPercent(variancePct?.replace(/^-/, '') ?? null)}
                         </div>
                         <div className="text-xs text-muted-foreground mt-1">
                           {variance > 0 ? 'Over budget' : variance < 0 ? 'Under budget' : 'On budget'}
@@ -457,11 +479,11 @@ export function ProductDetail({ productId }: ProductDetailProps) {
                   {product.packaging_consumable_name}
                   {product.packaging_quantity > 1 && ` ×${product.packaging_quantity}`}
                   <span className="text-muted-foreground ml-1">
-                    ({formatCurrency(product.cost_breakdown?.packaging_cost || '0')})
+                    ({formatMoney(product.cost_breakdown?.packaging_cost, currencySymbol)})
                   </span>
                 </span>
               ) : (
-                formatCurrency(product.packaging_cost || '0')
+                formatMoney(product.packaging_cost, currencySymbol)
               )
             }
           />

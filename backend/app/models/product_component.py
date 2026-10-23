@@ -64,11 +64,23 @@ class ProductComponent(Base, UUIDMixin, TimestampMixin):
         back_populates="child_products",
     )
 
+    #: The product this line puts in the bundle.
+    #:
+    #: Loaded lazily, deliberately. This used to be `lazy="joined"` "for cost
+    #: calculation", but `Product.child_products` and `Product.parent_products`
+    #: are both `selectin` to this class, so a joined load back to `Product`
+    #: re-entered a row carrying a dozen further `selectin` relationships --
+    #: `pricing` and `current_pricing` among them -- and did so again at every
+    #: level of a bundle. The engine never needed it: `CostingService` walks
+    #: bundles itself with its own `_visited` cycle detection and
+    #: `MAX_RECURSION_DEPTH` (FR-017/FR-049), and the three levels it costs are
+    #: loaded explicitly by `cost_load_options()` in
+    #: `app.services.cost_resolution`. Any caller that costs a bundle goes
+    #: through that declaration.
     child_product: Mapped["Product"] = relationship(
         "Product",
         foreign_keys=[child_product_id],
         back_populates="parent_products",
-        lazy="joined",  # Eager load for cost calculation
     )
 
     # Constraints

@@ -235,7 +235,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.setPrimaryImage).mockResolvedValue(mockImages[1])
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -263,7 +263,7 @@ describe('ProductImagesEditor', () => {
     it('shows confirmation dialog before deleting', async () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -288,7 +288,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.deleteProductImage).mockResolvedValue(undefined)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -319,7 +319,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.rotateProductImage).mockResolvedValue(mockImages[0])
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -343,7 +343,7 @@ describe('ProductImagesEditor', () => {
     it('opens preview dialog when eye button is clicked', async () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 

@@ -94,7 +94,11 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+# The database engine and its schema are built once per session (see
+# tests/conftest.py); a connection pool opened on one event loop cannot be
+# used from another, so the tests and their fixtures share the session loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 timeout = 300
 timeout_method = "thread"
@@ -109,6 +113,20 @@ module = [
     "app.services.fee_engine",
     "app.services.pricing_solver",
     "app.services.channel_pnl",
+    # Added in task T137, alongside the float ban: these arrived with later
+    # tiers and handle money or a rate just as the five above do.
+    "app.services.cost_resolution",
+    "app.services.provenance",
+    "app.services.pricing_policy",
+    "app.services.scenario_service",
+    "app.services.fx_service",
+    "app.services.temporal_pricing",
+    "app.services.realised_margin",
+    "app.services.tenant_cost_settings",
+    # The dated channel economics (task T136) and the realised-versus-planned
+    # comparison (task T134).
+    "app.services.channel_economics",
+    "app.services.margin_alert",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

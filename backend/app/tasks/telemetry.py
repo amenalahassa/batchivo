@@ -28,14 +28,19 @@ hand outranks a machine's guess at the same thing, and a sweep that ran twice
 must be indistinguishable from one that ran once.
 """
 
+import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Optional, Sequence
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import clock
+from app.tasks.celery_app import celery_app
 from app.services.printer_adapter import JobActuals, ReportsJobActuals
 from app.services.provenance import UnknownProvenanceField
 from app.services.variance_service import (
@@ -360,9 +365,227 @@ async def learn_from_runs(
     return decisions
 
 
+# ---------------------------------------------------------------------------
+# The entry points (task T148)
+#
+# The two functions above were written, tested and then never called. They had
+# no `@celery_app.task`, no place in `celery_app.include` and no caller in
+# `app/`, so in a running system no estimate was ever revised, no proposal ever
+# reached the review list T106 built, and no cost line ever acquired an
+# observed origin. FR-042 describes a loop; without these it was an open arc.
+#
+# The sweep learns from what a *run* recorded -- its duration and its purge
+# columns -- which the operator fills in on completion today. It does not need
+# a printer to answer, which is why the loop can close now rather than waiting
+# on an adapter that reports consumption.
+# ---------------------------------------------------------------------------
+
+#: How far back a sweep looks for runs to learn from.
+#:
+#: A quarter, matching the realised-margin sweep. Long enough that a
+#: slow-moving item accumulates the minimum number of outcomes the operator
+#: asked for (FR-042a), short enough that what is learned describes how the
+#: shop prints now.
+DEFAULT_LOOKBACK_DAYS = 90
+
+
+async def learn_for_tenant(
+    db: AsyncSession,
+    tenant: "Tenant",
+    *,
+    since: Optional[date] = None,
+) -> dict[str, "VarianceDecision"]:
+    """Consider every model with runs completed since ``since``.
+
+    Returns one decision per model and field, keyed ``"<model_id>.<field>"``,
+    including the fields nothing moved — an operator asking why their print
+    time did not change needs the reason, not silence.
+
+    Nothing is committed here; the caller's transaction decides, so one sweep
+    over a catalogue commits once or not at all.
+    """
+    from app.models.model import Model
+    from app.models.production_run import ProductionRun, ProductionRunItem
+
+    if since is None:
+        since = clock.today() - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+
+    # Completed runs only. An in-progress run's duration is how long it has been
+    # going, not how long it took, and a cancelled one is not evidence of
+    # anything. A failed run is excluded for the same reason its waste is not a
+    # purge figure: the yield line is what accounts for failure (FR-015).
+    rows = (
+        await db.execute(
+            select(ProductionRunItem.model_id, ProductionRun.id)
+            .join(ProductionRun, ProductionRunItem.production_run_id == ProductionRun.id)
+            .where(
+                ProductionRun.tenant_id == tenant.id,
+                ProductionRun.status == "completed",
+                ProductionRun.completed_at.is_not(None),
+                func.date(ProductionRun.completed_at) >= since,
+            )
+        )
+    ).all()
+
+    if not rows:
+        logger.info(
+            "No runs completed since %s for tenant %s, so there is nothing to learn from",
+            since,
+            tenant.id,
+        )
+        return {}
+
+    by_model: dict[Any, set[Any]] = {}
+    for model_id, run_id in rows:
+        by_model.setdefault(model_id, set()).add(run_id)
+
+    policy = await _resolved_policy(db, tenant)
+    decisions: dict[str, VarianceDecision] = {}
+
+    for model_id, run_ids in by_model.items():
+        model = (await db.execute(select(Model).where(Model.id == model_id))).scalar_one_or_none()
+        if model is None:  # pragma: no cover - a run cannot outlive its model
+            continue
+
+        runs = (
+            (await db.execute(select(ProductionRun).where(ProductionRun.id.in_(run_ids))))
+            .scalars()
+            .all()
+        )
+
+        for field_name, decision in (
+            await learn_from_runs(db, tenant, model, runs, policy=policy)
+        ).items():
+            decisions[f"{model_id}.{field_name}"] = decision
+            if decision.applied:
+                logger.info(
+                    "Model %s: %s updated from %d run(s) -- %s",
+                    model_id,
+                    field_name,
+                    len(decision.run_ids),
+                    decision.reason,
+                )
+            elif decision.proposal is not None:
+                # A held proposal is the interesting outcome: pricing keeps the
+                # current estimate and the operator has something to accept or
+                # reject (FR-042b, FR-042e).
+                logger.warning(
+                    "Model %s: %s diverges beyond the threshold and is held for review -- %s",
+                    model_id,
+                    field_name,
+                    decision.reason,
+                )
+
+    return decisions
+
+
+async def _resolved_policy(db: AsyncSession, tenant: "Tenant") -> "CostPolicy":
+    """The tenant's thresholds, read once for the whole sweep."""
+    from app.services.pricing_policy import resolve_cost_policy
+
+    return await resolve_cost_policy(db, tenant)
+
+
+async def _learn_all(tenant_id: Optional[uuid.UUID] = None) -> int:
+    """Sweep one tenant, or every active one. Returns the decision count."""
+    from app.database import async_session_maker
+    from app.models.tenant import Tenant
+
+    total = 0
+    async with async_session_maker() as db:
+        query = select(Tenant)
+        if tenant_id is not None:
+            query = query.where(Tenant.id == tenant_id)
+        else:
+            query = query.where(Tenant.is_active.is_(True))
+
+        for tenant in (await db.execute(query)).scalars().all():
+            try:
+                decisions = await learn_for_tenant(db, tenant)
+                # One commit per tenant: a sweep that fell over on tenant four
+                # must not discard what it learned for tenants one to three.
+                await db.commit()
+                total += len(decisions)
+            except Exception:  # pragma: no cover - one tenant must not stop the rest
+                await db.rollback()
+                logger.error(
+                    "Telemetry learning sweep failed for tenant %s", tenant.id, exc_info=True
+                )
+    return total
+
+
+@celery_app.task(name="telemetry.learn", bind=True, max_retries=0)
+def learn_from_production_runs_task(self: Any, tenant_id: Optional[str] = None) -> int:
+    """Celery entry point for the periodic learning sweep.
+
+    ``max_retries=0``: a retry would reconsider the same runs, and
+    ``variance_service`` already refuses to re-propose from outcomes that were
+    rejected (FR-042d) — so a retry buys nothing and risks a second warning
+    about the same figure.
+    """
+    return asyncio.run(_learn_all(uuid.UUID(str(tenant_id)) if tenant_id else None))
+
+
+@celery_app.task(name="telemetry.ingest_run", bind=True, max_retries=0)
+def ingest_run_actuals_task(self: Any, run_id: str) -> dict[str, Any]:
+    """Record what one finished run used, from its machine or its slicer file.
+
+    Dispatched per run rather than scheduled: the moment worth asking a printer
+    what a job consumed is when the job ends, and a sweep would ask long after
+    the machine has moved on. A caller that holds an adapter passes it to
+    :func:`ingest_run_actuals` directly; this entry point is the one for a
+    caller that holds only a run id.
+
+    The returned figures are strings because a Celery result is JSON and an
+    amount must not cross it as a float (Constitution IV).
+    """
+    return asyncio.run(_ingest_one(uuid.UUID(str(run_id))))
+
+
+async def _ingest_one(run_id: uuid.UUID) -> dict[str, Any]:
+    from app.database import async_session_maker
+    from app.models.production_run import ProductionRun
+    from app.models.tenant import Tenant
+
+    async with async_session_maker() as db:
+        run = (
+            await db.execute(select(ProductionRun).where(ProductionRun.id == run_id))
+        ).scalar_one_or_none()
+        if run is None:
+            logger.warning("No run %s to ingest actuals for", run_id)
+            return {"source": "none", "written": [], "reason": "run not found"}
+
+        tenant = (
+            await db.execute(select(Tenant).where(Tenant.id == run.tenant_id))
+        ).scalar_one_or_none()
+        if tenant is None:  # pragma: no cover - a run cannot outlive its tenant
+            return {"source": "none", "written": [], "reason": "tenant not found"}
+
+        actuals = await ingest_run_actuals(db, tenant, run)
+        await db.commit()
+
+        logger.info(
+            "Run %s: actuals from %s, wrote %s",
+            run_id,
+            actuals.source,
+            ", ".join(actuals.written) or "nothing",
+        )
+        return {
+            "source": actuals.source,
+            "grams": str(actuals.grams) if actuals.grams is not None else None,
+            "print_hours": str(actuals.print_hours) if actuals.print_hours is not None else None,
+            "written": list(actuals.written),
+            "reason": actuals.reason,
+        }
+
+
 __all__ = [
+    "DEFAULT_LOOKBACK_DAYS",
     "LEARNABLE_FROM_RUNS",
     "RunActuals",
     "ingest_run_actuals",
+    "ingest_run_actuals_task",
+    "learn_for_tenant",
+    "learn_from_production_runs_task",
     "learn_from_runs",
 ]

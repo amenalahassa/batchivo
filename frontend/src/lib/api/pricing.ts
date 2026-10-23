@@ -9,6 +9,8 @@ import type {
   FilamentPurchaseCreate,
   FilamentPurchaseListResponse,
   FilamentPurchaseUpdate,
+  ModelCostProfile,
+  ModelCostProfileUpdate,
   PricingPolicy,
   PricingPolicyUpdate,
   PriceLadder,
@@ -81,6 +83,35 @@ export const pricingApi = {
   ): Promise<PrinterCostPolicy> => {
     return apiClient.put<PrinterCostPolicy>(
       `/api/v1/printers/${printerId}/cost-policy`,
+      changes,
+    )
+  },
+
+  /**
+   * One printed item's operational figures, each with its provenance.
+   *
+   * Readable by every role, including a viewer: visibility of a cost is never
+   * restricted, only editing is (FR-007c).
+   */
+  getModelCostProfile: async (modelId: string): Promise<ModelCostProfile> => {
+    return apiClient.get<ModelCostProfile>(`/api/v1/models/${modelId}/cost-profile`)
+  },
+
+  /**
+   * Record a printed item's operational figures. Any member may.
+   *
+   * Fields left out are not touched, so entering the finishing time next week
+   * does not erase the purge weight measured today. Each field that moves has
+   * its origin written as `measured`, dated, against whoever entered it
+   * (FR-001). A figure the engine currently reads as `observed` comes back as
+   * a 409 rather than being typed over (FR-004).
+   */
+  updateModelCostProfile: async (
+    modelId: string,
+    changes: ModelCostProfileUpdate,
+  ): Promise<ModelCostProfile> => {
+    return apiClient.put<ModelCostProfile>(
+      `/api/v1/models/${modelId}/cost-profile`,
       changes,
     )
   },

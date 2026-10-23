@@ -9,8 +9,14 @@ cash out.
 
 ## Where each figure comes from, in order of preference
 
-**Revenue**: the order's own recorded amounts. Not the snapshot's list price:
-what the customer was charged is what the order says, discounts and all.
+**Revenue**: the order's own recorded amounts, less anything recorded as
+refunded against it (FR-040, task T189). Not the snapshot's list price: what
+the customer was charged is what the order says, discounts and all -- and what
+they kept is that less what went back. A refund reduces the revenue of the
+lines it came from; it never rewrites the snapshot, which is what the sale was
+priced on and is immutable (FR-038). Nothing recorded a refund at all before
+T189, so a fully refunded order reported the margin it earned at sale, which
+made SC-001 false by the whole refund.
 
 **Fees**: a recorded actual for this order where one exists (FR-041b),
 otherwise the planned fees frozen on the line at sale. Order-level actuals are
@@ -43,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.fee_actual import FeeActual
 from app.models.order import Order, OrderItem
 from app.models.production_run import ProductionRun
+from app.services.refund_actuals import refunded_total
 from app.services.sale_snapshot import allocate_across_lines
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -74,6 +81,12 @@ class RealisedMargin:
 
     revenue_received: Decimal
     shipping_revenue_allocated: Decimal
+    #: What was recorded as refunded, allocated to this line (FR-040).
+    #:
+    #: Reported separately rather than folded silently into
+    #: ``revenue_received`` so a reader can see that a refund is the reason the
+    #: margin moved. ``revenue_received`` is already net of it.
+    refund_allocated: Decimal
     fees_paid: Decimal
     fees_source: str
     make_cost: Decimal
@@ -89,6 +102,15 @@ class RealisedMargin:
     substitutions: list[str] = field(default_factory=list)
     #: Why a figure could not be realised, where that is the case.
     gaps: list[str] = field(default_factory=list)
+    #: The make-cost lines as realised, per unit, by key -- the snapshot's own
+    #: lines with actuals substituted where a run recorded them. Empty where
+    #: the line carries no breakdown to substitute into.
+    #:
+    #: Returned because an alert has to say *which* lines moved (US7 scenario
+    #: 3): "this product underperformed" sends an operator hunting, while "the
+    #: material line is 12 g heavy" is something they can act on. The totals
+    #: alone cannot be decomposed after the fact without guessing.
+    realised_lines: dict[str, Decimal] = field(default_factory=dict)
 
 
 def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
@@ -257,11 +279,39 @@ async def realised_margin(
     # --- what came in -----------------------------------------------------
     item_revenue = _decimal(item.total_price)
     shipping_share = allocate_across_lines(_decimal(parent.shipping_cost), weights)[position]
-    revenue_received = item_revenue + shipping_share
+    charged = item_revenue + shipping_share
 
-    # --- what went out: fees ----------------------------------------------
     substitutions: list[str] = []
     gaps: list[str] = []
+
+    # --- what went back out again: refunds (FR-040, task T189) -------------
+    #
+    # A refund is an actual recorded against the settled order, so it belongs
+    # on this side of the comparison rather than in the plan. It is allocated
+    # across the lines pro-rata by line subtotal -- the same allocation the
+    # fees and the postage use, with the rounding remainder to the heaviest
+    # line -- because a refund is recorded against the order and a margin is
+    # reported per line.
+    #
+    # An order-level allocation, not a per-line one: which line a partial
+    # refund was *for* is not recorded anywhere, and claiming it was would be
+    # a fabricated link of exactly the kind `_run_actuals_for` refuses to
+    # make. Where the refund is the whole order, every line goes to zero
+    # revenue either way.
+    #
+    # Nothing is clamped. A refund larger than the line's revenue -- a goodwill
+    # payment beyond the sale -- yields negative revenue and a negative margin,
+    # which is what happened; flooring it at zero would hide a loss.
+    refund_total = await refunded_total(db, tenant, parent.id)
+    if refund_total > ZERO:
+        refund_allocated = allocate_across_lines(refund_total, weights)[position]
+        substitutions.append(f"revenue reduced by {refund_allocated} refunded on this order")
+    else:
+        refund_allocated = ZERO
+
+    revenue_received = charged - refund_allocated
+
+    # --- what went out: fees ----------------------------------------------
 
     actual_total = await _actual_fees_for_order(db, tenant, parent)
     if actual_total > ZERO:
@@ -277,6 +327,7 @@ async def realised_margin(
     snapshot_lines = _snapshot_lines(item)
     quantity = Decimal(str(item.quantity or 1))
     unit_cost = _decimal(item.make_cost_at_sale)
+    realised_lines: dict[str, Decimal] = {}
 
     if not snapshot_lines:
         gaps.append("this line carries no cost breakdown, so no actual could be substituted")
@@ -315,6 +366,7 @@ async def realised_margin(
         # starts that never became sellable parts, and a single run of a
         # settled order says nothing about the yield across many.
         unit_cost = sum(resolved.values(), ZERO) + _snapshot_premium(item)
+        realised_lines = {key: amount.quantize(CENT) for key, amount in resolved.items()}
 
     make_cost = (unit_cost * quantity).quantize(CENT)
 
@@ -325,7 +377,10 @@ async def realised_margin(
 
     basis = item.margin_basis_at_sale or "customer_total"
     if basis == "item_price":
-        basis_amount = item_revenue
+        # Net of the refund too: the basis is what was kept, on every basis,
+        # or a refunded order would report a healthy percentage of money it
+        # gave back.
+        basis_amount = item_revenue - refund_allocated
     elif basis == "net_revenue":
         basis_amount = revenue_received - fees_paid
     else:
@@ -343,6 +398,7 @@ async def realised_margin(
         order_item_id=item.id,
         revenue_received=revenue_received.quantize(CENT),
         shipping_revenue_allocated=shipping_share.quantize(CENT),
+        refund_allocated=refund_allocated.quantize(CENT),
         fees_paid=fees_paid.quantize(CENT),
         fees_source=fees_source,
         make_cost=make_cost,
@@ -353,6 +409,7 @@ async def realised_margin(
         basis_amount=basis_amount.quantize(CENT),
         substitutions=substitutions,
         gaps=gaps,
+        realised_lines=realised_lines,
     )
 
 

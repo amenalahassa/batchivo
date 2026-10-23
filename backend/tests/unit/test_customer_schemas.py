@@ -3,6 +3,7 @@ Tests for customer account Pydantic schemas.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -290,11 +291,46 @@ class TestCustomerOrderItemResponse:
             product_sku="DRG-001",
             product_name="Dragon Mini",
             quantity=2,
-            unit_price=12.99,
-            total_price=25.98,
+            unit_price=Decimal("12.99"),
+            total_price=Decimal("25.98"),
         )
         assert item.product_sku == "DRG-001"
-        assert item.total_price == 25.98
+        assert item.total_price == Decimal("25.98")
+
+    def test_the_money_is_exact_not_a_double(self):
+        """Constitution IV: the figure the customer paid, kept exactly.
+
+        These fields were `float`. The assertion below is the whole argument:
+        `Decimal("25.98") == 25.98` is **False**, because 25.98 has no exact
+        binary representation -- so a float annotation here served the customer
+        a number that is not the one in the `Numeric` column, and not the one
+        `realised_margin.py` reconciles against (task T176, FR-047).
+        """
+        item = CustomerOrderItemResponse(
+            product_sku="DRG-001",
+            product_name="Dragon Mini",
+            quantity=2,
+            unit_price=Decimal("12.99"),
+            total_price=Decimal("25.98"),
+        )
+
+        assert isinstance(item.unit_price, Decimal)
+        assert isinstance(item.total_price, Decimal)
+        assert item.total_price != 25.98
+        assert item.total_price == Decimal("25.98")
+
+    def test_a_decimal_string_from_the_wire_survives_intact(self):
+        """The API serialises money as a string; it must round-trip exactly."""
+        item = CustomerOrderItemResponse(
+            product_sku="DRG-001",
+            product_name="Dragon Mini",
+            quantity=3,
+            unit_price="0.023986666",
+            total_price="0.071959998",
+        )
+
+        assert item.unit_price == Decimal("0.023986666")
+        assert item.total_price == Decimal("0.071959998")
 
 
 class TestCustomerOrderResponse:

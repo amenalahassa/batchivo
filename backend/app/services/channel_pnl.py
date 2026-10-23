@@ -26,6 +26,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Iterable, Optional, Sequence
 
+from app.services.costing import MARGIN_BASIS_LABELS, basis_amount_for
 from app.services.fee_engine import FeeStack
 
 if TYPE_CHECKING:
@@ -253,6 +254,69 @@ def reconcile(
         )
         for category in categories
     ]
+
+
+@dataclass(frozen=True)
+class PeriodMargin:
+    """What a channel earned over a period, and on which basis (FR-045).
+
+    The percentage used to be derived in the reconciliation route: its own
+    profit subtraction and its own three-way `if` over the basis, beside the
+    one `CostingService.margin` already owns. Two implementations of one
+    percentage is the defect Constitution III names whether or not they
+    currently agree, and `basis_amount_for` exists in `costing.py` precisely so
+    that the denominator is chosen once.
+    """
+
+    profit: Decimal
+    basis: str
+    basis_label: str
+    basis_amount: Decimal
+    margin_pct: Optional[Decimal]
+
+
+def period_margin(
+    *,
+    revenue_tax_exclusive: Decimal,
+    shipping_revenue: Decimal,
+    planned_fee_total: Decimal,
+    postage_paid: Decimal,
+    absorbed_costs: Sequence[AbsorbedCost],
+    basis: str,
+) -> PeriodMargin:
+    """A period's profit and margin, on the basis in effect.
+
+    Only the absorbed share of a periodic cost is charged against the period:
+    an unabsorbed cost has no order volume to divide across, and loading it
+    onto a month that sold nothing would report a loss that the absorption
+    rule deliberately leaves visible as unabsorbed instead (FR-025).
+
+    The denominator comes from `costing.basis_amount_for`, the same call the
+    per-item margin and the realised-margin alert make, with the period's own
+    totals in place of one sale's. Undefined rather than zero where the basis
+    amount is nothing: zero reads as break-even.
+    """
+    charged = sum((cost.total for cost in absorbed_costs if not cost.is_unabsorbed), ZERO)
+    profit = revenue_tax_exclusive - planned_fee_total - postage_paid - charged
+
+    basis_amount = basis_amount_for(
+        basis,
+        item_price=revenue_tax_exclusive - shipping_revenue,
+        customer_total=revenue_tax_exclusive,
+        fee_total_exact=planned_fee_total,
+    )
+    margin_pct = (
+        (profit / basis_amount * Decimal("100")).quantize(Decimal("0.0001"))
+        if basis_amount > ZERO
+        else None
+    )
+    return PeriodMargin(
+        profit=profit,
+        basis=basis,
+        basis_label=MARGIN_BASIS_LABELS[basis],
+        basis_amount=basis_amount,
+        margin_pct=margin_pct,
+    )
 
 
 def planned_total(stacks: Iterable[FeeStack]) -> dict[str, Decimal]:

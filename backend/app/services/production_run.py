@@ -1,6 +1,7 @@
 """Production Run service for business logic operations."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
@@ -29,6 +30,30 @@ from app.schemas.production_run import (
 
 logger = logging.getLogger(__name__)
 
+#: The scale of the columns the realised figures are stored in, so the one
+#: rounding in `record_actual_unit_costs` happens at the width the database
+#: would round to anyway rather than at an arbitrary one.
+PER_GRAM = Decimal("0.000001")
+PER_UNIT = Decimal("0.0001")
+
+#: The status a run reaches when its actuals are recordable. A plain string on
+#: the column rather than an enum, so it is named once here.
+COMPLETED = "completed"
+
+
+@dataclass(frozen=True)
+class MaterialCostSummary:
+    """A run's filament cost, expected against actual (task T183).
+
+    Three exact figures, unrounded. `actual` and `variance_percent` are `None`
+    for a run with nothing recorded yet, which is a different fact from zero.
+    """
+
+    estimated: Decimal
+    actual: Optional[Decimal]
+    variance_percent: Optional[Decimal]
+
+
 # OpenTelemetry tracer for production run operations
 tracer = trace.get_tracer(__name__)
 
@@ -48,6 +73,101 @@ class ProductionRunService:
         self.db = db
         self.tenant = tenant
         self.user = user
+
+    def record_actual_unit_costs(
+        self,
+        production_run: ProductionRun,
+        *,
+        total_material_cost: Decimal,
+        successful_weight: Decimal,
+    ) -> None:
+        """Write what each finished unit actually cost in filament (FR-040).
+
+        A recorded actual is one of the two deliberate exceptions to "nothing
+        derived is stored": it is what a run consumed, not a figure the engine
+        can re-derive once a spool price moves. Storing it is intended;
+        deriving it in a route handler was not (Constitution III, task T164).
+
+        The waste is distributed across the successful units rather than the
+        attempted ones, which is the point of dividing by the *successful*
+        weight: a plate that failed half its parts put its filament into the
+        parts that survived, and costing them at the per-gram price of a
+        perfect run would understate what they cost.
+
+        Exact throughout, and rounded once at the edge (Constitution IV). The
+        quotient is carried unrounded into each unit's multiplication and only
+        the stored figures are quantized -- to the scale of the column each
+        sits in, which is six places for a per-gram price and four for a
+        unit's cost. Rounding the quotient first and multiplying by 300 g
+        would put the error in every part the plate carried.
+
+        Nothing is committed; the caller's transaction decides.
+        """
+        if successful_weight <= Decimal("0"):
+            # No successful output, so there is nothing to attribute the
+            # filament to. Reported by its absence rather than written as a
+            # zero, which would read as a free run (FR-019).
+            return
+
+        cost_per_gram = total_material_cost / successful_weight
+        production_run.cost_per_gram_actual = cost_per_gram.quantize(PER_GRAM)
+        production_run.successful_weight_grams = successful_weight
+
+        if production_run.is_multi_plate and production_run.plates:
+            units = production_run.plates
+        elif production_run.items:
+            units = production_run.items
+        else:
+            return
+
+        for unit in units:
+            if unit.model_weight_grams:
+                unit.actual_cost_per_unit = (unit.model_weight_grams * cost_per_gram).quantize(
+                    PER_UNIT
+                )
+
+    @staticmethod
+    def material_cost_summary(production_run: ProductionRun) -> "MaterialCostSummary":
+        """What a run's filament was expected to cost and what it did (task T183).
+
+        The run-level aggregate of `ProductionRunMaterial.estimated_total_cost`
+        and `.total_cost`, with the variance between them. It lives here
+        because a route handler was computing it instead:
+        `analytics.py` summed `float(m.estimated_total_weight * m.cost_per_gram)`
+        and the actual beside it, took a percentage from the two and rounded
+        between the steps -- a second cost implementation, in binary floating
+        point, in a reader (Constitution III and IV).
+
+        Exact throughout and rounded nowhere. A caller that displays these
+        rounds once, at its own edge.
+
+        The actual is `None` rather than zero for a run that has not completed:
+        a run still printing has not yet spent anything *recordable*, and
+        reporting that as a cost of nothing would read as a free run and give a
+        variance of -100% (FR-019). The variance is `None` whenever either side
+        is unknown, and also when the estimate is zero -- there is no
+        percentage of nothing.
+        """
+        estimated = sum(
+            (material.estimated_total_cost for material in production_run.materials),
+            Decimal("0"),
+        )
+
+        actual: Optional[Decimal] = None
+        variance_percent: Optional[Decimal] = None
+        if production_run.status == COMPLETED:
+            actual = sum(
+                (material.total_cost for material in production_run.materials),
+                Decimal("0"),
+            )
+            if estimated > Decimal("0"):
+                variance_percent = ((actual - estimated) / estimated) * Decimal("100")
+
+        return MaterialCostSummary(
+            estimated=estimated,
+            actual=actual,
+            variance_percent=variance_percent,
+        )
 
     async def create_production_run(
         self,
@@ -624,6 +744,30 @@ class ProductionRunService:
                     )
                 except Exception as metrics_error:
                     logger.warning(f"Failed to record metrics: {metrics_error}")
+
+                # Ask the machine what the job actually used (FR-040, FR-042).
+                #
+                # Dispatched here because this is the moment worth asking: the
+                # printer still holds the finished job's figures and a nightly
+                # sweep would ask after it had moved on. Before this call the
+                # task had no caller anywhere, so `actual_grams` and
+                # `actual_print_hours` were never observed from a machine and
+                # no cost line could acquire an observed origin from one
+                # (task T159).
+                #
+                # Never fatal. The run is already committed; an unreachable
+                # broker or an offline printer costs the observation, not the
+                # record of the run, which is why this is a warning and not a
+                # rollback.
+                try:
+                    from app.tasks.telemetry import ingest_run_actuals_task
+
+                    ingest_run_actuals_task.apply_async(args=[str(production_run.id)])
+                except Exception as dispatch_error:
+                    logger.warning(
+                        f"Could not queue telemetry ingestion for run "
+                        f"{production_run.run_number}: {dispatch_error}"
+                    )
 
                 logger.info(
                     f"Completed production run {production_run.run_number} with "

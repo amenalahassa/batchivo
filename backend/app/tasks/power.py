@@ -19,14 +19,17 @@ of readings and the divergence threshold are the operator's settings, read from
 their pricing policy when the caller does not pass them.
 """
 
+import asyncio
 import logging
+import uuid
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import clock
+from app.tasks.celery_app import celery_app
 from app.services.variance_service import (
     NotLearnable,
     Outcome,
@@ -130,4 +133,116 @@ async def ingest_power_readings(
         )
 
 
-__all__ = ["PowerReading", "ingest_power_readings"]
+# ---------------------------------------------------------------------------
+# The entry point (task T148)
+#
+# :func:`ingest_power_readings` was written, tested and never called: no
+# `@celery_app.task`, no place in `celery_app.include`, no caller in `app/`.
+# This is the dispatchable form of it, so a plug integration has something to
+# hand its readings to rather than a function only a test can reach.
+#
+# ## Why this is dispatched and not scheduled
+#
+# A sweep needs somewhere to read from, and there is no store of plug readings
+# in this system: `PowerReading` is a tuple a caller supplies, and no table,
+# endpoint or adapter produces one. Putting this on `beat_schedule` would wake
+# a worker every hour to find nothing, which reads in the log as a working
+# integration and is not one.
+#
+# So the task takes its readings as its argument. What is still missing is the
+# producer -- a smart-plug protocol nobody has specified -- and it is missing
+# visibly: no schedule claims to be collecting power, and `measured_watts`
+# stays whatever the operator entered until something calls this.
+# ---------------------------------------------------------------------------
+
+
+@celery_app.task(name="power.ingest", bind=True, max_retries=0)
+def ingest_power_readings_task(
+    self: Any,
+    printer_id: str,
+    readings: list[list[Any]],
+) -> dict[str, Any]:
+    """Consider what a set of plug readings says about one machine's draw.
+
+    ``readings`` arrives over JSON as ``[[source_id, watts, "YYYY-MM-DD"], …]``
+    with the wattage as a **string**: a draw is a figure the engine multiplies
+    by an electricity rate, so it must not cross the broker as a float
+    (Constitution IV). A malformed reading is dropped with a warning rather
+    than failing the batch — one bad line from a plug must not discard the
+    readings beside it.
+
+    ``max_retries=0``: a retry would reconsider the same readings, and a
+    proposal already rejected is not re-raised from them (FR-042d), so a retry
+    buys nothing.
+    """
+    return asyncio.run(_ingest(uuid.UUID(str(printer_id)), readings))
+
+
+def _parse(readings: list[list[Any]]) -> list[PowerReading]:
+    """Readings off the wire, dropping what cannot be read."""
+    parsed: list[PowerReading] = []
+    for entry in readings:
+        try:
+            source_id, watts, *rest = entry
+            observed = date.fromisoformat(rest[0]) if rest and rest[0] else None
+            parsed.append((str(source_id), Decimal(str(watts)), observed))
+        except (ArithmeticError, IndexError, TypeError, ValueError):
+            logger.warning("Discarding an unreadable power reading: %r", entry)
+    return parsed
+
+
+async def _ingest(printer_id: uuid.UUID, readings: list[list[Any]]) -> dict[str, Any]:
+    from sqlalchemy import select
+
+    from app.database import async_session_maker
+    from app.models.printer import Printer
+    from app.models.tenant import Tenant
+
+    parsed = _parse(readings)
+
+    async with async_session_maker() as db:
+        printer = (
+            await db.execute(select(Printer).where(Printer.id == printer_id))
+        ).scalar_one_or_none()
+        if printer is None:
+            logger.warning("No printer %s to attribute power readings to", printer_id)
+            return {"applied": False, "reason": "printer not found"}
+
+        tenant = (
+            await db.execute(select(Tenant).where(Tenant.id == printer.tenant_id))
+        ).scalar_one_or_none()
+        if tenant is None:  # pragma: no cover - a printer cannot outlive its tenant
+            return {"applied": False, "reason": "tenant not found"}
+
+        decision = await ingest_power_readings(db, tenant, printer, parsed)
+        await db.commit()
+
+        if decision.applied:
+            logger.info(
+                "Printer %s: measured draw updated from %d reading(s) -- %s",
+                printer_id,
+                len(decision.run_ids),
+                decision.reason,
+            )
+        elif decision.proposal is not None:
+            # A plug reporting kilowatts where watts were expected lands here,
+            # which is the whole reason a reading does not simply overwrite the
+            # figure (FR-042b).
+            logger.warning(
+                "Printer %s: measured draw diverges beyond the threshold and is "
+                "held for review -- %s",
+                printer_id,
+                decision.reason,
+            )
+
+        return {
+            "applied": decision.applied,
+            "reason": decision.reason,
+            "observed_value": (
+                str(decision.observed_value) if decision.observed_value is not None else None
+            ),
+            "readings_used": len(parsed),
+        }
+
+
+__all__ = ["PowerReading", "ingest_power_readings", "ingest_power_readings_task"]

@@ -35,6 +35,7 @@ import {
   Loader2,
   Shield,
   Activity,
+  TrendingUp,
   type LucideIcon,
 } from 'lucide-react'
 import { Link, useRouter } from '@tanstack/react-router'
@@ -70,6 +71,7 @@ const ICON_COMPONENTS: Record<string, LucideIcon> = {
   'settings': Settings,
   'help-circle': HelpCircle,
   'activity': Activity,
+  'trending-up': TrendingUp, // Catalogue-wide price-shock scenarios
 }
 
 // Get icon component by name, with fallback
@@ -124,6 +126,7 @@ export function AppLayout({ children }: AppLayoutProps) {
     { path: '/consumables', label: 'Consumables', icon: 'wrench' },
     { path: '/sales-channels', label: 'Channels', icon: 'store' },
     { path: '/orders', label: 'Orders', icon: 'shopping-bag' },
+    { path: '/scenarios', label: 'Scenarios', icon: 'trending-up' },
   ]
 
   // Use dynamic nav items if loaded, otherwise fallback

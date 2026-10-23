@@ -424,5 +424,22 @@ class ProductionRunMaterial(Base):
         """Calculate total cost of material used."""
         return self.actual_total_weight * self.cost_per_gram
 
+    @property
+    def estimated_total_cost(self) -> Decimal:
+        """What this material was expected to cost, exactly (task T183).
+
+        The sibling of `total_cost`, which is the actual. Both are one
+        multiplication over this row's own `Numeric` columns, and both belong
+        here rather than in whichever reader needs them: `analytics.py`
+        re-derived exactly this in a route handler, in `float`, and reported a
+        different figure from the one `ProductionRunDetail` showed for the same
+        run (Constitution III and IV).
+
+        Not to be confused with `ProductionRunItem.estimated_total_cost`, a
+        stored column holding the whole BOM estimate for a printed unit --
+        materials, components and labour. This is the filament alone.
+        """
+        return self.estimated_total_weight * self.cost_per_gram
+
     def __repr__(self):
         return f"<ProductionRunMaterial(id={self.id}, spool_id={self.spool_id}, estimated_total={self.estimated_total_weight}g)>"

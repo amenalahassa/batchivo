@@ -164,6 +164,11 @@ export interface Model {
   updated_at: string
   // Computed cost (from list endpoint)
   total_cost?: string
+  /**
+   * What the engine could not cost. Non-empty means `total_cost` is a floor
+   * rather than a cost, and the row must say so (FR-019).
+   */
+  incomplete_reasons?: string[]
   // Production cost tracking (Phase 2)
   actual_production_cost?: string
   production_cost_count: number

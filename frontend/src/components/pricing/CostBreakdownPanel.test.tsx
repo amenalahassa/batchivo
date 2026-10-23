@@ -19,6 +19,7 @@ function line(overrides: Partial<CostLine> = {}): CostLine {
     risk_class: 'at_risk',
     source: 'observed',
     as_of: '2026-03-01',
+    has_pending_revision: false,
     ...overrides,
   }
 }
@@ -193,5 +194,84 @@ describe('CostBreakdownPanel', () => {
   it('honours the currency symbol it is given', () => {
     render(<CostBreakdownPanel breakdown={breakdown()} currencySymbol="CA$" />)
     expect(screen.getByTestId('total-make-cost')).toHaveTextContent('CA$20.30')
+  })
+})
+
+describe('a line whose figure is under review (task T153)', () => {
+  // FR-042e. `ProvenanceBadge` has accepted `hasPendingRevision` since T055a
+  // and the panel never passed it, because `CostLine` carried only `source`
+  // and `as_of`. The flag was served on the provenance resource alone — so an
+  // operator reading a cost breakdown saw a figure that telemetry already
+  // disputed, with nothing on the screen to say a proposal was waiting. These
+  // are the tests for the line carrying it.
+
+  it('marks the line a proposal is held against', () => {
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({
+          lines: [line({ key: 'machine', label: 'Machine occupancy', has_pending_revision: true })],
+        })}
+      />,
+    )
+
+    const row = screen.getByTestId('cost-line-machine')
+    expect(within(row).getByTestId('provenance-pending-revision')).toBeInTheDocument()
+  })
+
+  it('leaves the other lines unmarked', () => {
+    // The control. A flag on every line is the same as a flag on none.
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({
+          lines: [
+            line({ key: 'machine', label: 'Machine occupancy', has_pending_revision: true }),
+            line({ key: 'material', label: 'Filament in the part' }),
+          ],
+        })}
+      />,
+    )
+
+    expect(
+      within(screen.getByTestId('cost-line-material')).queryByTestId(
+        'provenance-pending-revision',
+      ),
+    ).not.toBeInTheDocument()
+  })
+
+  it('still shows the amount in force beside the mark', () => {
+    // Constitution VII: telemetry proposes and does not reprice. The figure on
+    // the line is the one pricing is using, and hiding it because an
+    // observation disagrees would be the sensor repricing by omission.
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({
+          lines: [line({ key: 'machine', amount: '2.21', has_pending_revision: true })],
+        })}
+        currencySymbol="CA$"
+      />,
+    )
+
+    expect(screen.getByTestId('cost-line-machine')).toHaveTextContent('CA$2.21')
+  })
+
+  it('marks nothing when no proposal is waiting', () => {
+    render(<CostBreakdownPanel breakdown={breakdown()} />)
+
+    expect(screen.queryByTestId('provenance-pending-revision')).not.toBeInTheDocument()
+  })
+
+  it('treats a line from an older response with no flag as unmarked', () => {
+    // A cached response predating the field. Absent is "nobody has proposed
+    // anything", not "under review".
+    const legacy = { ...line() } as Record<string, unknown>
+    delete legacy.has_pending_revision
+
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({ lines: [legacy as unknown as CostLine] })}
+      />,
+    )
+
+    expect(screen.queryByTestId('provenance-pending-revision')).not.toBeInTheDocument()
   })
 })

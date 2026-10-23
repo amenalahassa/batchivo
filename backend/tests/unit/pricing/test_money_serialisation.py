@@ -11,18 +11,21 @@ default is a dependency's choice, not ours, and a single `ser_json_decimal`
 setting or one `float` annotation would reverse it silently -- so it is pinned
 here.
 
-Scope: the cost and pricing schemas this feature owns. Older schemas elsewhere
-in `app.schemas` carry `float` money fields (consumables, customer orders) and
-integer minor units (payments); converting those is not part of this feature,
-and pretending otherwise with a failing scan would only get the scan deleted.
+Scope: the cost and pricing schemas this feature owns, plus the console's order
+read, which T201 brought in. The customer order schemas became `Decimal` with
+T176 and the order responses with T201; payments still carry integer minor
+units, which is a different representation rather than a lossy one.
 """
 
 import json
+from datetime import datetime, timezone
 from decimal import Decimal
+from uuid import uuid4
 
 import pytest
 from pydantic import BaseModel
 
+from app.api.v1.orders import OrderItemResponse, OrderResponse
 from app.schemas.model import CostBreakdown, CostLine, ModelCostBreakdown
 from app.schemas.product import (
     ProductCostBreakdown,
@@ -40,6 +43,13 @@ PRICING_SCHEMAS: list[type[BaseModel]] = [
     ProductPricingBase,
     ProductPricingCreate,
     ProductPricingResponse,
+    # The console's order read. `unit_price`, `total_price`, `shipping_cost`,
+    # `subtotal` and `total` were `float` here until T201 -- the last money on
+    # this API crossing the wire as JSON numbers -- and the float ban pinned
+    # them by name rather than fixing them, because correcting them changes
+    # the format `OrderDetail.tsx` and `OrderList.tsx` read (FR-047).
+    OrderItemResponse,
+    OrderResponse,
 ]
 
 
@@ -185,3 +195,92 @@ class TestMoneyIsAcceptedAsAString:
             {"sales_channel_id": str(uuid4()), "list_price": "64.99", "is_active": True}
         )
         assert pricing.list_price == Decimal("64.99")
+
+
+class TestTheOrderReadCrossesTheWireExactly:
+    """T201: the five figures every settled-order screen shows.
+
+    Pinned by a rendered payload rather than only by annotation, because the
+    annotation is half the claim -- a `ser_json_decimal` setting would turn all
+    five back into JSON numbers without changing a single type hint.
+    """
+
+    @staticmethod
+    def _an_order_item() -> OrderItemResponse:
+        return OrderItemResponse(
+            id=str(uuid4()),
+            product_id=str(uuid4()),
+            product_sku="THING-001",
+            product_name="A printed thing",
+            quantity=2,
+            unit_price=Decimal("12.25"),
+            total_price=Decimal("24.50"),
+        )
+
+    @classmethod
+    def _an_order(cls) -> OrderResponse:
+        now = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+        return OrderResponse(
+            id=str(uuid4()),
+            order_number="TEST-0001",
+            status="pending",
+            customer_email="buyer@example.invalid",
+            customer_name="A Buyer",
+            shipping_address_line1="1 Test Street",
+            shipping_city="London",
+            shipping_postcode="SW1A 1AA",
+            shipping_country="United Kingdom",
+            shipping_method="Standard",
+            shipping_cost=Decimal("3.50"),
+            postage_paid=Decimal("2.10"),
+            sales_tax_collected=Decimal("4.67"),
+            subtotal=Decimal("24.50"),
+            total=Decimal("28.00"),
+            currency="GBP",
+            payment_provider="manual",
+            payment_status="completed",
+            created_at=now,
+            updated_at=now,
+            items=[cls._an_order_item()],
+        )
+
+    def test_every_money_field_on_an_order_is_a_decimal_string(self) -> None:
+        payload = json.loads(self._an_order().model_dump_json())
+        for name in _decimal_fields(OrderResponse):
+            assert isinstance(payload[name], str), (
+                f"OrderResponse.{name} crossed the wire as "
+                f"{type(payload[name]).__name__}, not a decimal string"
+            )
+
+    def test_every_money_field_on_a_line_is_a_decimal_string(self) -> None:
+        payload = json.loads(self._an_order().model_dump_json())
+        line = payload["items"][0]
+        for name in _decimal_fields(OrderItemResponse):
+            assert isinstance(line[name], str), (
+                f"OrderItemResponse.{name} crossed the wire as "
+                f"{type(line[name]).__name__}, not a decimal string"
+            )
+
+    def test_the_figures_keep_their_trailing_zeros(self) -> None:
+        """A lost trailing zero is the fingerprint of a float round trip."""
+        payload = json.loads(self._an_order().model_dump_json())
+
+        assert payload["subtotal"] == "24.50"
+        assert payload["shipping_cost"] == "3.50"
+        assert payload["total"] == "28.00"
+        assert payload["items"][0]["total_price"] == "24.50"
+
+    def test_the_figures_are_accepted_as_strings_on_the_way_in(self) -> None:
+        """The order create form sends strings; nothing may coerce them early."""
+        item = OrderItemResponse.model_validate(
+            {
+                "id": str(uuid4()),
+                "product_id": None,
+                "product_sku": "THING-001",
+                "product_name": "A printed thing",
+                "quantity": 1,
+                "unit_price": "12.25",
+                "total_price": "12.25",
+            }
+        )
+        assert item.unit_price == Decimal("12.25")

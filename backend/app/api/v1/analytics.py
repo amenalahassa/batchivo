@@ -8,25 +8,29 @@ Provides analytics and variance analysis including:
 """
 
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
 from app.models.production_run import ProductionRun, ProductionRunItem, ProductionRunMaterial
 from app.models.product import Product
-from app.models.model import Model
+from app.models.product_model import ProductModel
 from app.models.spool import Spool
 from app.models.filament_type import FilamentType
-from app.auth.dependencies import CurrentTenant
+from app.auth.dependencies import CurrentTenant, TenantDB
+from app.services.production_run import ProductionRunService
 
 
 router = APIRouter(tags=["analytics"])
+
+#: The scale money is reported at on this surface. The figures are carried
+#: exact and quantized once, here at the edge (Constitution IV).
+MONEY = Decimal("0.01")
 
 
 # Response Schemas
@@ -91,9 +95,22 @@ class ProductionHistoryItem(BaseModel):
     quantity_successful: int
     quantity_failed: int
     success_rate: float
-    estimated_cost: float
-    actual_cost: Optional[float] = None
-    variance_percent: Optional[float] = None
+    # ------------------------------------------------------------------
+    # Exact, and so serialised as decimal strings (task T185, FR-047)
+    #
+    # These were `float`, filled by a cost calculation the route handler did
+    # for itself. The figures now come from
+    # `ProductionRunService.material_cost_summary`, which is the authority,
+    # and cross the wire as decimal strings like every other money field on
+    # this API. `success_rate` stays a float: a percentage of units is not
+    # money, and the money-name ban leaves it alone for that reason.
+    #
+    # `actual_cost` is absent, not zero, for a run that has not completed --
+    # an unrecorded cost and a cost of nothing are different facts (FR-019).
+    # ------------------------------------------------------------------
+    estimated_cost: Decimal
+    actual_cost: Optional[Decimal] = None
+    variance_percent: Optional[Decimal] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -107,8 +124,9 @@ class ProductProductionHistoryResponse(BaseModel):
     total_produced: int
     total_failed: int
     overall_success_rate: float
-    avg_estimated_cost: float
-    avg_actual_cost: Optional[float] = None
+    #: Exact, for the same reason as the per-run figures (task T185).
+    avg_estimated_cost: Decimal
+    avg_actual_cost: Optional[Decimal] = None
     production_history: list[ProductionHistoryItem]
 
 
@@ -145,12 +163,12 @@ class SpoolUsageResponse(BaseModel):
 
 @router.get("/variance-report", response_model=VarianceReportResponse)
 async def get_variance_report(
+    db: TenantDB,
     days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
     product_id: Optional[UUID] = Query(None, description="Filter by specific product"),
     variance_threshold: Optional[float] = Query(
         None, ge=0, description="Only include runs with variance above threshold %"
     ),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """
@@ -313,11 +331,11 @@ async def get_variance_report(
 )
 async def get_product_production_history(
     product_id: UUID,
+    db: TenantDB,
     days: int = Query(90, ge=1, le=365, description="Number of days to include"),
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """
@@ -346,15 +364,33 @@ async def get_product_production_history(
 
     start_date = datetime.now() - timedelta(days=days)
 
+    # The models this product is made of. `ProductModel` is the only link
+    # between a product and a run, and this handler never followed it: the
+    # query below said "runs that contain models from this product" and
+    # constrained nothing but the tenant and the window, while its join to
+    # `Model` was satisfied by every item ever printed. So one product's
+    # history was the whole workshop's, costs, variances and averages
+    # included -- and the quantity loop further down counted every item in
+    # each of those runs as this product's output.
+    product_model_ids = set(
+        (
+            await db.execute(
+                select(ProductModel.model_id).where(ProductModel.product_id == product_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     # Get runs that contain models from this product
     query = (
         select(ProductionRun)
         .join(ProductionRunItem)
-        .join(Model, ProductionRunItem.model_id == Model.id)
         .where(
             and_(
                 ProductionRun.tenant_id == tenant.id,
                 ProductionRun.started_at >= start_date,
+                ProductionRunItem.model_id.in_(product_model_ids),
             )
         )
         .options(
@@ -375,8 +411,8 @@ async def get_product_production_history(
     history_items = []
     total_produced = 0
     total_failed = 0
-    estimated_costs = []
-    actual_costs = []
+    estimated_costs: list[Decimal] = []
+    actual_costs: list[Decimal] = []
 
     for run in runs:
         # Find items for this product's models
@@ -385,6 +421,10 @@ async def get_product_production_history(
         run_quantity_failed = 0
 
         for item in run.items:
+            # A run that printed this product's model alongside somebody
+            # else's reports only this product's share of it.
+            if item.model_id not in product_model_ids:
+                continue
             run_quantity_planned += item.quantity
             run_quantity_successful += item.successful_quantity or 0
             run_quantity_failed += item.failed_quantity or 0
@@ -395,17 +435,16 @@ async def get_product_production_history(
             else 0
         )
 
-        # Calculate costs
-        estimated_cost = sum(
-            float(m.estimated_total_weight * m.cost_per_gram) for m in run.materials
-        )
-        actual_cost = None
-        variance_percent = None
-
-        if run.status == "completed":
-            actual_cost = sum(float(m.actual_total_weight * m.cost_per_gram) for m in run.materials)
-            if estimated_cost > 0:
-                variance_percent = ((actual_cost - estimated_cost) / estimated_cost) * 100
+        # What the run's filament was expected to cost and what it did.
+        #
+        # This handler used to compute it: it summed
+        # `float(m.estimated_total_weight * m.cost_per_gram)` and the actual
+        # beside it, took a percentage from the two and rounded between the
+        # steps. That was a second cost implementation, in a route, in binary
+        # floating point -- and `ProductionRunDetail` showed the service's
+        # recorded actuals for the same run, so the two screens disagreed about
+        # one number (task T183, Constitution III and IV, SC-008).
+        costs = ProductionRunService.material_cost_summary(run)
 
         history_items.append(
             ProductionHistoryItem(
@@ -418,17 +457,24 @@ async def get_product_production_history(
                 quantity_successful=run_quantity_successful,
                 quantity_failed=run_quantity_failed,
                 success_rate=round(success_rate, 1),
-                estimated_cost=round(estimated_cost, 2),
-                actual_cost=round(actual_cost, 2) if actual_cost else None,
-                variance_percent=round(variance_percent, 2) if variance_percent else None,
+                # Rounded once, here at the edge, and `None` passed through as
+                # itself: `if actual_cost` treated a genuine zero-cost run as
+                # unrecorded, and a -100% variance as no variance at all.
+                estimated_cost=costs.estimated.quantize(MONEY),
+                actual_cost=None if costs.actual is None else costs.actual.quantize(MONEY),
+                variance_percent=(
+                    None
+                    if costs.variance_percent is None
+                    else costs.variance_percent.quantize(MONEY)
+                ),
             )
         )
 
         total_produced += run_quantity_successful
         total_failed += run_quantity_failed
-        estimated_costs.append(estimated_cost)
-        if actual_cost:
-            actual_costs.append(actual_cost)
+        estimated_costs.append(costs.estimated)
+        if costs.actual is not None:
+            actual_costs.append(costs.actual)
 
     overall_success_rate = (
         (total_produced / (total_produced + total_failed) * 100)
@@ -443,10 +489,18 @@ async def get_product_production_history(
         total_produced=total_produced,
         total_failed=total_failed,
         overall_success_rate=round(overall_success_rate, 1),
-        avg_estimated_cost=round(sum(estimated_costs) / len(estimated_costs), 2)
-        if estimated_costs
-        else 0,
-        avg_actual_cost=round(sum(actual_costs) / len(actual_costs), 2) if actual_costs else None,
+        # Exact division, rounded once. `sum()` over an empty list is the int
+        # 0, so the start value is given explicitly to keep the type Decimal.
+        avg_estimated_cost=(
+            (sum(estimated_costs, Decimal("0")) / len(estimated_costs)).quantize(MONEY)
+            if estimated_costs
+            else Decimal("0.00")
+        ),
+        avg_actual_cost=(
+            (sum(actual_costs, Decimal("0")) / len(actual_costs)).quantize(MONEY)
+            if actual_costs
+            else None
+        ),
         production_history=history_items,
     )
 
@@ -454,10 +508,10 @@ async def get_product_production_history(
 @router.get("/spools/{spool_id}/production-usage", response_model=SpoolUsageResponse)
 async def get_spool_production_usage(
     spool_id: UUID,
+    db: TenantDB,
     days: int = Query(90, ge=1, le=365, description="Number of days to include"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """

@@ -35,6 +35,7 @@ import { ProductionRunDetailPage } from '@/pages/ProductionRunDetailPage'
 import { ProductionRunCreatePage } from '@/pages/ProductionRunCreatePage'
 import { Consumables } from '@/pages/Consumables'
 import { SalesChannels } from '@/pages/SalesChannels'
+import { Scenarios } from '@/pages/Scenarios'
 import { SalesChannelDetailPage } from '@/pages/SalesChannelDetailPage'
 import { SalesChannelCreatePage } from '@/pages/SalesChannelCreatePage'
 import { SalesChannelEditPage } from '@/pages/SalesChannelEditPage'
@@ -427,6 +428,20 @@ const salesChannelsRoute = new Route({
   ),
 })
 
+// A catalogue-wide shock (FR-044). It reads products and writes nothing, so it
+// sits behind the same module gate the catalogue does.
+const scenariosRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/scenarios',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Scenarios />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
 const salesChannelCreateRoute = new Route({
   getParentRoute: () => rootRoute,
   path: '/sales-channels/new',
@@ -714,6 +729,7 @@ const routeTree = rootRoute.addChildren([
   salesChannelCreateRoute,   // Static route first
   salesChannelEditRoute,     // /sales-channels/$channelId/edit before /sales-channels/$channelId
   salesChannelDetailRoute,   // Dynamic route last
+  scenariosRoute,            // Catalogue-wide price-shock scenarios
   categoriesRoute,           // Categories list
   designersRoute,            // Designers list
   printerDashboardRoute,     // Printer fleet monitoring dashboard

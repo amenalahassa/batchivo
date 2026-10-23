@@ -69,6 +69,7 @@ function LineRow({
             asOf={line.as_of}
             isStale={stale}
             isDefault={!line.as_of}
+            hasPendingRevision={line.has_pending_revision ?? false}
           />
         </div>
       </div>

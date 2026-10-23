@@ -46,6 +46,16 @@ class CostLine(BaseModel):
     as_of: Optional[date] = Field(
         None, description="When the figure was set or observed; null if never recorded"
     )
+    has_pending_revision: bool = Field(
+        False,
+        description=(
+            "An observation disputing one of this line's inputs is held for "
+            "review (FR-042e). The amount is still the figure in force -- "
+            "telemetry proposes and never reprices -- but the line says so "
+            "rather than letting the operator read a number the evidence "
+            "already contradicts."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -121,6 +131,16 @@ class ModelCostBreakdown(BaseModel):
     labor_cost: Decimal = Field(..., description="Labor cost (hours × rate)")
     overhead_cost: Decimal = Field(..., description="Overhead cost")
     total_cost: Decimal = Field(..., description="Total model cost")
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: Carried here so the flat shape is as honest as the itemised one: a
+    #: screen reading this breakdown must be able to tell a cost from a floor
+    #: (FR-019). It is projected from the same engine pass as the amounts
+    #: above, never recomputed.
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the total is a floor",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -250,6 +270,18 @@ class ModelResponse(ModelBase):
     updated_at: datetime
     # Computed cost (included when materials/components are loaded)
     total_cost: Optional[Decimal] = Field(None, description="Total build cost (computed)")
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: A list screen is where a product is picked, so it is where an item that
+    #: is missing its print time or its machine rate must say so rather than
+    #: show a finished-looking figure built from a zero. `total_make_cost`
+    #: above is still the cost of the lines the engine could resolve; this is
+    #: the part it could not, and a non-empty list means the figure is a floor,
+    #: not a cost (FR-019).
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the cost is a floor (FR-019)",
+    )
     # Production cost tracking (Phase 2)
     actual_production_cost: Optional[Decimal] = Field(
         None, description="Rolling average actual production cost per unit from completed runs"

@@ -310,7 +310,23 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
                   <FormItem>
                     <FormLabel>Expected discount (%)</FormLabel>
                     <FormControl>
-                      <Input type="number" step="0.01" min="0" max="100" placeholder="0" {...field} />
+                      {/*
+                        `step` has to match what the schema and the
+                        column allow, or the browser blocks the submit
+                        on a value this form considers valid and shows
+                        the operator nothing at all. At step="0.01" a
+                        reserve of 3.125% simply would not save, while
+                        the zod rule beside it permits four decimals and
+                        the column stores Numeric(_, 4) (task T194).
+                      */}
+                      <Input
+                        type="number"
+                        step="0.0001"
+                        min="0"
+                        max="100"
+                        placeholder="0"
+                        {...field}
+                      />
                     </FormControl>
                     <FormDescription>
                       Sales you expect to discount, averaged. Reduces planned revenue
@@ -328,7 +344,23 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
                   <FormItem>
                     <FormLabel>Refund reserve (%)</FormLabel>
                     <FormControl>
-                      <Input type="number" step="0.01" min="0" max="100" placeholder="0" {...field} />
+                      {/*
+                        `step` has to match what the schema and the
+                        column allow, or the browser blocks the submit
+                        on a value this form considers valid and shows
+                        the operator nothing at all. At step="0.01" a
+                        reserve of 3.125% simply would not save, while
+                        the zod rule beside it permits four decimals and
+                        the column stores Numeric(_, 4) (task T194).
+                      */}
+                      <Input
+                        type="number"
+                        step="0.0001"
+                        min="0"
+                        max="100"
+                        placeholder="0"
+                        {...field}
+                      />
                     </FormControl>
                     <FormDescription>
                       Share of revenue held back against refunds. Held, not spent — it

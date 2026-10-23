@@ -251,10 +251,23 @@ class TestCalculateModelCost:
         assert breakdown.overhead_cost == (base * Decimal("10") / Decimal("100")).quantize(MILLE)
 
     def test_every_figure_is_a_decimal(self):
+        """Constitution IV: a money figure is exact, never a float.
+
+        `incomplete_reasons` is excluded because it is not a figure -- it is
+        what the engine could not cost, in words (FR-019). Everything else in
+        this breakdown is an amount, and an amount that came back as a float
+        has already lost the exactness the whole engine is built to keep.
+        """
         breakdown = CostingService.calculate_model_cost(
             self._model(labor_hours=Decimal("1")), labor_rate=RATE
         )
-        for name, value in breakdown.model_dump().items():
+        figures = {
+            name: value
+            for name, value in breakdown.model_dump().items()
+            if name != "incomplete_reasons"
+        }
+        assert figures, "the breakdown must still carry figures to assert on"
+        for name, value in figures.items():
             assert isinstance(value, Decimal), f"{name} came back as {type(value).__name__}"
 
 

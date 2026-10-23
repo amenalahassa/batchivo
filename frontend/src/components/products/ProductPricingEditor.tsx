@@ -30,7 +30,16 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
-import { Loader2, Plus, Trash2, TrendingUp, TrendingDown, Edit, History } from 'lucide-react'
+import {
+  Calculator,
+  Loader2,
+  Plus,
+  Trash2,
+  TrendingUp,
+  TrendingDown,
+  Edit,
+  History,
+} from 'lucide-react'
 
 import {
   addProductPricing,
@@ -40,6 +49,7 @@ import {
   type ProductPricing,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { averageMoney, compareMoney, formatMoney, formatPercent } from '@/lib/money'
 import { listSalesChannels } from '@/lib/api/sales-channels'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -90,6 +100,9 @@ import {
 } from '@/components/ui/table'
 import { Switch } from '@/components/ui/switch'
 import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
+import { PriceFinderDialog } from '@/components/pricing/PriceFinderDialog'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
 
 const pricingFormSchema = z.object({
   sales_channel_id: z.string().uuid('Must select a sales channel'),
@@ -146,8 +159,14 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   const [editingPricing, setEditingPricing] = useState<ProductPricing | null>(null)
   //: The channel whose price history is open, or null for closed.
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null)
+  //: The row whose price finder is open, or null for closed.
+  const [finderPricing, setFinderPricing] = useState<ProductPricing | null>(null)
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency } = useCurrency()
+  const { user } = useAuth()
+  // A price is a monetary decision (FR-002, FR-007a). A viewer reads the
+  // margin at every rung and takes none of them.
+  const canSetPrice = canEditMonetaryPolicy(user)
 
   // Fetch available sales channels
   const { data: salesChannelsData } = useQuery({
@@ -267,6 +286,31 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
     })
   }
 
+  const handleFindPrice = (pricingItem: ProductPricing) => {
+    setFinderPricing(pricingItem)
+  }
+
+  /**
+   * A price the operator took from the solver or the ladder.
+   *
+   * It arrives as a *draft*, not a saved row: the edit dialog opens with the
+   * figure in it and the operator still presses save. US4 scenario 5 makes the
+   * solved price a proposal they apply or reject, and silently writing it
+   * would be the one behaviour that requirement rules out.
+   */
+  const handleApplyFoundPrice = (pricingItem: ProductPricing, price: string) => {
+    setFinderPricing(null)
+    setEditingPricing(pricingItem)
+    form.reset({
+      sales_channel_id: pricingItem.sales_channel_id,
+      list_price: price,
+      is_active: pricingItem.is_active,
+      min_quantity: String(pricingItem.min_quantity),
+      valid_from: '',
+    })
+    setDialogOpen(true)
+  }
+
   // Only current rows belong on this screen. `pricing` is the product's
   // current pricing from the API, but a caller passing a full history should
   // not end up with a superseded price listed as what the product sells for.
@@ -288,33 +332,37 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   // Averages are over the base tier only. Counting a channel's 1+, 10+ and
   // 50+ prices as three channels would drag the average toward whichever
   // channel happens to have the most tiers.
+  //
+  // Each figure averaged here is the engine's -- `profit` and
+  // `margin_percentage` come off the API per channel, and nothing on this
+  // screen re-derives either (Constitution III). What is computed is the mean
+  // of what it was sent, and it is computed in string space: these used to be
+  // summed with `parseFloat`, which is the conversion Constitution IV rules
+  // out for a monetary figure. `averageMoney` is the one place a rounding
+  // happens, and it says so.
   const activePricing = currentPricing.filter((p) => p.is_active && p.min_quantity === 1)
-  const avgProfit =
-    activePricing.length > 0
-      ? activePricing.reduce((sum, p) => sum + parseFloat(p.profit || '0'), 0) / activePricing.length
-      : 0
-  const avgMargin =
-    activePricing.length > 0
-      ? activePricing.reduce((sum, p) => sum + parseFloat(p.margin_percentage || '0'), 0) /
-        activePricing.length
-      : 0
+  const avgProfit = averageMoney(activePricing.map((p) => p.profit))
+  const avgMargin = averageMoney(
+    activePricing.map((p) => p.margin_percentage),
+    1,
+  )
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground space-x-4">
           <span>
-            Make Cost: <span className="font-semibold">{formatCurrency(makeCost)}</span>
+            Make Cost: <span className="font-semibold">{formatMoney(makeCost, currency.symbol)}</span>
           </span>
           {activePricing.length > 0 && (
             <>
               <span>•</span>
               <span>
-                Avg Profit: <span className="font-semibold">{formatCurrency(avgProfit)}</span>
+                Avg Profit: <span className="font-semibold">{formatMoney(avgProfit, currency.symbol)}</span>
               </span>
               <span>•</span>
               <span>
-                Avg Margin: <span className="font-semibold">{avgMargin.toFixed(1)}%</span>
+                Avg Margin: <span className="font-semibold">{formatPercent(avgMargin)}</span>
               </span>
             </>
           )}
@@ -529,9 +577,13 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
           </TableHeader>
           <TableBody>
             {sortedPricing.map((pricingItem) => {
-              const profit = parseFloat(pricingItem.profit || '0')
-              const margin = parseFloat(pricingItem.margin_percentage || '0')
-              const isProfitable = profit > 0
+              // The engine's own profit and margin, kept as the decimal
+              // strings it sent. They were parsed to floats to be formatted
+              // and compared; both are done on the strings now, so the row
+              // shows exactly what the engine computed (Constitution IV).
+              const profit = pricingItem.profit ?? null
+              const margin = pricingItem.margin_percentage ?? null
+              const isProfitable = compareMoney(profit, '0') > 0
 
               return (
                 <TableRow key={pricingItem.id} className={!pricingItem.is_active ? 'opacity-50' : ''}>
@@ -550,13 +602,13 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                     {tierLabel(pricingItem.min_quantity)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-medium">
-                    {formatCurrency(pricingItem.list_price)}
+                    {formatMoney(pricingItem.list_price, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
-                    -{formatCurrency(pricingItem.platform_fee || '0')}
+                    -{formatMoney(pricingItem.platform_fee, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(pricingItem.net_revenue || '0')}
+                    {formatMoney(pricingItem.net_revenue, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className={`flex items-center justify-end gap-1 tabular-nums font-semibold ${
@@ -567,7 +619,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       ) : (
                         <TrendingDown className="h-3 w-3" />
                       )}
-                      {formatCurrency(profit)}
+                      {formatMoney(profit, currency.symbol)}
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
@@ -580,14 +632,14 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       <Badge
                         variant="outline"
                         className={
-                          margin >= 30
+                          compareMoney(margin, '30') >= 0
                             ? 'bg-green-500/10 text-green-600 border-green-200'
-                            : margin >= 15
+                            : compareMoney(margin, '15') >= 0
                               ? 'bg-yellow-500/10 text-yellow-600 border-yellow-200'
                               : 'bg-red-500/10 text-red-600 border-red-200'
                         }
                       >
-                        {margin.toFixed(1)}%
+                        {formatPercent(margin)}
                       </Badge>
                       <MarginBasisLabel
                         basis="customer_total"
@@ -615,6 +667,16 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                         onClick={() => setHistoryChannelId(pricingItem.sales_channel_id)}
                       >
                         <History className="h-4 w-4" />
+                      </Button>
+                      {/* US4: state a target margin and read the price, or
+                          read the margin across a range and choose (FR-007). */}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Find a price for ${pricingItem.channel_name || 'this channel'}`}
+                        onClick={() => handleFindPrice(pricingItem)}
+                      >
+                        <Calculator className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
@@ -715,7 +777,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       {tierLabel(row.min_quantity)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-medium">
-                      {formatCurrency(row.list_price)}
+                      {formatMoney(row.list_price, currency.symbol)}
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge variant={row.is_current ? 'default' : 'outline'}>
@@ -735,6 +797,21 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
           </p>
         </DialogContent>
       </Dialog>
+
+      <PriceFinderDialog
+        open={finderPricing !== null}
+        onOpenChange={(open) => !open && setFinderPricing(null)}
+        productId={productId}
+        channelId={finderPricing?.sales_channel_id ?? null}
+        channelName={finderPricing?.channel_name ?? undefined}
+        currentPrice={finderPricing?.list_price ?? null}
+        onApply={
+          canSetPrice && finderPricing
+            ? (price) => handleApplyFoundPrice(finderPricing, price)
+            : undefined
+        }
+        currencySymbol={currency.symbol}
+      />
     </div>
   )
 }

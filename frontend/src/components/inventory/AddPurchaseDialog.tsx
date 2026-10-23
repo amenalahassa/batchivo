@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { consumablesApi } from '@/lib/api/consumables'
+import { divideMoney, formatMoney } from '@/lib/money'
 import type { ConsumablePurchaseCreate } from '@/types/consumable'
 import {
   Dialog,
@@ -49,7 +50,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
   const [formData, setFormData] = useState<Partial<ConsumablePurchaseCreate>>({
     consumable_type_id: '',
     quantity_purchased: 1,
-    total_cost: 0,
+    total_cost: '0',
     supplier: '',
     order_reference: '',
     purchase_url: '',
@@ -63,7 +64,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
       setFormData({
         consumable_type_id: consumableId || '',
         quantity_purchased: 1,
-        total_cost: 0,
+        total_cost: '0',
         supplier: consumable?.preferred_supplier || '',
         order_reference: '',
         purchase_url: consumable?.supplier_url || '',
@@ -73,11 +74,14 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
     }
   }, [open, consumableId, consumable])
 
-  // Calculate cost per unit
+  // The per-unit cost this purchase implies, divided exactly. It used to be a
+  // float division rendered with `toFixed(4)`, which rounds a figure that was
+  // already approximate (Constitution IV); `divideMoney` rounds once, at the
+  // four places shown.
   const costPerUnit =
-    formData.total_cost && formData.quantity_purchased && formData.quantity_purchased > 0
-      ? (formData.total_cost / formData.quantity_purchased).toFixed(4)
-      : '0.0000'
+    formData.quantity_purchased && formData.quantity_purchased > 0
+      ? divideMoney(formData.total_cost, formData.quantity_purchased, 4)
+      : null
 
   // Create mutation
   const createMutation = useMutation({
@@ -181,7 +185,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
                 min="0"
                 value={formData.total_cost || ''}
                 onChange={(e) =>
-                  handleInputChange('total_cost', parseFloat(e.target.value) || 0)
+                  handleInputChange('total_cost', e.target.value)
                 }
                 required
               />
@@ -189,7 +193,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
           </div>
 
           <div className="text-sm text-muted-foreground">
-            Cost per unit: <span className="font-mono">£{costPerUnit}</span>
+            Cost per unit: <span className="font-mono">{formatMoney(costPerUnit, '£')}</span>
           </div>
 
           <div className="space-y-2">

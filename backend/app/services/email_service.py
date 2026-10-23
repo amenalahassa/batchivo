@@ -2,6 +2,7 @@
 
 import html
 import logging
+from decimal import Decimal
 from typing import Optional
 
 import httpx
@@ -170,9 +171,9 @@ class EmailService:
         customer_name: str,
         order_number: str,
         order_items: list[dict],
-        subtotal: float,
-        shipping_cost: float,
-        total: float,
+        subtotal: Decimal,
+        shipping_cost: Decimal,
+        total: Decimal,
         shipping_address: dict,
         receipt_url: Optional[str] = None,
     ) -> bool:
@@ -183,10 +184,19 @@ class EmailService:
             to_email: Customer email address
             customer_name: Customer name
             order_number: Order number (e.g., MF-20251218-001)
-            order_items: List of items with name, quantity, price
-            subtotal: Order subtotal
-            shipping_cost: Shipping cost
-            total: Order total
+            order_items: List of items with name, quantity, price. `price` is
+                an exact `Decimal` for the same reason the three figures below
+                are.
+            subtotal: Order subtotal, exact (task T190)
+            shipping_cost: Shipping cost, exact
+            total: Order total, exact
+
+        These three were `float`, and the signature was the cause rather than
+        the symptom: every caller held an exact `Decimal` read from a `Numeric`
+        column and converted it away to satisfy this parameter list. They are
+        the figures a customer is told they were charged and that the operator
+        reconciles a statement against, which is the reasoning T176 applied to
+        `schemas/customer.py` (FR-047, Constitution IV).
             shipping_address: Shipping address dict
             receipt_url: Optional Square receipt URL
 
@@ -316,7 +326,7 @@ class EmailService:
         to_email: str,
         customer_name: str,
         order_number: str,
-        refund_amount: float,
+        refund_amount: Decimal,
         currency: str = "GBP",
         reason: Optional[str] = None,
     ) -> bool:
@@ -1376,7 +1386,7 @@ class EmailService:
         customer_name: str,
         rma_number: str,
         order_number: str,
-        refund_amount: float | None = None,
+        refund_amount: Decimal | None = None,
         replacement_order_number: str | None = None,
     ) -> bool:
         """
@@ -1524,6 +1534,69 @@ class EmailService:
         else:
             logger.error(f"Failed to send return rejected email to {to_email}")
             return False
+
+    async def send_margin_divergence_alert(
+        self,
+        to_email: str,
+        lines: list[str],
+        *,
+        since: Optional[str] = None,
+    ) -> bool:
+        """Tell the operator which products diverged, and which lines moved.
+
+        FR-042 requires the operator be *alerted*, not merely able to ask, and
+        US7 scenario 3 fixes what the alert must say: which lines moved. Each
+        entry in `lines` is one finding already phrased for a reader by
+        `app.tasks.margin_alerts.describe` -- this method chooses the
+        destination and nothing about the content, so there is no second
+        comparison of realised against planned here (Constitution III).
+
+        Returns False when email is not configured, which is not a failure: the
+        sweep still logs every finding and the console still reads them from
+        `GET /reconciliation/margin-divergence`.
+        """
+        if not self.is_configured:
+            logger.warning("Email service not configured - skipping margin divergence alert")
+            return False
+
+        if not lines:
+            return False
+
+        rows = "".join(
+            '<tr><td style="padding: 10px; border-bottom: 1px solid #eee;">'
+            f"{html.escape(line)}</td></tr>"
+            for line in lines
+        )
+        period = f"<p>Settled lines placed on or after {html.escape(since)}.</p>" if since else ""
+        count = len(lines)
+        subject = f"{count} product{'s' if count != 1 else ''} diverged from the planned margin"
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="font-family: Arial, sans-serif; color: #222;">
+            <h2 style="color: {html.escape(self.shop_brand_color)};">{html.escape(subject)}</h2>
+            <p>
+                These products earned a different margin than they were sold at, by more
+                than the threshold set on your pricing policy.
+            </p>
+            {period}
+            <table style="border-collapse: collapse; width: 100%;">{rows}</table>
+            <p style="margin-top: 20px; font-size: 13px; color: #666;">
+                Nothing has been changed. No price moved and no estimate was revised --
+                this is an observation about settled orders, for you to act on.
+            </p>
+        </body>
+        </html>
+        """
+
+        if await self._send_email_async(to_email, subject, html_content):
+            logger.info(f"Margin divergence alert sent to {to_email} ({count} findings)")
+            return True
+
+        logger.error(f"Failed to send margin divergence alert to {to_email}")
+        return False
 
 
 # Singleton instance

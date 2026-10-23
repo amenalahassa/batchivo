@@ -6,8 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.auth.dependencies import get_current_tenant, RequireAdmin
+from app.auth.dependencies import get_current_tenant, get_tenant_db, RequireAdmin
 from app.models.print_job import JobPriority, JobStatus
 from app.models.tenant import Tenant
 from app.schemas.print_queue import (
@@ -26,10 +25,19 @@ router = APIRouter(prefix="/print-queue", tags=["Print Queue"])
 
 
 def get_queue_service(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> PrintQueueService:
-    """Get print queue service instance."""
+    """Get print queue service instance.
+
+    The session is the tenant-scoped one, not `get_db`. Every handler in this
+    router depends on this single factory, and `PrintQueueService.
+    profitability_ranking` reads each job's product, resolves its cost policy
+    and asks the engine for a breakdown and a list price -- the whole US7
+    surface, and FR-043's profit-per-machine-hour figure. On `get_db` none of
+    those reads had `app.current_tenant_id` set, so row-level security never
+    engaged and the application-level filter was the only belt (Constitution I).
+    """
     return PrintQueueService(db=db, tenant=tenant)
 
 

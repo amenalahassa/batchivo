@@ -20,6 +20,7 @@ import {
   type ProductModel,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
 import { listModels } from '@/lib/api/models'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -84,7 +85,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
   const [dialogOpen, setDialogOpen] = useState(false)
   const [, setEditingModel] = useState<ProductModel | null>(null)
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency, formatCurrency } = useCurrency()
 
   // Fetch available models for selection
   const { data: availableModels } = useQuery({
@@ -152,17 +153,19 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
   const selectableModels =
     availableModels?.models?.filter((m) => !existingModelIds.includes(m.id)) || []
 
-  // Calculate total cost
-  const totalModelsCost = models.reduce((total, pm) => {
-    const modelCost = parseFloat(pm.model_cost || '0')
-    return total + modelCost * pm.quantity
-  }, 0)
+  // The column total, from the decimal strings the API sent. Each line is a
+  // unit cost times a whole quantity, which `parseFloat` and `*` get wrong in
+  // the last cent often enough to make this total disagree with the lines
+  // above it (Constitution IV).
+  const totalModelsCost = sumMoney(
+    models.map((pm) => multiplyMoney(pm.model_cost, pm.quantity)),
+  )
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total models cost: <span className="font-semibold">{formatCurrency(totalModelsCost)}</span>
+          Total models cost: <span className="font-semibold">{formatMoney(totalModelsCost, currency.symbol)}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -269,8 +272,8 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
           </TableHeader>
           <TableBody>
             {models.map((productModel) => {
-              const unitCost = parseFloat(productModel.model_cost || '0')
-              const totalCost = unitCost * productModel.quantity
+              const unitCost = productModel.model_cost ?? null
+              const totalCost = multiplyMoney(unitCost, productModel.quantity)
 
               return (
                 <TableRow key={productModel.id}>
@@ -300,7 +303,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(unitCost)}
+                    {formatMoney(unitCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
@@ -328,7 +331,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-semibold">
-                    {formatCurrency(totalCost)}
+                    {formatMoney(totalCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right">
                     <AlertDialog>
@@ -362,7 +365,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                 Total Models Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatCurrency(totalModelsCost)}
+                {formatMoney(totalModelsCost, currency.symbol)}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

@@ -47,6 +47,11 @@ async def get_current_user_info(
             currency_code=tenant.currency_code if tenant else "GBP",
             currency_symbol=tenant.currency_symbol if tenant else "£",
             is_platform_admin=current_user.is_platform_admin,
+            # `role` is a `UserRole` on the model but a `String(50)` in the
+            # column, so the loaded value may be either the enum member or the
+            # plain string. `getattr(..., "value", ...)` sends "owner" rather
+            # than "UserRole.OWNER" whichever one arrived.
+            role=getattr(user_tenant.role, "value", user_tenant.role),
         )
 
     # User has no tenant (shouldn't happen but handle gracefully)

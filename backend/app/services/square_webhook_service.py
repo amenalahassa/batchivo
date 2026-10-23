@@ -20,6 +20,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.money import pence_to_pounds
 from app.models.order import Order, OrderStatus
 from app.services.commerce_order_ownership import commerce_order_id
 from app.models.payment_log import PaymentLog, PaymentLogOperation, PaymentLogStatus
@@ -451,6 +452,47 @@ class SquareWebhookService:
         result["error_code"] = error_code
         result["error_detail"] = error_detail
 
+    async def _record_refund_actual(
+        self,
+        *,
+        order,
+        refund_id: Optional[str],
+        amount_minor,
+        currency: str,
+        reason: Optional[str],
+    ) -> None:
+        """Write the refund Square reported against the order it came from.
+
+        Square sends the amount in the currency's minor unit, so it is
+        converted exactly rather than with `int / 100` (Constitution IV).
+
+        The tenant comes from the order rather than from a request: a webhook
+        carries none, and the order is the only thing here that knows which
+        tenant it belongs to.
+        """
+        from app.models.tenant import Tenant
+        from app.services.refund_actuals import record_refund
+
+        tenant = (
+            await self.db.execute(select(Tenant).where(Tenant.id == order.tenant_id))
+        ).scalar_one_or_none()
+        if tenant is None:
+            logger.warning(
+                f"Refund {refund_id} is for order {order.order_number}, whose tenant "
+                f"{order.tenant_id} could not be read; the refund was not recorded"
+            )
+            return
+
+        await record_refund(
+            self.db,
+            tenant,
+            order,
+            amount=pence_to_pounds(amount_minor),
+            source="ingested",
+            provider_refund_id=refund_id,
+            reason=reason,
+        )
+
     async def _handle_refund_created(
         self,
         event_object: dict,
@@ -481,6 +523,26 @@ class SquareWebhookService:
             order.payment_status = "REFUNDED"
             order.updated_at = datetime.now(timezone.utc)
             webhook_event.order_id = order.id
+
+            # Record what Square says went back, as an actual (task T189).
+            #
+            # This handler set the status and wrote the amount only into a
+            # payment log, which no part of the pricing engine reads -- so
+            # `realised_margin` took the order's full total as its revenue and
+            # a refunded order reported the margin it earned at sale (SC-001).
+            #
+            # `ingested`, not `entered`: the provider reported this, a human
+            # did not, and FR-041e requires the two never be relabelled with
+            # each other. Keyed on Square's refund id, which is what makes a
+            # redelivery -- Square retries on any non-2xx -- record once.
+            await self._record_refund_actual(
+                order=order,
+                refund_id=refund_id,
+                amount_minor=amount,
+                currency=currency,
+                reason=reason,
+            )
+
             await self.db.commit()
 
             logger.info(f"Updated order {order.order_number} to REFUNDED status")

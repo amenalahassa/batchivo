@@ -11,6 +11,8 @@ import { Link } from '@tanstack/react-router'
 import { Loader2, Plus, Search, X, Upload, Download, Boxes, Filter, ArrowUpDown, Printer, PoundSterling } from 'lucide-react'
 
 import { listModels, importModels, exportModels } from '@/lib/api/models'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -30,11 +32,21 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { IncompleteCostBadge } from '@/components/pricing/IncompleteCostBadge'
 
 type SortOption = 'name' | 'sku' | 'category' | 'recent'
 
 export function ModelList() {
   const queryClient = useQueryClient()
+  const { currency } = useCurrency()
+
+  // The engine's own make-cost, rendered from the decimal string it sent and
+  // labelled in the tenant's currency. `parseFloat(...).toFixed(3)` behind a
+  // hardcoded `£` is how this list and the detail screen could disagree in
+  // the last fraction of a cent about one figure SC-008 says must be
+  // identical from every screen (task T161).
+  const formatCost = (value: string | null | undefined) =>
+    formatMoney(value, currency.symbol, { places: 3 })
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [search, setSearch] = useState('')
@@ -437,9 +449,10 @@ export function ModelList() {
                     )}
                     {model.total_cost && (
                       <span className="text-sm font-medium text-green-600">
-                        £{parseFloat(model.total_cost).toFixed(3)}
+                        {formatCost(model.total_cost)}
                       </span>
                     )}
+                    <IncompleteCostBadge reasons={model.incomplete_reasons} />
                     <span className="text-sm text-muted-foreground">
                       Stock: {model.units_in_stock || 0}
                     </span>
@@ -511,7 +524,10 @@ export function ModelList() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-medium">
-                        {model.total_cost ? `£${parseFloat(model.total_cost).toFixed(3)}` : '—'}
+                        <div className="flex items-center justify-end gap-2">
+                          <span>{formatCost(model.total_cost)}</span>
+                          <IncompleteCostBadge reasons={model.incomplete_reasons} />
+                        </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {formatPrintTime(model.print_time_minutes)}

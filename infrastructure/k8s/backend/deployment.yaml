@@ -10,6 +10,21 @@ data:
   DB_PORT: "5432"
   DB_NAME: "batchivo"
   REDIS_URL: "redis://redis:6379/0"
+  # Celery (task T149)
+  #
+  # These live here rather than on the worker alone because the *API* is what
+  # publishes. `backend/app/config.py` defaults both to
+  # `redis://localhost:6379/1`, which inside the API pod resolves to the API
+  # pod itself — nothing is listening there, so a catalogue shock requested
+  # through `POST /scenarios` was acknowledged and then never reached the
+  # worker (FR-044a, SC-006). The worker manifest fixed its own copy and the
+  # publisher was left on the default.
+  #
+  # Database 1 is the broker and 2 the result backend, keeping both clear of
+  # the application cache on database 0 above: a flush of one must not take the
+  # others with it.
+  CELERY_BROKER_URL: "redis://redis:6379/1"
+  CELERY_RESULT_BACKEND: "redis://redis:6379/2"
   ENVIRONMENT: "production"
   LOG_LEVEL: "INFO"
   ENABLE_TRACING: "false"  # Disable until observability stack is deployed

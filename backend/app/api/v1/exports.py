@@ -3,17 +3,20 @@ CSV Export API endpoints.
 
 Provides endpoints to download products, orders, and inventory
 in Shopify-compatible CSV format.
+
+Every handler queries on the tenant-scoped session. The orders export streams
+each order's subtotal, shipping, discount, tax and total out of the system, and
+on `get_db` it did so with `app.current_tenant_id` unset -- the application
+filter inside the service was the only belt (Constitution I).
 """
 
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant
-from app.database import get_db
+from app.auth.dependencies import CurrentTenant, TenantDB
 from app.services.export_service import get_export_service
 
 router = APIRouter()
@@ -21,8 +24,8 @@ router = APIRouter()
 
 @router.get("/products")
 async def export_products_csv(
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
+    db: TenantDB,
+    tenant: CurrentTenant,
 ):
     """
     Export all products in Shopify-compatible CSV format.
@@ -47,9 +50,9 @@ async def export_products_csv(
 
 @router.get("/inventory")
 async def export_inventory_csv(
+    db: TenantDB,
+    tenant: CurrentTenant,
     location: str = Query("Default", description="Inventory location name"),
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
 ):
     """
     Export inventory in Shopify-compatible CSV format.
@@ -73,12 +76,12 @@ async def export_inventory_csv(
 
 @router.get("/orders")
 async def export_orders_csv(
+    db: TenantDB,
+    tenant: CurrentTenant,
     start_date: Optional[date] = Query(None, description="Filter orders from this date"),
     end_date: Optional[date] = Query(None, description="Filter orders to this date"),
     status: Optional[str] = Query(None, description="Filter by order status"),
     format: str = Query("shopify", description="Export format: 'shopify' or 'accounting'"),
-    db: AsyncSession = Depends(get_db),
-    tenant: CurrentTenant = None,
 ):
     """
     Export orders in CSV format.

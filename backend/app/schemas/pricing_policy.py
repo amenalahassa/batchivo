@@ -13,7 +13,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-MarginBasis = Literal["customer_total", "item_price", "net_revenue"]
+# The margin basis is defined once, in `pricing_literals`: a second copy is how
+# a basis a policy accepts comes to differ from one a response can carry.
+from app.schemas.pricing_literals import MarginBasis
+
 OverheadMethod = Literal["per_machine_hour", "percentage"]
 
 #: Where the figures served came from: a policy row, or the legacy

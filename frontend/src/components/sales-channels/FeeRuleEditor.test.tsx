@@ -130,7 +130,7 @@ describe('FeeRuleEditor', () => {
 
   describe('adding a rule', () => {
     it('disables the rate field on a count basis', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -145,7 +145,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('explains why a rate is disabled rather than just greying it out', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -160,7 +160,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('cannot be saved without a name', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -169,7 +169,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('sends the rule the operator typed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -193,7 +193,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('omits the rate entirely on a count basis rather than sending zero', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -210,7 +210,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('leaves the optional clamps out when they are blank', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-add'))
@@ -225,7 +225,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('surfaces the API refusal rather than failing silently', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       createMock.mockRejectedValue(
         new Error('min_amount 10.00 exceeds max_amount 5.00'),
       )
@@ -242,7 +242,7 @@ describe('FeeRuleEditor', () => {
 
   describe('closing and deleting', () => {
     it('closes a rule with an end date rather than deleting it', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-close-transaction'))
@@ -279,7 +279,7 @@ describe('FeeRuleEditor', () => {
     })
 
     it('deletes a rule when asked', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       render(<FeeRuleEditor channelId={CHANNEL_ID} />)
 
       await user.click(await screen.findByTestId('fee-rule-delete-transaction'))

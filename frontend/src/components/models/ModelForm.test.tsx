@@ -21,6 +21,15 @@ import {
   createRoute,
   createRouter,
 } from '@tanstack/react-router'
+
+/*
+ * This file builds a genuine memory router, so it needs the real module rather
+ * than the stub `src/test/setup.ts` installs for every other test. The stub
+ * exists because importing the router cost every test file in the suite ~7s of
+ * setup; paying it here, in the two files that cannot do without it, is the
+ * trade.
+ */
+vi.unmock('@tanstack/react-router')
 import { ModelForm } from './ModelForm'
 import {
   createModel,

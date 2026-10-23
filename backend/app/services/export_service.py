@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.models.tenant import Tenant
+from app.services.refund_actuals import recorded_refund_totals
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +433,10 @@ class ExportService:
         result = await self.db.execute(query)
         orders = result.scalars().all()
 
+        # What was actually refunded, per order, from the rows that record it
+        # (T189). An order absent from this mapping had no refund recorded.
+        refunds = await recorded_refund_totals(self.db, self.tenant, [o.id for o in orders])
+
         for order in orders:
             # Map our status to Shopify financial status
             financial_status = self._map_financial_status(order.status, order.payment_status)
@@ -451,8 +456,19 @@ class ExportService:
                     order.updated_at.strftime("%Y-%m-%d %H:%M:%S %z") if order.updated_at else ""
                 )
 
-            # Calculate taxes (assuming 20% VAT included in price)
-            taxes = Decimal("0")  # We include VAT in prices
+            # The sales tax this order actually collected, as recorded on the
+            # order itself. It used to be hardcoded to zero under the comment
+            # "we include VAT in prices", which told the operator's accountant
+            # that no tax was taken -- and contradicted its own premise, since
+            # a tax-inclusive price is exactly the case FR-028e requires the
+            # derived exclusive figure to be made visible for.
+            taxes = order.sales_tax_collected
+
+            # What was recorded as refunded, not the order total. A partial
+            # refund sets OrderStatus.REFUNDED just as a full one does, so
+            # substituting the total exported an £80 refund for a £5 one
+            # (FR-040, FR-048).
+            refunded = refunds.get(order.id)
 
             # Write a row for each line item
             for idx, item in enumerate(order.items):
@@ -514,8 +530,8 @@ class ExportService:
                     "Cancelled at": cancelled_at if is_first_item else "",
                     "Payment Method": order.payment_provider if is_first_item else "",
                     "Payment Reference": order.payment_id or "" if is_first_item else "",
-                    "Refunded Amount": str(order.total)
-                    if is_first_item and order.status == OrderStatus.REFUNDED
+                    "Refunded Amount": str(refunded)
+                    if is_first_item and refunded is not None
                     else "",
                     "Vendor": "Mystmereforge",
                     "Id": str(order.id) if is_first_item else "",
@@ -561,7 +577,15 @@ class ExportService:
             "Subtotal",
             "Shipping",
             "Discount",
+            # The tax the order collected, which this format carried no column
+            # for at all -- the one export an operator hands their accountant
+            # was silent about the figure `reconciliation` already reports as a
+            # liability where the operator remits it (FR-028a, FR-028d).
+            "Tax",
             "Total",
+            # What was recorded as refunded against this order, blank where
+            # nothing was recorded (FR-040).
+            "Refunded Amount",
             "Payment Status",
             "Payment Method",
             "Payment Reference",
@@ -601,8 +625,11 @@ class ExportService:
         result = await self.db.execute(query)
         orders = result.scalars().all()
 
+        refunds = await recorded_refund_totals(self.db, self.tenant, [o.id for o in orders])
+
         for order in orders:
             order_date = order.created_at.strftime("%Y-%m-%d") if order.created_at else ""
+            refunded = refunds.get(order.id)
 
             for idx, item in enumerate(order.items):
                 is_first_item = idx == 0
@@ -619,7 +646,11 @@ class ExportService:
                     "Subtotal": str(order.subtotal) if is_first_item else "",
                     "Shipping": str(order.shipping_cost) if is_first_item else "",
                     "Discount": str(order.discount_amount) if is_first_item else "",
+                    "Tax": str(order.sales_tax_collected) if is_first_item else "",
                     "Total": str(order.total) if is_first_item else "",
+                    "Refunded Amount": str(refunded)
+                    if is_first_item and refunded is not None
+                    else "",
                     "Payment Status": order.payment_status if is_first_item else "",
                     "Payment Method": order.payment_provider if is_first_item else "",
                     "Payment Reference": order.payment_id or "" if is_first_item else "",

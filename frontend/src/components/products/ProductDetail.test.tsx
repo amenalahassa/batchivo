@@ -12,6 +12,9 @@
  * the last cent goes missing (Constitution III, IV).
  */
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -29,6 +32,16 @@ vi.mock('@/hooks/useCurrency', () => ({
   }),
 }))
 
+// The pricing editor reads the role to decide whether a solved price may be
+// applied (FR-007a). Stubbed for the same reason as `useCurrency` above: the
+// session is not what is under test.
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({
+    user: { email: 'operator@example.com', role: 'admin' },
+    logout: vi.fn(),
+  }),
+}))
+
 vi.mock('@/lib/api/sales-channels', () => ({
   listSalesChannels: vi.fn(async () => ({ channels: [], total: 0 })),
 }))
@@ -41,11 +54,11 @@ vi.mock('@/lib/api/products', () => ({
 
 import {
   NO_COST,
-  makeCostNumber,
   makeCostOf,
   normaliseMoney,
   sameMakeCost,
 } from '@/lib/pricing/makeCost'
+import type { ProductPricing } from '@/lib/api/products'
 import { ProductPricingEditor } from './ProductPricingEditor'
 
 // ---------------------------------------------------------------------------
@@ -98,13 +111,12 @@ describe('makeCostOf', () => {
 })
 
 describe('makeCostNumber', () => {
-  it('converts once, for arithmetic the UI does on top of the cost', () => {
-    expect(makeCostNumber({ cost_breakdown: { total_make_cost: '20.30' } })).toBeCloseTo(20.3, 10)
-  })
-
-  it('returns zero rather than NaN for an unparseable figure', () => {
-    expect(makeCostNumber({ total_make_cost: 'not a number' })).toBe(0)
-    expect(makeCostNumber(null)).toBe(0)
+  it('is gone, because a float accessor to a cost had no reader left', async () => {
+    // Its two callers were the invented suggested prices (task T140) and the
+    // float averages (task T143). Keeping it would leave the obvious thing to
+    // reach for the next time a screen wants to multiply a cost.
+    const module = await import('@/lib/pricing/makeCost')
+    expect('makeCostNumber' in module).toBe(false)
   })
 })
 
@@ -203,5 +215,168 @@ describe('ProductPricingEditor', () => {
       <ProductPricingEditor productId="prod-1" pricing={[]} makeCost="64.90" />,
     )
     expect(await screen.findByText('£64.90')).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The averages across channels (task T143)
+// ---------------------------------------------------------------------------
+
+/** A current, active base-tier price with the engine's own profit and margin. */
+function pricingRow(overrides: Partial<ProductPricing> = {}): ProductPricing {
+  return {
+    id: `pricing-${Math.random().toString(36).slice(2)}`,
+    product_id: 'prod-1',
+    sales_channel_id: 'channel-1',
+    channel_name: 'Etsy',
+    platform_type: 'etsy',
+    list_price: '30.00',
+    is_active: true,
+    min_quantity: 1,
+    valid_from: '2026-01-01',
+    valid_to: null,
+    profit: '0.10',
+    margin_percentage: '35.0000',
+    ...overrides,
+  } as ProductPricing
+}
+
+describe('ProductPricingEditor averages', () => {
+  it('averages the profit the engine sent, exactly', async () => {
+    // 0.10 + 0.20 + 0.30 over three channels is 0.20 to the cent. Summed as
+    // floats it is 0.6000000000000001, and the mean 0.20000000000000004 --
+    // which is the same figure only until something rounds it (Constitution IV).
+    renderWithQueryClient(
+      <ProductPricingEditor
+        productId="prod-1"
+        makeCost="20.30"
+        pricing={[
+          pricingRow({ sales_channel_id: 'c1', channel_name: 'A', profit: '0.10' }),
+          pricingRow({ sales_channel_id: 'c2', channel_name: 'B', profit: '0.20' }),
+          pricingRow({ sales_channel_id: 'c3', channel_name: 'C', profit: '0.30' }),
+        ]}
+      />,
+    )
+
+    // Scoped to the summary line: a channel row happens to show the same
+    // figure, and asserting globally would pass on the wrong element.
+    expect(await screen.findByText(/Avg Profit:/)).toHaveTextContent('£0.20')
+  })
+
+  it('averages the margin to one place, from the four the API sends', async () => {
+    renderWithQueryClient(
+      <ProductPricingEditor
+        productId="prod-1"
+        makeCost="20.30"
+        pricing={[
+          pricingRow({ sales_channel_id: 'c1', channel_name: 'A', margin_percentage: '35.2693' }),
+          pricingRow({ sales_channel_id: 'c2', channel_name: 'B', margin_percentage: '40.0000' }),
+        ]}
+      />,
+    )
+
+    expect(await screen.findByText(/Avg Margin:/)).toHaveTextContent('37.6%')
+  })
+
+  it('counts a channel once however many quantity tiers it has', async () => {
+    // The 10+ tier must not drag the average: it is the same channel.
+    renderWithQueryClient(
+      <ProductPricingEditor
+        productId="prod-1"
+        makeCost="20.30"
+        pricing={[
+          pricingRow({ sales_channel_id: 'c1', channel_name: 'A', profit: '1.00' }),
+          pricingRow({
+            sales_channel_id: 'c1',
+            channel_name: 'A',
+            min_quantity: 10,
+            profit: '9.00',
+          }),
+        ]}
+      />,
+    )
+
+    expect(await screen.findByText(/Avg Profit:/)).toHaveTextContent('£1.00')
+  })
+
+  it('shows no average at all when no channel has a current active price', async () => {
+    renderWithQueryClient(
+      <ProductPricingEditor productId="prod-1" makeCost="20.30" pricing={[]} />,
+    )
+
+    expect(await screen.findByText(/Make Cost:/)).toBeInTheDocument()
+    expect(screen.queryByText(/Avg Profit:/)).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// No second pricing implementation, and no float money, on these screens
+// (tasks T140, T143)
+// ---------------------------------------------------------------------------
+
+/**
+ * These read the source rather than the rendered output, deliberately.
+ *
+ * What they guard against is not a wrong number on screen today -- it is a
+ * markup or a `parseFloat` being added back tomorrow. A render test can only
+ * catch the figures it happens to assert on; reading the source catches the
+ * construct, which is what the Constitution actually forbids. The backend
+ * holds its money paths the same way, in
+ * `backend/tests/unit/pricing/test_no_float_in_money_paths.py`.
+ */
+const PRODUCT_SCREENS = [
+  'ProductDetail.tsx',
+  'ProductPricingEditor.tsx',
+  'ProductComponentsEditor.tsx',
+  'ProductModelsEditor.tsx',
+]
+
+function sourceOf(name: string): string {
+  return readFileSync(join(__dirname, name), 'utf8')
+}
+
+describe('the product screens derive no price of their own', () => {
+  it('has no markup multiplier left on the detail page', () => {
+    // `totalMakeCost * 2.5`, `/ 0.60` and `* 3.0` were rendered as
+    // "Recommended", "Alternative" and "Premium" prices, from markups no
+    // operator configured and before any fee, reserve or tax. FR-007 is
+    // explicit that what a customer will pay is not the system's to compute.
+    const source = sourceOf('ProductDetail.tsx')
+    for (const markup of ['* 2.5', '/ 0.60', '* 3.0', '* 3.00']) {
+      expect(source).not.toContain(`totalMakeCost ${markup}`)
+    }
+    expect(source).not.toMatch(/Recommended Price|Premium Price|Alternative Price/)
+  })
+
+  it('points the operator at the solver and the ladder instead', () => {
+    // Removing the tiles must not leave the screen silent about how a price is
+    // actually arrived at (FR-032, FR-007).
+    const source = sourceOf('ProductDetail.tsx')
+    expect(source).toContain('Find a price')
+  })
+
+  it('does not parse a money figure into a float on any of them', () => {
+    for (const name of PRODUCT_SCREENS) {
+      const offenders = sourceOf(name)
+        .split('\n')
+        .map((line, index) => [index + 1, line] as const)
+        .filter(([, line]) => /parseFloat\s*\(/.test(line))
+        .filter(([, line]) => /cost|price|profit|margin|fee|total|revenue/i.test(line))
+
+      expect(
+        offenders.map(([lineNumber, line]) => `${name}:${lineNumber}: ${line.trim()}`),
+        `${name} turns a money figure into a float; the API sends decimal ` +
+          `strings and @/lib/money has exact add, multiply and divide ` +
+          `(Constitution IV)`,
+      ).toEqual([])
+    }
+  })
+
+  it('is reading the real files, so these cannot pass vacuously', () => {
+    for (const name of PRODUCT_SCREENS) {
+      expect(sourceOf(name).length).toBeGreaterThan(1000)
+    }
+    // A control: the construct being banned is one the checker can see.
+    expect(/parseFloat\s*\(/.test('const x = parseFloat(y)')).toBe(true)
   })
 })

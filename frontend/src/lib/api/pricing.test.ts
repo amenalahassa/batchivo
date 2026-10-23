@@ -1,4 +1,11 @@
 /**
+ * @vitest-environment node
+ *
+ * No DOM here, so no jsdom. Building one costs more than this file's tests
+ * take to run, and a budget spent before a test starts is what made the suite
+ * depend on how loaded the machine was (task T174, Constitution II).
+ */
+/**
  * pricingApi tests.
  *
  * A thin client, so what is checked is thin too — the URLs, the query

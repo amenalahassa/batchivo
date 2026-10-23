@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.discount import DiscountCode, DiscountType, DiscountUsage
 from app.models.order import Order
+from app.models.user import UserRole
 
 
 # ============================================
@@ -637,3 +638,116 @@ async def test_discount_endpoints_require_auth(unauthenticated_client: AsyncClie
         json={"code": "TEST", "subtotal": "50.00"},
     )
     assert response.status_code == 401
+
+
+# ============================================
+# Permissions (T197)
+# ============================================
+
+
+class TestOnlyAdminsMayChangeDiscountCodes:
+    """A discount code is a monetary lever, so FR-007a's tier applies.
+
+    A code moves what the customer pays, and so moves the realised margin on
+    every order that redeems it. Until T197 every handler here took only a
+    tenant, which left a *viewer* able to create, change or delete one.
+    """
+
+    async def test_a_viewer_may_read(
+        self, client: AsyncClient, test_discount_code: DiscountCode, as_role
+    ) -> None:
+        """FR-007c: a price nobody can see the discount behind is unverifiable."""
+        async with as_role(UserRole.VIEWER) as viewer:
+            response = await viewer.get("/api/v1/discounts")
+
+        assert response.status_code == 200
+        assert test_discount_code.code in {item["code"] for item in response.json()["items"]}
+
+    async def test_a_viewer_may_validate_a_code(
+        self, client: AsyncClient, test_discount_code: DiscountCode, as_role
+    ) -> None:
+        """Validation is a read, and checkout runs it (FR-007c)."""
+        async with as_role(UserRole.VIEWER) as viewer:
+            response = await viewer.post(
+                "/api/v1/discounts/validate",
+                json={"code": test_discount_code.code, "subtotal": "50.00"},
+            )
+
+        assert response.status_code == 200
+
+    async def test_a_viewer_is_refused_a_create(
+        self, client: AsyncClient, db_session: AsyncSession, test_tenant, as_role
+    ) -> None:
+        async with as_role(UserRole.VIEWER) as viewer:
+            response = await viewer.post(
+                "/api/v1/discounts",
+                json={
+                    "code": "VIEWERMADE",
+                    "name": "Should not exist",
+                    "discount_type": "percentage",
+                    "amount": "15.00",
+                    "valid_from": datetime.now(timezone.utc).isoformat(),
+                    "is_active": True,
+                },
+            )
+
+        assert response.status_code == 403
+        stored = await db_session.execute(
+            select(DiscountCode).where(
+                DiscountCode.tenant_id == test_tenant.id,
+                DiscountCode.code == "VIEWERMADE",
+            )
+        )
+        assert stored.scalar_one_or_none() is None
+
+    async def test_a_member_is_refused_an_update_and_the_figure_is_untouched(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_discount_code: DiscountCode,
+        as_role,
+    ) -> None:
+        """FR-007d: the refusal must leave the amount exactly as it was."""
+        before = test_discount_code.amount
+
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.patch(
+                f"/api/v1/discounts/{test_discount_code.id}",
+                json={"amount": "90.00"},
+            )
+
+        assert response.status_code == 403
+        await db_session.refresh(test_discount_code)
+        assert test_discount_code.amount == before
+
+    async def test_a_member_is_refused_a_delete_and_the_code_survives(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_discount_code: DiscountCode,
+        as_role,
+    ) -> None:
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.delete(f"/api/v1/discounts/{test_discount_code.id}")
+
+        assert response.status_code == 403
+        survivor = await db_session.execute(
+            select(DiscountCode).where(DiscountCode.id == test_discount_code.id)
+        )
+        assert survivor.scalar_one_or_none() is not None
+
+    async def test_an_admin_may_still_write(self, client: AsyncClient) -> None:
+        """The tier must not have locked the surface out of its own operators."""
+        response = await client.post(
+            "/api/v1/discounts",
+            json={
+                "code": "ADMINMADE",
+                "name": "Admin discount",
+                "discount_type": "percentage",
+                "amount": "5.00",
+                "valid_from": datetime.now(timezone.utc).isoformat(),
+                "is_active": True,
+            },
+        )
+
+        assert response.status_code == 201, response.text

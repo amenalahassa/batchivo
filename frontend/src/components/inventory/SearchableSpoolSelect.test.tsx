@@ -27,7 +27,7 @@ const mockSpools: SpoolResponse[] = [
     current_weight: 800,
     empty_spool_weight: 200,
     purchase_date: '2024-01-01',
-    purchase_price: 25.0,
+    purchase_price: '25.0',
     supplier: 'Bambu Store',
     purchased_quantity: 1,
     spools_remaining: 1,
@@ -63,7 +63,7 @@ const mockSpools: SpoolResponse[] = [
     current_weight: 500,
     empty_spool_weight: 150,
     purchase_date: '2024-02-01',
-    purchase_price: 30.0,
+    purchase_price: '30.0',
     supplier: 'Amazon',
     purchased_quantity: 1,
     spools_remaining: 1,
@@ -99,7 +99,7 @@ const mockSpools: SpoolResponse[] = [
     current_weight: 950,
     empty_spool_weight: 200,
     purchase_date: '2024-03-01',
-    purchase_price: 35.0,
+    purchase_price: '35.0',
     supplier: 'Amazon',
     purchased_quantity: 1,
     spools_remaining: 1,
@@ -135,7 +135,7 @@ const mockSpools: SpoolResponse[] = [
     current_weight: 100,
     empty_spool_weight: 200,
     purchase_date: '2024-01-15',
-    purchase_price: 20.0,
+    purchase_price: '20.0',
     supplier: 'eBay',
     purchased_quantity: 1,
     spools_remaining: 1,
@@ -167,7 +167,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('opens dropdown and shows spools on click', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} />)
 
     const trigger = screen.getByRole('combobox')
@@ -183,7 +183,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('filters spools by color name when typing', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} />)
 
     const trigger = screen.getByRole('combobox')
@@ -202,7 +202,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('calls onValueChange when spool selected', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleChange = vi.fn()
 
     render(<SearchableSpoolSelect spools={mockSpools} onValueChange={handleChange} />)
@@ -218,7 +218,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('shows empty message when no results', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} emptyText="No matching spools" />)
 
     const trigger = screen.getByRole('combobox')
@@ -237,7 +237,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('excludes specified spool IDs', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(
       <SearchableSpoolSelect
         spools={mockSpools}
@@ -258,7 +258,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('displays remaining weight in dropdown', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} />)
 
     const trigger = screen.getByRole('combobox')
@@ -271,7 +271,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('displays material type badges in dropdown', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} />)
 
     const trigger = screen.getByRole('combobox')
@@ -284,7 +284,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('shows finish info for spools with finish', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SearchableSpoolSelect spools={mockSpools} />)
 
     const trigger = screen.getByRole('combobox')
@@ -295,7 +295,7 @@ describe('SearchableSpoolSelect', () => {
   })
 
   it('clears value when selecting same spool', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleChange = vi.fn()
 
     render(

@@ -14,6 +14,8 @@ import { Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { addModelComponent, removeModelComponent, type ModelComponent } from '@/lib/api/models'
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney, multiplyMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -141,17 +143,20 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
     addMutation.mutate({
       component_name: consumable.name,
       quantity: values.quantity,
-      unit_cost: (consumable.current_cost_per_unit || 0).toFixed(4),
+      // The API sent this as an exact decimal string; pass it along rather
+      // than round-tripping it through a float to get the same digits back.
+      unit_cost: consumable.current_cost_per_unit ?? '0',
       supplier: consumable.preferred_supplier || undefined,
       notes: `From inventory: ${consumable.sku}`,
     })
     consumableForm.reset()
   }
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(4)}`
-  }
+  // Four places, because a component's unit cost is often fractions of a
+  // penny. It renders the decimal string the API sent and never becomes a
+  // double (Constitution IV, task T151).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, '£', { places: 4 })
 
   return (
     <div className="space-y-4">
@@ -194,7 +199,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                             <SelectContent>
                               {consumablesData?.consumables.map((c) => (
                                 <SelectItem key={c.id} value={c.id}>
-                                  {c.sku} - {c.name} ({formatCurrency(c.current_cost_per_unit || 0)}/ea)
+                                  {c.sku} - {c.name} ({formatMoney(c.current_cost_per_unit, '£')}/ea)
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -346,7 +351,14 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
               <div className="flex items-center gap-4">
                 <div className="text-right">
                   <div className="font-semibold">
-                    {formatCurrency((component.quantity * parseFloat(component.unit_cost)).toFixed(3))}
+                    {/*
+                      A line total is a unit cost times a whole quantity, which
+                      `parseFloat` and `*` get wrong in the fourth place and
+                      which `costing.py` already owns as the engine's components
+                      line. Multiplied exactly here so the two agree to the
+                      digit (FR-047, FR-048, task T151).
+                    */}
+                    {formatCurrency(multiplyMoney(component.unit_cost, component.quantity))}
                   </div>
                 </div>
                 <AlertDialog>

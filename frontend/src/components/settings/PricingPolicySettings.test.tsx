@@ -114,7 +114,7 @@ describe('PricingPolicySettings', () => {
   })
 
   it('refuses a capacity of zero before it becomes a divisor', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPolicy(<PricingPolicySettings />)
 
     const capacity = await screen.findByLabelText('Expected machine-hours a month')
@@ -129,7 +129,7 @@ describe('PricingPolicySettings', () => {
   })
 
   it('refuses a negative labor rate', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPolicy(<PricingPolicySettings />)
 
     const rate = await screen.findByLabelText('Print handling rate (per hour)')
@@ -144,7 +144,7 @@ describe('PricingPolicySettings', () => {
   })
 
   it('sends the rate as the decimal string it was typed as, not a number', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderPolicy(<PricingPolicySettings />)
 
     const rate = await screen.findByLabelText('Print handling rate (per hour)')
@@ -161,7 +161,7 @@ describe('PricingPolicySettings', () => {
   })
 
   it('does not send a lever the operator left blank', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     mocked.getPricingPolicy.mockResolvedValue(
       policy({ default_machine_rate_per_hour: null, overhead_method: 'percentage' }),
     )
@@ -200,7 +200,7 @@ describe('PricingPolicySettings', () => {
   })
 
   it('reports a failed save instead of appearing to have saved', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     mocked.updatePricingPolicy.mockRejectedValue(new Error('Requires admin role or higher'))
     renderPolicy(<PricingPolicySettings />)
 

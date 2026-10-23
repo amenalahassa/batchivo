@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.temporal_pricing import current_rows
 from app.config import get_settings
+from app.core.money import pence_to_pounds
 from app.models.external_listing import ExternalListing
 from app.models.product import Product
 
@@ -210,7 +211,10 @@ class ShopifySyncService:
             shopify_variants = []
             for v in active_variants:
                 price_pence = base_price_pence + v.price_adjustment_pence
-                price_str = f"{price_pence / 100:.2f}"
+                # `price_pence / 100` is binary float division on two ints:
+                # `7999 / 100` is 79.989999999999994884, and this is the price
+                # Shopify is told to charge (Constitution IV, FR-047).
+                price_str = f"{pence_to_pounds(price_pence):.2f}"
                 inventory_policy = "continue" if v.fulfilment_type == "print_to_order" else "deny"
                 shopify_variants.append(
                     {
@@ -230,7 +234,7 @@ class ShopifySyncService:
             options = [{"name": "Size", "values": [v.size for v in active_variants]}]
         else:
             # Single variant (no sizing)
-            price_str = f"{base_price_pence / 100:.2f}"
+            price_str = f"{pence_to_pounds(base_price_pence):.2f}"
             inventory_policy = "continue" if product.print_to_order else "deny"
             shopify_variants = [
                 {

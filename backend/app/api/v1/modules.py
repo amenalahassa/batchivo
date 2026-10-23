@@ -62,6 +62,11 @@ CurrentTenant = Annotated[Tenant, Depends(get_current_tenant)]
 MODULE_NAVIGATION: dict[str, list[dict]] = {
     "products": [
         {"path": "/products", "label": "Products", "icon": "package", "exact": False},
+        # A catalogue-wide price shock sweeps the product catalogue (FR-044),
+        # so it belongs to the products module: a tenant without products has
+        # nothing to shock, and `ModuleGuard` reads this list to decide whether
+        # `/scenarios` is reachable at all.
+        {"path": "/scenarios", "label": "Scenarios", "icon": "trending-up", "exact": False},
     ],
     "models": [
         {"path": "/models", "label": "Models", "icon": "layers", "exact": False},

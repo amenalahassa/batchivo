@@ -144,7 +144,7 @@ describe('PrinterCostPolicyForm', () => {
   })
 
   it('refuses a lifetime of zero, which is a division and not a rate', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
 
     const hours = await screen.findByLabelText('Expected printing hours')
@@ -161,7 +161,7 @@ describe('PrinterCostPolicyForm', () => {
   })
 
   it('refuses a negative purchase price', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
 
     const price = await screen.findByLabelText('Purchase price')
@@ -176,7 +176,7 @@ describe('PrinterCostPolicyForm', () => {
   })
 
   it('sends money as the decimal string it was typed as', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
 
     const price = await screen.findByLabelText('Purchase price')
@@ -192,7 +192,7 @@ describe('PrinterCostPolicyForm', () => {
   })
 
   it('does not erase a figure the operator left blank', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     mocked.getPrinterCostPolicy.mockResolvedValue(
       configured({ measured_watts: null, missing: ['measured_watts'] }),
     )
@@ -243,7 +243,7 @@ describe('PrinterCostPolicyForm', () => {
   })
 
   it('reports a failed save instead of appearing to have saved', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     mocked.updatePrinterCostPolicy.mockRejectedValue(new Error('Requires admin role or higher'))
     renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
 

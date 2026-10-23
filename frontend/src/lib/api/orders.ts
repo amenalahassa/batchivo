@@ -6,6 +6,7 @@
  */
 
 import { apiClient } from '../api'
+import type { Money } from '@/types/pricing'
 
 // ==================== Types ====================
 
@@ -18,8 +19,18 @@ export interface OrderItem {
   product_sku: string
   product_name: string
   quantity: number
-  unit_price: number
-  total_price: number
+  /**
+   * Exact decimal strings, not numbers.
+   *
+   * These five figures -- `unit_price` and `total_price` here, and
+   * `shipping_cost`, `subtotal` and `total` on `Order` -- were the last money
+   * on this API crossing the wire as JSON numbers. The backend holds them as
+   * `Numeric(10, 2)` and now sends them as decimal strings, so render them
+   * with `formatMoney` / `useCurrency().formatCurrency` and never with
+   * `Number(...)` or `.toFixed()` (Constitution IV, FR-047).
+   */
+  unit_price: Money
+  total_price: Money
 }
 
 /**
@@ -39,9 +50,10 @@ export interface Order {
   shipping_postcode: string
   shipping_country: string
   shipping_method: string
-  shipping_cost: number
-  subtotal: number
-  total: number
+  /** See `OrderItem.unit_price`: a decimal string, never a number. */
+  shipping_cost: Money
+  subtotal: Money
+  total: Money
   currency: string
   payment_provider: string
   payment_id: string | null
@@ -82,7 +94,8 @@ export interface UpdateOrderRequest {
 export interface CreateOrderItemRequest {
   product_id: string
   quantity: number
-  unit_price: number
+  /** A decimal string on the way out too; the API validates it as `Decimal`. */
+  unit_price: Money
 }
 
 export interface CreateOrderRequest {
@@ -96,7 +109,7 @@ export interface CreateOrderRequest {
   shipping_postcode: string
   shipping_country: string
   shipping_method: string
-  shipping_cost: number
+  shipping_cost: Money
   sales_channel_id: string
   payment_provider: string
   payment_status: 'pending' | 'completed'

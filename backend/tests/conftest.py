@@ -29,7 +29,7 @@ from app.models.material import MaterialType
 from app.models.product import Product
 from app.models.spool import Spool
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 
 
 # Configure anyio to only use asyncio backend (not trio)
@@ -94,9 +94,16 @@ async def _drop_all_tables(conn, is_sqlite: bool):
             await conn.execute(text(f'DROP TYPE IF EXISTS "{enum_name}" CASCADE'))
 
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def db_engine():
-    """Create a test database engine (function-scoped for test isolation)."""
+    """Create the test database engine and build the schema once per session.
+
+    The schema build is the expensive part: dropping and recreating all 65
+    model tables takes the better part of a minute on PostgreSQL, and doing
+    it per test made the API suite take most of a day -- a commit gate that
+    slow is a gate nobody runs. Per-test isolation is the `clean_tables`
+    fixture below, which empties the tables between tests instead.
+    """
     # SQLite needs check_same_thread=False; PostgreSQL timeout key differs by driver
     if _IS_SQLITE:
         connect_args = {"check_same_thread": False}
@@ -171,8 +178,52 @@ async def db_engine():
     await engine.dispose()
 
 
+async def _truncate_all_tables(engine, is_sqlite: bool):
+    """Empty every table, leaving the schema in place.
+
+    This is what replaces the per-test drop/create: emptying the tables costs
+    a single statement where rebuilding the schema cost about a minute, and a
+    test that starts against empty tables cannot see what a previous one left.
+    """
+    table_names = [table.name for table in reversed(Base.metadata.sorted_tables)]
+    if not table_names:
+        return
+
+    if is_sqlite:
+        # SQLite has no TRUNCATE, and a plain DELETE trips the foreign keys the
+        # engine fixture deliberately switches on -- a self-referencing table
+        # cannot be emptied row by row with them enforced. SQLite silently
+        # IGNORES `PRAGMA foreign_keys` inside a transaction, so this must run
+        # on an autocommitting connection: issued inside `begin()`, the closing
+        # `ON` is dropped and the whole session continues with foreign keys off,
+        # which quietly turns every constraint test into a pass.
+        async with engine.connect() as conn:
+            await conn.execution_options(isolation_level="AUTOCOMMIT")
+            await conn.execute(text("PRAGMA foreign_keys=OFF"))
+            try:
+                for name in table_names:
+                    await conn.execute(text(f'DELETE FROM "{name}"'))
+            finally:
+                await conn.execute(text("PRAGMA foreign_keys=ON"))
+    else:
+        joined = ", ".join(f'"{name}"' for name in table_names)
+        async with engine.begin() as conn:
+            await conn.execute(text(f"TRUNCATE TABLE {joined} RESTART IDENTITY CASCADE"))
+
+
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def clean_tables(db_engine):
+    """Empty the tables before each test, so the session-scoped schema is reusable.
+
+    Cleaning before rather than after means a test that dies mid-way cannot
+    poison the next one.
+    """
+    await _truncate_all_tables(db_engine, _IS_SQLITE)
+    yield
+
+
 @pytest_asyncio.fixture(scope="function")
-async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_session(db_engine, clean_tables) -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
     async_session_maker = async_sessionmaker(
         db_engine,
@@ -251,7 +302,12 @@ async def client(
     db_session: AsyncSession, seed_material_types, test_user: User, test_tenant: Tenant
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client with database session and auth overrides."""
-    from app.auth.dependencies import get_current_user, get_current_tenant, get_tenant_db
+    from app.auth.dependencies import (
+        get_current_user,
+        get_current_tenant,
+        get_shop_db,
+        get_tenant_db,
+    )
 
     async def override_get_db():
         yield db_session
@@ -264,6 +320,8 @@ async def client(
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_tenant_db] = override_get_db  # TenantDB endpoints use same session
+    # Storefront routes take a hostname-scoped session of their own.
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[get_current_tenant] = override_get_current_tenant
 
@@ -289,7 +347,7 @@ async def unauthenticated_client(
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client WITHOUT authentication overrides for testing auth."""
     from app.database import get_db
-    from app.auth.dependencies import get_tenant_db
+    from app.auth.dependencies import get_shop_db, get_tenant_db
 
     async def override_get_db():
         yield db_session
@@ -297,6 +355,7 @@ async def unauthenticated_client(
     # Only override the database, not auth
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_tenant_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
 
     # Disable rate limiting for tests
     app.state.limiter.enabled = False
@@ -644,7 +703,11 @@ async def customer_client(
     db_session: AsyncSession, seed_material_types, test_customer: Customer, test_tenant: Tenant
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client authenticated as a customer."""
-    from app.auth.customer_dependencies import get_current_customer, get_current_customer_tenant
+    from app.auth.customer_dependencies import (
+        get_current_customer,
+        get_current_customer_tenant,
+        get_customer_db,
+    )
 
     async def override_get_db():
         yield db_session
@@ -656,6 +719,10 @@ async def customer_client(
         return test_tenant
 
     app.dependency_overrides[get_db] = override_get_db
+    # A customer account handler takes its session from `get_customer_db`,
+    # which opens a session of its own and scopes it to the tenant the
+    # customer's token was issued for (T205).
+    app.dependency_overrides[get_customer_db] = override_get_db
     app.dependency_overrides[get_current_customer] = override_get_current_customer
     app.dependency_overrides[get_current_customer_tenant] = override_get_current_customer_tenant
 
@@ -721,3 +788,95 @@ def image_storage_fixture(test_storage_type, tmp_path, s3_mock):
         (tmp_path / "products").mkdir(exist_ok=True)
 
     return storage
+
+
+# ---------------------------------------------------------------------------
+# Acting as a role other than the admin `client` is (task T034)
+# ---------------------------------------------------------------------------
+#
+# Both the HTTP suites and the settled-order integration suite need the same
+# thing: to act as a member or a viewer, so a write can be refused and the
+# stored figure checked afterwards, or a read proved open to every role
+# (FR-007c). The `client` fixture above is an admin — the role that is
+# *allowed* to write — so it cannot show a refusal.
+#
+# `as_role` is an async context manager rather than a second client fixture
+# because `app.dependency_overrides` is one dictionary: two clients
+# authenticated as different users cannot coexist. Entering the context swaps
+# who the current user is and restores the previous overrides on exit, which
+# lets one test write as an admin and then be refused as a member.
+
+
+async def make_user_with_role(
+    db_session: AsyncSession,
+    tenant: Tenant,
+    role: UserRole,
+) -> User:
+    """A user holding exactly ``role`` in ``tenant``."""
+    from app.auth.password import get_password_hash
+    from app.models.user import UserTenant
+
+    unique_id = str(uuid4())[:8]
+    user = User(
+        id=uuid4(),
+        email=f"{role.value}-pricing-{unique_id}@example.com",
+        full_name=f"Pricing {role.value}",
+        hashed_password=get_password_hash("pricingpassword123"),
+        is_active=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    db_session.add(UserTenant(user_id=user.id, tenant_id=tenant.id, role=role))
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def as_role(db_session: AsyncSession, seed_material_types, test_tenant: Tenant):
+    """Act as a user holding a given role, then put the overrides back.
+
+    The role check reads `UserTenant` from the database, so the role comes
+    from the row rather than from the override — which is the point: this
+    exercises the real authorisation path, not a stubbed one.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.auth.dependencies import (
+        get_current_tenant,
+        get_current_user,
+        get_shop_db,
+        get_tenant_db,
+    )
+
+    @asynccontextmanager
+    async def _acting_as(role: UserRole):
+        user = await make_user_with_role(db_session, test_tenant, role)
+        previous = dict(app.dependency_overrides)
+        was_enabled = app.state.limiter.enabled
+
+        async def override_get_db():
+            yield db_session
+
+        async def override_get_current_user():
+            return user
+
+        async def override_get_current_tenant():
+            return test_tenant
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
+        app.dependency_overrides[get_shop_db] = override_get_db
+        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_current_tenant] = override_get_current_tenant
+        app.state.limiter.enabled = False
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                yield ac
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(previous)
+            app.state.limiter.enabled = was_enabled
+
+    yield _acting_as

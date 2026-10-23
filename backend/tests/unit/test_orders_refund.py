@@ -5,6 +5,7 @@ Square API integration, inventory restoration, and email notifications.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -40,6 +41,15 @@ def mock_tenant():
 
 
 @pytest.fixture
+def mock_user():
+    """The operator who authorised the refund, recorded on the actual (T189)."""
+    user = MagicMock()
+    user.id = uuid4()
+    user.email = "operator@example.com"
+    return user
+
+
+@pytest.fixture
 def mock_db():
     """Create mock async database session."""
     db = AsyncMock()
@@ -63,7 +73,7 @@ def mock_order():
     order.payment_status = "COMPLETED"
     order.customer_email = "test@example.com"
     order.customer_name = "Test Customer"
-    order.total = 50.00
+    order.total = Decimal("50.00")
     order.currency = "GBP"
     order.fulfilled_at = None
     order.internal_notes = None
@@ -188,7 +198,7 @@ class TestRefundOrderNotFound:
     """Tests for order not found scenarios."""
 
     @pytest.mark.asyncio
-    async def test_refund_nonexistent_order_returns_404(self, mock_db, mock_tenant):
+    async def test_refund_nonexistent_order_returns_404(self, mock_user, mock_db, mock_tenant):
         """Test that refunding a nonexistent order returns 404."""
         # Mock order not found
         mock_result = MagicMock()
@@ -198,7 +208,14 @@ class TestRefundOrderNotFound:
         request = RefundOrderRequest()
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(uuid4(), request, mock_tenant, True, mock_db)
+            await refund_order(
+                uuid4(),
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 404
         assert exc_info.value.detail == "Order not found"
@@ -214,7 +231,7 @@ class TestRefundOrderStatusValidation:
 
     @pytest.mark.asyncio
     async def test_refund_already_refunded_order_returns_400(
-        self, mock_db, mock_tenant, mock_order
+        self, mock_user, mock_db, mock_tenant, mock_order
     ):
         """Test that refunding an already refunded order returns 400."""
         mock_order.status = OrderStatus.REFUNDED
@@ -226,13 +243,22 @@ class TestRefundOrderStatusValidation:
         request = RefundOrderRequest()
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "already been refunded" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_refund_cancelled_order_returns_400(self, mock_db, mock_tenant, mock_order):
+    async def test_refund_cancelled_order_returns_400(
+        self, mock_user, mock_db, mock_tenant, mock_order
+    ):
         """Test that refunding a cancelled order returns 400."""
         mock_order.status = OrderStatus.CANCELLED
 
@@ -243,7 +269,14 @@ class TestRefundOrderStatusValidation:
         request = RefundOrderRequest()
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "cancelled order" in exc_info.value.detail
@@ -255,6 +288,7 @@ class TestRefundOrderStatusValidation:
     )
     async def test_refund_allowed_for_valid_statuses(
         self,
+        mock_user,
         mock_db,
         mock_tenant,
         mock_order,
@@ -275,7 +309,14 @@ class TestRefundOrderStatusValidation:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert response.refund_id == "refund_123"
 
@@ -290,7 +331,7 @@ class TestRefundPaymentValidation:
 
     @pytest.mark.asyncio
     async def test_refund_order_without_payment_id_returns_400(
-        self, mock_db, mock_tenant, mock_order
+        self, mock_user, mock_db, mock_tenant, mock_order
     ):
         """Test that refunding an order without payment_id returns 400."""
         mock_order.payment_id = None
@@ -302,13 +343,22 @@ class TestRefundPaymentValidation:
         request = RefundOrderRequest()
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "No payment ID" in exc_info.value.detail
 
     @pytest.mark.asyncio
-    async def test_refund_non_square_payment_returns_400(self, mock_db, mock_tenant, mock_order):
+    async def test_refund_non_square_payment_returns_400(
+        self, mock_user, mock_db, mock_tenant, mock_order
+    ):
         """Test that refunding a non-Square payment returns 400."""
         mock_order.payment_provider = "stripe"
 
@@ -319,7 +369,14 @@ class TestRefundPaymentValidation:
         request = RefundOrderRequest()
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "Square payments" in exc_info.value.detail
@@ -335,7 +392,7 @@ class TestRefundAmountCalculation:
 
     @pytest.mark.asyncio
     async def test_full_refund_uses_order_total(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that full refund uses order total."""
         mock_order.total = 75.00
@@ -350,7 +407,14 @@ class TestRefundAmountCalculation:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         # Verify payment service was called with full amount in pence
         mock_payment_service.refund_payment.assert_called_once()
@@ -361,7 +425,7 @@ class TestRefundAmountCalculation:
 
     @pytest.mark.asyncio
     async def test_partial_refund_uses_specified_amount(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that partial refund uses specified amount."""
         mock_order.total = 75.00
@@ -376,7 +440,14 @@ class TestRefundAmountCalculation:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         # Verify payment service was called with partial amount in pence
         mock_payment_service.refund_payment.assert_called_once()
@@ -387,7 +458,7 @@ class TestRefundAmountCalculation:
 
     @pytest.mark.asyncio
     async def test_partial_refund_exceeding_total_returns_400(
-        self, mock_db, mock_tenant, mock_order
+        self, mock_user, mock_db, mock_tenant, mock_order
     ):
         """Test that partial refund exceeding order total returns 400."""
         mock_order.total = 50.00
@@ -399,7 +470,14 @@ class TestRefundAmountCalculation:
         request = RefundOrderRequest(amount=75.00)  # More than order total
 
         with pytest.raises(HTTPException) as exc_info:
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert exc_info.value.status_code == 400
         assert "exceeds order total" in exc_info.value.detail
@@ -415,7 +493,7 @@ class TestRefundSquareIntegration:
 
     @pytest.mark.asyncio
     async def test_refund_calls_payment_service_correctly(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that refund calls payment service with correct parameters."""
         mock_result = MagicMock()
@@ -428,7 +506,14 @@ class TestRefundSquareIntegration:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         mock_payment_service.refund_payment.assert_called_once()
         call_kwargs = mock_payment_service.refund_payment.call_args[1]
@@ -438,7 +523,9 @@ class TestRefundSquareIntegration:
         assert call_kwargs["idempotency_key"] == f"refund-{mock_order.order_number}"
 
     @pytest.mark.asyncio
-    async def test_square_api_failure_returns_400(self, mock_db, mock_tenant, mock_order):
+    async def test_square_api_failure_returns_400(
+        self, mock_user, mock_db, mock_tenant, mock_order
+    ):
         """Test that Square API failure returns 400 with error details."""
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_order
@@ -457,7 +544,14 @@ class TestRefundSquareIntegration:
 
         with patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service):
             with pytest.raises(HTTPException) as exc_info:
-                await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+                await refund_order(
+                    mock_order.id,
+                    request,
+                    tenant=mock_tenant,
+                    user=mock_user,
+                    _=True,
+                    db=mock_db,
+                )
 
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail["error_code"] == "ALREADY_REFUNDED"
@@ -474,6 +568,7 @@ class TestRefundInventoryRestoration:
     @pytest.mark.asyncio
     async def test_inventory_restored_for_fulfilled_order(
         self,
+        mock_user,
         mock_db,
         mock_tenant,
         mock_fulfilled_order,
@@ -497,7 +592,12 @@ class TestRefundInventoryRestoration:
             ),
         ):
             response = await refund_order(
-                mock_fulfilled_order.id, request, mock_tenant, True, mock_db
+                mock_fulfilled_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
             )
 
         mock_fulfillment_service.revert_inventory.assert_awaited_once()
@@ -506,6 +606,7 @@ class TestRefundInventoryRestoration:
     @pytest.mark.asyncio
     async def test_inventory_not_restored_for_unfulfilled_order(
         self,
+        mock_user,
         mock_db,
         mock_tenant,
         mock_order,
@@ -525,7 +626,14 @@ class TestRefundInventoryRestoration:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         # Message should not mention inventory restoration
         assert "inventory restored" not in response.message
@@ -533,6 +641,7 @@ class TestRefundInventoryRestoration:
     @pytest.mark.asyncio
     async def test_inventory_restoration_failure_logged_but_not_blocking(
         self,
+        mock_user,
         mock_db,
         mock_tenant,
         mock_fulfilled_order,
@@ -561,7 +670,12 @@ class TestRefundInventoryRestoration:
             ),
         ):
             response = await refund_order(
-                mock_fulfilled_order.id, request, mock_tenant, True, mock_db
+                mock_fulfilled_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
             )
 
         # Refund should still succeed
@@ -580,7 +694,7 @@ class TestRefundOrderStatusUpdate:
 
     @pytest.mark.asyncio
     async def test_order_status_updated_to_refunded(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that order status is updated to REFUNDED."""
         mock_result = MagicMock()
@@ -593,14 +707,21 @@ class TestRefundOrderStatusUpdate:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert mock_order.status == OrderStatus.REFUNDED
         assert mock_order.payment_status == "REFUNDED"
 
     @pytest.mark.asyncio
     async def test_refund_reason_added_to_internal_notes(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that refund reason is added to internal notes."""
         mock_order.internal_notes = None
@@ -615,14 +736,21 @@ class TestRefundOrderStatusUpdate:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert "[Refunded]" in mock_order.internal_notes
         assert "Damaged during shipping" in mock_order.internal_notes
 
     @pytest.mark.asyncio
     async def test_refund_reason_appended_to_existing_notes(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that refund reason is appended to existing internal notes."""
         mock_order.internal_notes = "Previous note"
@@ -637,7 +765,14 @@ class TestRefundOrderStatusUpdate:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert "Previous note" in mock_order.internal_notes
         assert "[Refunded]" in mock_order.internal_notes
@@ -654,7 +789,7 @@ class TestRefundEmailNotification:
 
     @pytest.mark.asyncio
     async def test_refund_confirmation_email_sent(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that refund confirmation email is sent."""
         mock_result = MagicMock()
@@ -667,7 +802,14 @@ class TestRefundEmailNotification:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         mock_email_service.send_refund_confirmation.assert_called_once()
         call_kwargs = mock_email_service.send_refund_confirmation.call_args[1]
@@ -678,7 +820,7 @@ class TestRefundEmailNotification:
 
     @pytest.mark.asyncio
     async def test_email_failure_does_not_block_refund(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service
     ):
         """Test that email failure doesn't block refund success."""
         mock_result = MagicMock()
@@ -696,7 +838,14 @@ class TestRefundEmailNotification:
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
             # Should not raise despite email failure
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         # Refund should still succeed
         assert response.refund_id == "refund_123"
@@ -712,7 +861,7 @@ class TestRefundResponseMessage:
 
     @pytest.mark.asyncio
     async def test_response_message_includes_order_number(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that response message includes order number."""
         mock_result = MagicMock()
@@ -725,13 +874,20 @@ class TestRefundResponseMessage:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert mock_order.order_number in response.message
 
     @pytest.mark.asyncio
     async def test_response_message_includes_refund_amount(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that response message includes refund amount."""
         mock_order.total = 35.50
@@ -746,7 +902,14 @@ class TestRefundResponseMessage:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            response = await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            response = await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         assert "35.50" in response.message
 
@@ -761,7 +924,7 @@ class TestRefundDatabaseCommit:
 
     @pytest.mark.asyncio
     async def test_database_committed_after_refund(
-        self, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
     ):
         """Test that database is committed after successful refund."""
         mock_result = MagicMock()
@@ -774,6 +937,84 @@ class TestRefundDatabaseCommit:
             patch(PAYMENT_SERVICE_PATH, return_value=mock_payment_service),
             patch(EMAIL_SERVICE_PATH, return_value=mock_email_service),
         ):
-            await refund_order(mock_order.id, request, mock_tenant, True, mock_db)
+            await refund_order(
+                mock_order.id,
+                request,
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
 
         mock_db.commit.assert_awaited_once()
+
+
+class TestRefundPenceConversionIsExact:
+    """The pence figure sent to Square, and the pounds figure sent back out.
+
+    `refund_order` built its pence amount with `int(request.amount * 100)`,
+    which truncates: a £10.999 refund asked Square for £10.99 and the
+    half-penny was simply lost, in the operator's favour and against the
+    customer's. `app.core.money.pounds_to_pence` rounds half-up, once
+    (Constitution IV).
+
+    The response is quantised at the edge for the same reason the email is: £10
+    is reported as "10.00", not "10", so the three figures a refund produces --
+    the recorded actual, the customer's email and the API response -- read the
+    same.
+    """
+
+    @staticmethod
+    async def _refund(amount, mock_user, mock_db, mock_tenant, mock_order, payments, emails):
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_order
+        mock_db.execute.return_value = mock_result
+
+        with (
+            patch(PAYMENT_SERVICE_PATH, return_value=payments),
+            patch(EMAIL_SERVICE_PATH, return_value=emails),
+        ):
+            return await refund_order(
+                mock_order.id,
+                RefundOrderRequest(amount=amount, reason="r"),
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_half_penny_rounds_up_rather_than_vanishing(
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+    ):
+        """£10.995 is 1100 pence (half-up), not the 1099 truncation gave."""
+        await self._refund(
+            Decimal("10.995"),
+            mock_user,
+            mock_db,
+            mock_tenant,
+            mock_order,
+            mock_payment_service,
+            mock_email_service,
+        )
+
+        sent = mock_payment_service.refund_payment.call_args.kwargs["amount"]
+        assert sent == 1100, f"Square was asked for {sent} pence, not 1100"
+
+    @pytest.mark.asyncio
+    async def test_a_whole_pound_is_reported_to_the_penny(
+        self, mock_user, mock_db, mock_tenant, mock_order, mock_payment_service, mock_email_service
+    ):
+        """`Decimal(1000) / 100` is `Decimal("10")`; the wire carries "10.00"."""
+        response = await self._refund(
+            Decimal("10.00"),
+            mock_user,
+            mock_db,
+            mock_tenant,
+            mock_order,
+            mock_payment_service,
+            mock_email_service,
+        )
+
+        assert response.refund_amount == Decimal("10.00")
+        assert str(response.refund_amount) == "10.00"

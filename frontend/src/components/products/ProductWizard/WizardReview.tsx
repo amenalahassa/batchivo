@@ -8,6 +8,7 @@
 import { Pencil, Layers, Package, Tags, Box } from 'lucide-react'
 
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,16 +22,20 @@ interface WizardReviewProps {
 }
 
 export function WizardReview({ wizardData, onEditStep }: WizardReviewProps) {
-  const { formatCurrency } = useCurrency()
+  const { currency } = useCurrency()
+  const symbol = currency.symbol
 
-  // Calculate costs
-  const modelsCost = wizardData.selectedModels.reduce((total, model) => {
-    return total + parseFloat(model.total_cost || '0') * model.quantity
-  }, 0)
+  // Each model's contribution, exactly: the cost the engine reported for that
+  // model times the quantity this product carries. Summed in string space,
+  // because `parseFloat(a) * n` summed over a few models is how a subtotal
+  // reads a penny off the sum of the lines above it (FR-047, task T151).
+  const modelLineTotal = (model: { total_cost?: string | null; quantity: number }) =>
+    multiplyMoney(model.total_cost ?? '0', model.quantity)
+  const modelsCost = sumMoney(wizardData.selectedModels.map(modelLineTotal))
 
-  const packagingCost = parseFloat(wizardData.packagingCost) || 0
-  const laborCost = (wizardData.assemblyMinutes / 60) * 10
-  const totalCost = modelsCost + packagingCost + laborCost
+  // The packaging figure as the operator typed it. Nothing is derived from it
+  // here.
+  const packagingCost = wizardData.packagingCost || '0'
 
   return (
     <div className="space-y-4">
@@ -74,14 +79,14 @@ export function WizardReview({ wizardData, onEditStep }: WizardReviewProps) {
                     </Badge>
                   </div>
                   <span className="font-medium">
-                    {formatCurrency(parseFloat(model.total_cost || '0') * model.quantity)}
+                    {formatMoney(modelLineTotal(model), symbol)}
                   </span>
                 </div>
               ))}
               <Separator className="my-2" />
               <div className="flex justify-between font-medium">
                 <span>Models Total</span>
-                <span>{formatCurrency(modelsCost)}</span>
+                <span>{formatMoney(modelsCost, symbol)}</span>
               </div>
             </div>
           )}
@@ -187,34 +192,45 @@ export function WizardReview({ wizardData, onEditStep }: WizardReviewProps) {
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div>
               <span className="text-muted-foreground">Packaging Cost:</span>
-              <span className="ml-2">{formatCurrency(packagingCost)}</span>
+              <span className="ml-2">{formatMoney(packagingCost, symbol)}</span>
             </div>
             <div>
               <span className="text-muted-foreground">Assembly:</span>
               <span className="ml-2">{wizardData.assemblyMinutes} min</span>
             </div>
           </div>
-          <div className="text-sm">
-            <span className="text-muted-foreground">Labor Cost:</span>
-            <span className="ml-2">{formatCurrency(laborCost)}</span>
-          </div>
+          {/*
+            A "Labor Cost" line stood here at `(assemblyMinutes / 60) * 10` --
+            the same labour rate hardcoded to 10.0 that Tier 0 deleted from
+            `Product.calculate_make_cost`, back on a screen. A rate the operator
+            configured is the rate the system must use (Constitution IV), and
+            the assembly minutes below are the input the engine costs at it.
+          */}
         </CardContent>
       </Card>
 
-      {/* Total Cost Summary */}
+      {/*
+        An "Estimated Total Cost" of models plus packaging plus that invented
+        labour figure stood here. It was a second make-cost implementation in
+        the browser (Constitution III, FR-048): no machine occupancy, no purge
+        waste, no yield premium, no overhead absorption, and labour at a rate
+        nobody set -- so the wizard's last screen and the product's own
+        breakdown disagreed from the moment the product existed.
+
+        What replaces it is the inputs, not another total. The make-cost is the
+        engine's, computed on demand from these figures and the policy in force
+        (Constitution V), and it is on the product the moment this wizard
+        finishes (task T151).
+      */}
       <Card className="bg-primary/5 border-primary/20">
-        <CardContent className="py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h4 className="font-semibold">Estimated Total Cost</h4>
-              <p className="text-xs text-muted-foreground">
-                Models + Packaging + Labor
-              </p>
-            </div>
-            <div className="text-right">
-              <span className="text-2xl font-bold">{formatCurrency(totalCost)}</span>
-            </div>
-          </div>
+        <CardContent className="py-4 space-y-1">
+          <h4 className="font-semibold">Make-cost is computed after creation</h4>
+          <p className="text-xs text-muted-foreground">
+            The figures above are the inputs. The itemised make-cost — machine
+            occupancy, purge waste, the failure premium, overhead and labour at
+            your configured rates — appears on the product once it exists, with
+            the origin of every line.
+          </p>
         </CardContent>
       </Card>
 

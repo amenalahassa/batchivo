@@ -49,6 +49,7 @@ from app.models.sales_channel import SalesChannel
 from app.models.scenario_run import ScenarioRun
 from app.services import fee_engine
 from app.services.cost_resolution import cost_load_options, product_cost_breakdown
+from app.services.channel_economics import resolve_channel_economics
 from app.services.costing import (
     CircularReferenceError,
     CostingService,
@@ -126,7 +127,12 @@ class Shock:
 
     def factor(self, name: str) -> Decimal:
         """The multiplier for one lever: 25% becomes 1.25."""
-        return Decimal("1") + getattr(self, name) / HUNDRED
+        # `getattr` is untyped, so the arithmetic came out as `Any` and the
+        # declared `Decimal` was a promise nothing checked. Naming the local
+        # restores it -- and a lever that was somehow not a `Decimal` now
+        # fails here rather than inside a price.
+        pct: Decimal = getattr(self, name)
+        return Decimal("1") + pct / HUNDRED
 
     def as_json(self) -> dict[str, str]:
         """Decimal strings, never JSON numbers (Constitution IV)."""
@@ -330,8 +336,14 @@ async def _priced_products(
             # every tier would report the same product several times with
             # different answers.
             continue
-        product = pricing.product
-        channel = pricing.sales_channel
+        # Typed `Optional` deliberately. The mapped relationships are declared
+        # non-nullable, which made mypy call the guard below unreachable -- but
+        # a `selectinload` whose row has gone hands back `None` at runtime, and
+        # a scenario that crashed halfway would report a partial catalogue as
+        # if it were whole (FR-044b). The guard is real; the annotation is what
+        # makes it legible as such.
+        product: Optional[Product] = pricing.product
+        channel: Optional[SalesChannel] = pricing.sales_channel
         if product is None or channel is None:  # pragma: no cover - FK-guarded
             continue
         pairs.append((product, channel, pricing))
@@ -391,6 +403,7 @@ async def _sweep(
             channel=channel,
             fees=stack,
             policy=policy,
+            economics=await resolve_channel_economics(db, channel, reference),
             tax=treatment,
             machine_hours=breakdown.machine_hours,
             observed_share=breakdown.observed_share,

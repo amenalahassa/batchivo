@@ -3,12 +3,10 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
-from app.database import get_db
+from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
 from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
@@ -67,7 +65,7 @@ async def create_consumable_type(
     consumable_data: ConsumableTypeCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Create a new consumable type."""
     # Check for duplicate SKU
@@ -113,7 +111,7 @@ async def create_consumable_type(
 async def list_consumable_types(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search by SKU or name"),
@@ -172,7 +170,7 @@ async def get_consumable_type(
     consumable_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Get a specific consumable type by ID."""
     result = await db.execute(
@@ -198,7 +196,7 @@ async def update_consumable_type(
     consumable_data: ConsumableTypeUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Update a consumable type."""
     # Get existing
@@ -234,7 +232,7 @@ async def delete_consumable_type(
     consumable_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> None:
     """Delete a consumable type."""
     result = await db.execute(
@@ -261,7 +259,7 @@ async def adjust_stock(
     adjustment: StockAdjustment,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Adjust stock level for a consumable type."""
     result = await db.execute(
@@ -317,7 +315,7 @@ async def adjust_stock(
 async def get_low_stock_alerts(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> list[LowStockAlert]:
     """Get all consumables that are below their reorder point."""
     result = await db.execute(
@@ -360,7 +358,7 @@ async def create_purchase(
     purchase_data: ConsumablePurchaseCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumablePurchaseResponse:
     """Record a new consumable purchase."""
     # Verify consumable type exists
@@ -412,7 +410,7 @@ async def create_purchase(
 async def list_purchases(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     consumable_type_id: Optional[UUID] = Query(None, description="Filter by consumable type"),
@@ -462,7 +460,7 @@ async def get_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumablePurchaseWithType:
     """Get a specific purchase by ID."""
     result = await db.execute(
@@ -493,7 +491,7 @@ async def delete_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> None:
     """Delete a purchase record (also reverses stock increase)."""
     result = await db.execute(
@@ -537,7 +535,7 @@ async def record_usage(
     usage_data: ConsumableUsageCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableUsageResponse:
     """Record consumable usage (deduct from stock)."""
     # Verify consumable type exists
@@ -589,7 +587,7 @@ async def record_usage(
 async def list_usage(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     consumable_type_id: Optional[UUID] = Query(None, description="Filter by consumable type"),
@@ -644,7 +642,7 @@ async def list_usage(
 async def list_categories(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> list[str]:
     """Get all unique categories used by this tenant."""
     result = await db.execute(

@@ -10,6 +10,9 @@ const TOKEN_STORAGE_KEY = 'batchivo_auth_tokens'
 const REMEMBER_ME_KEY = 'batchivo_remember_me'
 const TOKEN_REFRESH_THRESHOLD = 5 * 60 * 1000 // 5 minutes
 
+/** A user's role within their tenant, as `/users/me` reports it. */
+export type TenantRole = 'owner' | 'admin' | 'member' | 'viewer'
+
 export interface User {
   id: string
   email: string
@@ -19,6 +22,11 @@ export interface User {
   currency_code: string
   currency_symbol: string
   is_platform_admin: boolean
+  /**
+   * The role in `tenant_id`. Null for a user with no tenant membership, and
+   * absent from a token minted before the field existed.
+   */
+  role?: TenantRole | null
 }
 
 export interface AuthState {

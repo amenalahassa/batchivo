@@ -50,7 +50,7 @@ async def product(db_session, test_tenant, channel):
 
 @pytest_asyncio.fixture
 async def client(db_session, test_tenant, channel):
-    from app.auth.dependencies import get_shop_sales_channel
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel
     from app.database import get_db
 
     async def override_db():
@@ -60,6 +60,10 @@ async def client(db_session, test_tenant, channel):
         return (test_tenant, channel)
 
     app.dependency_overrides[get_db] = override_db
+    # A storefront handler takes its session from `get_shop_db`, which opens a
+    # real one against the configured database. Left unoverridden it is the
+    # test's own event loop that it fails on, not the assertion.
+    app.dependency_overrides[get_shop_db] = override_db
     app.dependency_overrides[get_shop_sales_channel] = override_ctx
     app.state.limiter.enabled = False
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

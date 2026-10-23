@@ -1,3 +1,11 @@
+/**
+ * Runs under jsdom, unlike the other logic-only files in `src/lib`.
+ *
+ * The tests themselves touch no DOM, but `src/lib/api.ts` reads `window` while
+ * it is being imported -- the axios instance resolves its base URL from the
+ * runtime config on `window.__RUNTIME_CONFIG__` -- so there is no DOM-free way
+ * to load the module under test (task T174).
+ */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import axios from 'axios'
 import { apiClient, checkHealth } from './api'

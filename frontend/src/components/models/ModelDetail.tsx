@@ -5,9 +5,10 @@
  * Models are printed items with bill of materials.
  */
 
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Edit, Loader2, Trash2, Package, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { ArrowLeft, Edit, Loader2, SlidersHorizontal, Trash2, Package, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
 import { getModel, deleteModel } from '@/lib/api/models'
 import { Button } from '@/components/ui/button'
@@ -24,8 +25,23 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import { CostBreakdownSection } from '@/components/pricing/CostBreakdownSection'
+import { useCurrency } from '@/hooks/useCurrency'
+import {
+  ZERO,
+  compareMoney,
+  divideMoney,
+  formatMoney,
+  formatPercent,
+  multiplyMoney,
+  subtractMoney,
+} from '@/lib/money'
+import type { Money } from '@/types/pricing'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 import { BOMEditor } from './BOMEditor'
 import { ComponentsEditor } from './ComponentsEditor'
+import { ModelCostProfileDialog } from './ModelCostProfileDialog'
 
 interface ModelDetailProps {
   modelId: string
@@ -53,6 +69,15 @@ function DetailItem({ label, value }: { label: string; value: string | React.Rea
 export function ModelDetail({ modelId }: ModelDetailProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const { user } = useAuth()
+  // A purge weight and a finishing time are measurements, so a member may
+  // record them; a viewer meets the control present and disabled rather than
+  // gone, because a figure whose editor vanished is one nobody can explain
+  // (FR-007b, FR-007c).
+  const canEditProfile = canEditOperationalFigures(user)
+  const [costProfileOpen, setCostProfileOpen] = useState(false)
+  const { currency } = useCurrency()
+  const currencySymbol = currency.symbol
 
   const { data: model, isLoading, error } = useQuery({
     queryKey: ['model', modelId],
@@ -67,10 +92,18 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
     },
   })
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(3)}`
-  }
+  // Three decimals, because a single printed item's cost is often fractions of
+  // a unit. The symbol is the tenant's, not a hardcoded `£`: a cost carries a
+  // currency (FR-028), and a figure labelled in the wrong one is worse than an
+  // unlabelled one.
+  //
+  // It renders the decimal string the API sent and never becomes a double. The
+  // `parseFloat(...).toFixed(3)` this replaced was the same conversion T143
+  // took out of the product screens, and it is how this screen and the
+  // breakdown below could disagree in the last fraction of a cent while both
+  // reported the same engine figure (Constitution IV, task T151).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currencySymbol, { places: 3 })
 
   if (isLoading) {
     return (
@@ -92,18 +125,14 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
     )
   }
 
+  // The four buckets, as the exact decimal strings the engine sent. Nothing is
+  // computed from them here, so there is no reason for them to leave string
+  // space at all (task T151).
   const costBreakdown = model.cost_breakdown
-  // Use correct field names (singular) and handle null/undefined with || 0
-  const totalCost = parseFloat(costBreakdown?.total_cost) || 0
-  const materialsCost = parseFloat(costBreakdown?.material_cost) || 0
-  const componentsCost = parseFloat(costBreakdown?.component_cost) || 0
-  const laborCost = parseFloat(costBreakdown?.labor_cost) || 0
-
-  // Calculate recommended sale price using common pricing formulas
-  // Using 2.5x markup (150% profit margin) as default - common for handmade/craft items
-  const recommendedPrice = totalCost * 2.5
-  // Alternative: 40% profit margin formula: cost / (1 - 0.40) = cost / 0.60
-  const marginBasedPrice = totalCost / 0.60
+  const totalCost = costBreakdown?.total_cost ?? null
+  const materialsCost = costBreakdown?.material_cost ?? null
+  const componentsCost = costBreakdown?.component_cost ?? null
+  const laborCost = costBreakdown?.labor_cost ?? null
 
   return (
     <div className="space-y-6">
@@ -131,6 +160,21 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/*
+            The door to the figures that decide what printing this costs. Until
+            T147 there was none at all: waste, yield, the failure mode and the
+            labour split were columns the engine read and nothing could write,
+            so every item in every tenant was costed as though nothing is
+            purged and nothing ever fails (FR-007b, FR-009, FR-012, FR-015a).
+          */}
+          <Button
+            variant="outline"
+            onClick={() => setCostProfileOpen(true)}
+            data-testid="open-cost-profile"
+          >
+            <SlidersHorizontal className="mr-2 h-4 w-4" />
+            Cost profile
+          </Button>
           <Button variant="outline" asChild>
             <Link to="/models/$modelId/edit" params={{ modelId }}>
               <Edit className="mr-2 h-4 w-4" />
@@ -178,33 +222,55 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
         <StatCard
           label="Labor Cost"
           value={formatCurrency(laborCost)}
+          // Hours are a duration, not money: a float is the right type for one,
+          // and `money.ts` is deliberately only for amounts and rates.
           subValue={`${parseFloat(model.labor_hours || '0').toFixed(1)}h labor`}
         />
         <StatCard
           label="Total Cost"
           value={formatCurrency(totalCost)}
-          subValue={costBreakdown ? `+${parseFloat(model.overhead_percentage || '0').toFixed(0)}% overhead` : undefined}
+          subValue={
+            costBreakdown
+              ? `+${formatPercent(model.overhead_percentage ?? '0', { places: 0, undefinedLabel: '0%' })} overhead`
+              : undefined
+          }
         />
       </div>
 
-      {/* Pricing Stats Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-        <StatCard
-          label="Recommended Price"
-          value={formatCurrency(recommendedPrice)}
-          subValue="2.5× markup (150% margin)"
-        />
-        <StatCard
-          label="Alternative Price"
-          value={formatCurrency(marginBasedPrice)}
-          subValue="40% profit margin"
-        />
-        <StatCard
-          label="Profit at 2.5×"
-          value={formatCurrency(recommendedPrice - totalCost)}
-          subValue={`${totalCost > 0 ? ((recommendedPrice - totalCost) / totalCost * 100).toFixed(0) : 0}% profit`}
-        />
-      </div>
+      {/*
+        The engine's own breakdown for this printed item: material, waste,
+        machine occupancy, the four labour components, overhead and the failure
+        premium, each line naming its origin and date (FR-018, FR-001) and the
+        premium naming the failure mode that produced it (FR-015e). The cards
+        above total four buckets; this is where the machine time and the yield
+        become visible.
+      */}
+      <CostBreakdownSection modelId={model.id} currencySymbol={currencySymbol} />
+
+      {/*
+        A "Recommended Price", an "Alternative Price" and a "Profit at 2.5×"
+        stood here -- make-cost times 2.5 and divided by 0.60, computed as
+        JavaScript floats from markups nobody configured. They were the same
+        three tiles T140 removed from the product screen, left standing here
+        directly above the engine's own breakdown, so one screen offered two
+        answers (Constitution III). They ignored every fee, reserve, postage
+        figure and tax the engine accounts for, and nothing told the operator
+        that the number beside their real cost was invented. FR-007 is explicit
+        that what a customer will pay is a market judgement the system must not
+        compute as a single figure.
+
+        A model is not priced: a price belongs to a product on a channel,
+        because a price without a channel has no fees. So the pointer goes
+        there rather than inventing a model-level price (task T146).
+      */}
+      <p className="text-sm text-muted-foreground">
+        A model carries a cost, not a price. To price what this model goes into,
+        open the product that uses it and choose{' '}
+        <span className="font-medium">Find a price</span> on a channel in{' '}
+        <span className="font-medium">Sales Channel Pricing</span>: it solves for
+        a target margin against that channel's own fees, or shows margin across a
+        ladder of prices.
+      </p>
 
       {/* Production Cost Analysis (Phase 2) */}
       {model.production_cost_count > 0 && (
@@ -220,11 +286,23 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
           </CardHeader>
           <CardContent>
             {(() => {
-              const actualCost = parseFloat(model.actual_production_cost || '0')
-              const variance = totalCost > 0 ? ((actualCost - totalCost) / totalCost) * 100 : 0
-              const isOverBudget = variance > 0
-              const isUnderBudget = variance < 0
-              const varianceAbs = Math.abs(variance)
+              // Actual against theoretical, in string space. Through
+              // `parseFloat` a run that matched plan exactly can come out at
+              // -1.4e-17 and render as an overrun, and the arrow beside it
+              // points the wrong way -- which is not a rounding error, it is
+              // the screen reporting the wrong finding (task T151).
+              const actualCost = model.actual_production_cost ?? null
+              const difference = subtractMoney(actualCost, totalCost)
+              // No theoretical cost is not "on budget", it is nothing to
+              // compare against, so the percentage has no answer (FR-019).
+              const variance =
+                compareMoney(totalCost, ZERO) > 0
+                  ? multiplyMoney(divideMoney(difference, totalCost as Money, 6) ?? ZERO, 100)
+                  : null
+              const direction = variance === null ? 0 : compareMoney(variance, ZERO)
+              const isOverBudget = direction > 0
+              const isUnderBudget = direction < 0
+              const varianceAbs = variance === null ? null : variance.replace(/^-/, '')
 
               return (
                 <div className="space-y-4">
@@ -243,10 +321,16 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
                       <div className="text-sm text-muted-foreground">Variance</div>
                       <div className={`text-2xl font-bold mt-1 flex items-center gap-1 ${isOverBudget ? 'text-destructive' : isUnderBudget ? 'text-green-600' : ''}`}>
                         {isOverBudget ? <TrendingUp className="h-5 w-5" /> : isUnderBudget ? <TrendingDown className="h-5 w-5" /> : <Minus className="h-5 w-5" />}
-                        {varianceAbs.toFixed(1)}%
+                        {formatPercent(varianceAbs, { undefinedLabel: '—' })}
                       </div>
                       <div className="text-xs text-muted-foreground mt-1">
-                        {isOverBudget ? 'Over budget' : isUnderBudget ? 'Under budget' : 'On budget'}
+                        {variance === null
+                          ? 'No theoretical cost to compare'
+                          : isOverBudget
+                            ? 'Over budget'
+                            : isUnderBudget
+                              ? 'Under budget'
+                              : 'On budget'}
                       </div>
                     </div>
                   </div>
@@ -261,6 +345,14 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
           </CardContent>
         </Card>
       )}
+
+      <ModelCostProfileDialog
+        open={costProfileOpen}
+        onOpenChange={setCostProfileOpen}
+        modelId={modelId}
+        modelName={model.name}
+        canEdit={canEditProfile}
+      />
 
       {/* Model Details Card */}
       <Card>

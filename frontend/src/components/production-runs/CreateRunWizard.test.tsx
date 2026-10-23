@@ -15,6 +15,15 @@ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+
+/*
+ * This file builds a genuine memory router, so it needs the real module rather
+ * than the stub `src/test/setup.ts` installs for every other test. The stub
+ * exists because importing the router cost every test file in the suite ~7s of
+ * setup; paying it here, in the two files that cannot do without it, is the
+ * trade.
+ */
+vi.unmock('@tanstack/react-router')
 import { CreateRunWizard } from './CreateRunWizard'
 import { listModels, getModelProductionDefaults } from '@/lib/api/models'
 import { spoolsApi } from '@/lib/api/spools'
@@ -240,7 +249,7 @@ const mockSpools: SpoolResponse[] = [
     purchased_quantity: 1,
     spools_remaining: 1,
     purchase_date: '2024-01-01',
-    purchase_price: 25.0,
+    purchase_price: '25.0',
     supplier: undefined,
     storage_location: undefined,
     notes: '',

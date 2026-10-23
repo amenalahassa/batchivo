@@ -124,38 +124,39 @@ class TestConsumableUsageTotalCost:
 
 
 # ---------------------------------------------------------------------------
-# ModelComponent.total_cost and effective_unit_cost
+# ModelComponent carries no derived cost any more (task T141)
 # ---------------------------------------------------------------------------
 
 
-class TestModelComponentTotalCost:
-    def test_basic_calculation(self):
-        obj = make_model_component(quantity=3, unit_cost=Decimal("4.00"))
-        assert ModelComponent.total_cost.fget(obj) == 12.0
+class TestModelComponentDerivesNothing:
+    """The two cost properties are gone, and must not come back.
 
-    def test_zero_quantity(self):
-        obj = make_model_component(quantity=0, unit_cost=Decimal("5.00"))
-        assert ModelComponent.total_cost.fget(obj) == 0.0
+    `total_cost` duplicated the engine's "components" line and
+    `effective_unit_cost` gave a *different* answer to the same question --
+    preferring a linked consumable's cost where the engine uses the typed
+    `unit_cost`. Both computed in float on a `Numeric` column. The engine is
+    the one authority (Constitution III), and the test that proves the figure
+    is `tests/unit/pricing/`'s, not this file's.
+    """
 
-    def test_fractional_unit_cost(self):
-        obj = make_model_component(quantity=2, unit_cost=Decimal("3.75"))
-        assert ModelComponent.total_cost.fget(obj) == 7.5
+    def test_the_duplicate_cost_properties_are_not_on_the_model(self):
+        assert not hasattr(ModelComponent, "total_cost"), (
+            "ModelComponent.total_cost is back; app/services/costing.py already "
+            "computes the components line in Decimal (Constitution III)"
+        )
+        assert not hasattr(ModelComponent, "effective_unit_cost"), (
+            "ModelComponent.effective_unit_cost is back; it answered the "
+            "consumable-versus-manual question differently from the engine"
+        )
 
-
-class TestModelComponentEffectiveUnitCost:
-    def test_no_consumable_uses_unit_cost(self):
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=None)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 5.0
-
-    def test_consumable_with_cost_overrides(self):
-        consumable = SimpleNamespace(current_cost_per_unit=Decimal("3.00"))
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=consumable)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 3.0
-
-    def test_consumable_without_cost_falls_back_to_unit_cost(self):
-        consumable = SimpleNamespace(current_cost_per_unit=None)
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=consumable)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 5.0
+    def test_the_unit_cost_column_is_annotated_as_the_decimal_it_returns(self):
+        # The column is Numeric, so a read yields Decimal. The annotation said
+        # float, which let a float conversion look correct to a type checker.
+        annotation = ModelComponent.__annotations__["unit_cost"]
+        assert "Decimal" in str(annotation), (
+            f"unit_cost is annotated {annotation!r}; a money column is Decimal "
+            f"end to end (Constitution IV)"
+        )
 
 
 # ---------------------------------------------------------------------------

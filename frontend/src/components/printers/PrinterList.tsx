@@ -7,9 +7,11 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Gauge, Trash2 } from 'lucide-react'
 
 import { listPrinters } from '@/lib/api/printers'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
 import type { Printer } from '@/types/printer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,6 +27,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { PrinterFormDialog } from './PrinterFormDialog'
 import { DeletePrinterDialog } from './DeletePrinterDialog'
+import { PrinterCostPolicyDialog } from './PrinterCostPolicyDialog'
 
 export function PrinterList() {
   const [search, setSearch] = useState('')
@@ -33,6 +36,13 @@ export function PrinterList() {
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletingPrinter, setDeletingPrinter] = useState<Printer | null>(null)
+  const [costDialogOpen, setCostDialogOpen] = useState(false)
+  const [costPrinter, setCostPrinter] = useState<Printer | null>(null)
+
+  const { user } = useAuth()
+  // The hourly rate is a monetary figure (FR-007a). A member or viewer opens
+  // the same dialog and reads it; the controls inside arrive disabled.
+  const canEditCost = canEditMonetaryPolicy(user)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['printers', { isActiveFilter }],
@@ -71,6 +81,11 @@ export function PrinterList() {
   const handleAddNew = () => {
     setEditingPrinterId(null)
     setFormDialogOpen(true)
+  }
+
+  const handleCostPolicy = (printer: Printer) => {
+    setCostPrinter(printer)
+    setCostDialogOpen(true)
   }
 
   const formatBedSize = (printer: Printer): string => {
@@ -236,6 +251,14 @@ export function PrinterList() {
                     <Button
                       variant="outline"
                       size="sm"
+                      onClick={() => handleCostPolicy(printer)}
+                    >
+                      <Gauge className="h-3 w-3 mr-1" />
+                      Machine cost
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
                       className="text-destructive hover:text-destructive"
                       onClick={() => handleDelete(printer)}
                     >
@@ -307,6 +330,14 @@ export function PrinterList() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            aria-label={`Machine cost for ${printer.name}`}
+                            onClick={() => handleCostPolicy(printer)}
+                          >
+                            <Gauge className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="text-destructive hover:text-destructive"
                             onClick={() => handleDelete(printer)}
                           >
@@ -334,6 +365,14 @@ export function PrinterList() {
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         printer={deletingPrinter}
+      />
+
+      <PrinterCostPolicyDialog
+        open={costDialogOpen}
+        onOpenChange={setCostDialogOpen}
+        printerId={costPrinter?.id ?? null}
+        printerName={costPrinter?.name}
+        canEdit={canEditCost}
       />
     </div>
   )

@@ -1,5 +1,6 @@
 """Platform admin service for cross-tenant operations."""
 
+from decimal import Decimal
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -88,6 +89,7 @@ class PlatformAdminService:
 
         Returns:
             Dict with user_count, product_count, order_count, total_revenue
+            (an exact `Decimal`)
         """
         # Count users in tenant
         user_count = (
@@ -121,7 +123,12 @@ class PlatformAdminService:
             "user_count": user_count,
             "product_count": product_count,
             "order_count": stats_row.order_count or 0,
-            "total_revenue": float(stats_row.total_revenue or 0),
+            # `SUM` over a `Numeric` column comes back as a `Decimal`; the
+            # `float()` here was the one lossy step on a platform-wide revenue
+            # total, which is the figure that accumulates the most error of any
+            # in the system -- it adds up every settled order there is
+            # (task T186, FR-047, Constitution IV).
+            "total_revenue": Decimal(stats_row.total_revenue or 0),
         }
 
     async def create_impersonation_token(self, tenant_id: UUID) -> str:

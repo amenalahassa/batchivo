@@ -1,5 +1,6 @@
 """Tests for shop checkout API endpoints."""
 
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 from unittest.mock import MagicMock, patch
@@ -102,7 +103,7 @@ async def shop_client(
     mock_reservation_service,
 ):
     """Create a test HTTP client with ShopContext dependency overridden."""
-    from app.auth.dependencies import get_shop_sales_channel, get_shop_tenant
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel, get_shop_tenant
     from app.database import get_db
 
     async def override_get_db():
@@ -115,6 +116,7 @@ async def shop_client(
         return (test_tenant, sales_channel)
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_shop_tenant] = override_get_shop_tenant
     app.dependency_overrides[get_shop_sales_channel] = override_get_shop_sales_channel
     app.dependency_overrides[get_cart_service] = lambda: mock_cart_service
@@ -1601,3 +1603,209 @@ class TestSubmitReviewInvalidProduct:
             },
         )
         assert response.status_code == 404
+
+
+# ============================================
+# Storefront Sale Snapshot (task T157, FR-036/FR-024)
+# ============================================
+
+
+class TestStorefrontSaleSnapshot:
+    """A sale made through the shop is frozen like any other sale.
+
+    The console's order path and the Shopify webhook both called
+    `write_sale_snapshot`; the storefront's own checkout did not. Because
+    `realised_margin` and `margin_alert` select on `make_cost_at_sale` being
+    set, every storefront sale was invisible to the margin figures this
+    feature exists to report.
+    """
+
+    @pytest_asyncio.fixture
+    async def heavy_product(
+        self, db_session: AsyncSession, test_tenant: Tenant, sales_channel: SalesChannel
+    ) -> Product:
+        """A shop product with a recorded weight, so postage can be looked up."""
+        product = Product(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            sku="SNAP-PROD-001",
+            name="Snapshot Test Dragon",
+            description="Has a weight, so a shipping profile covers it",
+            is_active=True,
+            shop_visible=True,
+            units_in_stock=10,
+            weight_grams=300,
+        )
+        db_session.add(product)
+        await db_session.commit()
+
+        pricing = ProductPricing(
+            id=uuid4(),
+            product_id=product.id,
+            sales_channel_id=sales_channel.id,
+            list_price=Decimal("19.99"),
+        )
+        db_session.add(pricing)
+        await db_session.commit()
+        await db_session.refresh(product)
+        return product
+
+    @pytest_asyncio.fixture
+    async def postage_profile(self, db_session: AsyncSession, test_tenant: Tenant):
+        """A profile covering the 300 g parcel at CA$4.20."""
+        from app.models.shipping_profile import ShippingProfile
+
+        profile = ShippingProfile(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            name="Domestic 250-500 g",
+            destination_zone="domestic",
+            weight_bracket_min_grams=250,
+            weight_bracket_max_grams=500,
+            postage_cost=Decimal("4.20"),
+            carrier="Royal Mail",
+            effective_from=date(2020, 1, 1),
+        )
+        db_session.add(profile)
+        await db_session.commit()
+        await db_session.refresh(profile)
+        return profile
+
+    async def _complete_a_sale(self, shop_client: AsyncClient, product: Product) -> str:
+        """Put one unit through the cart, payment and completion, return the order number."""
+        session_id = str(uuid4())
+        await shop_client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(product.id), "quantity": 1},
+        )
+        checkout_response = await shop_client.post(
+            "/api/v1/shop/checkout/create-payment",
+            json={
+                "cart_session_id": session_id,
+                "shippingAddress": {
+                    "name": "John Doe",
+                    "email": "john@example.com",
+                    "line1": "123 Test St",
+                    "city": "London",
+                    "postcode": "SW1A 1AA",
+                    "country": "United Kingdom",
+                },
+                "shippingMethodId": "standard",
+            },
+        )
+        assert checkout_response.status_code == 200
+        checkout_session_id = checkout_response.json()["data"]["sessionId"]
+
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/complete",
+            json={
+                "payment_session_id": checkout_session_id,
+                "square_payment_token": "test_token",
+            },
+        )
+        assert response.status_code == 200, response.text
+        return str(response.json()["data"]["order_number"])
+
+    @staticmethod
+    def _paid() -> MagicMock:
+        service = MagicMock()
+        service.process_payment.return_value = MagicMock(
+            success=True,
+            payment_id="sq_payment_123",
+            receipt_url="https://squareup.com/receipt/123",
+            error_code=None,
+            error_message=None,
+        )
+        return service
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_storefront_sale_is_snapshotted(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Each line of a storefront sale carries its frozen cost and basis."""
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow)
+                .where(OrderRow.order_number == order_number)
+                .options(selectinload(OrderRow.items))
+            )
+        ).scalar_one()
+
+        assert order.items, "the sale recorded no lines"
+        for item in order.items:
+            assert item.make_cost_at_sale is not None, (
+                "a storefront line was settled with no frozen make-cost, which "
+                "hides it from realised_margin and margin_alert (FR-036)"
+            )
+            assert item.has_snapshot
+            assert item.margin_basis_at_sale, "the basis in force was not frozen (FR-031d)"
+            assert item.pricing_rev is not None
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_storefront_sale_records_postage_paid(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Postage paid is read from the profiles, separate from shipping revenue."""
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid == Decimal("4.20"), (
+            "postage paid must come from the shipping profile covering the "
+            "parcel, not from what the customer was charged (FR-024)"
+        )
+        assert order.shipping_cost != order.postage_paid or order.shipping_cost == Decimal("4.20")
+        # Tax is not invented: the storefront has no tax line of its own.
+        assert order.sales_tax_collected == Decimal("0.00")
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_postage_is_zero_when_no_profile_covers_the_parcel(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        shop_product: Product,
+    ):
+        """A weightless product with no profile is a gap, not a guessed figure."""
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, shop_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid == Decimal("0.00")

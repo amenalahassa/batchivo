@@ -1,5 +1,6 @@
 """Payment processing API endpoints for multi-tenant shops."""
 
+import logging
 from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
@@ -9,8 +10,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import ShopContext
+from app.auth.dependencies import ShopContext, ShopDB
 from app.config import get_settings
+from app.core.money import pence_to_pounds
 from app.database import get_db
 from app.models.order import Order as OrderModel
 from app.models.order import OrderItem as OrderItemModel
@@ -25,10 +27,12 @@ from app.schemas.payment import (
 )
 from app.services.commerce_handover import legacy_shop_write_guard
 from app.services.email_service import get_email_service
+from app.services.sale_snapshot import write_sale_snapshot
 from app.services.square_payment import SquarePaymentService, get_payment_service
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 class PaymentConfigResponse(BaseModel):
@@ -131,12 +135,12 @@ async def _create_order_record(
         shipping_postcode=request.shipping_address.postcode,
         shipping_country=request.shipping_address.country,
         shipping_method=request.shipping_method,
-        shipping_cost=request.shipping_cost / 100,
-        subtotal=items_total / 100,
-        total=request.amount / 100,
+        shipping_cost=pence_to_pounds(request.shipping_cost),
+        subtotal=pence_to_pounds(items_total),
+        total=pence_to_pounds(request.amount),
         currency=request.currency,
         discount_code=request.discount_code,
-        discount_amount=request.discount_amount / 100,
+        discount_amount=pence_to_pounds(request.discount_amount),
         payment_provider=payment_provider,
         payment_id=payment_id,
         payment_status=payment_status,
@@ -160,9 +164,34 @@ async def _create_order_record(
                 product_sku=product.sku if product else str(item.product_id),
                 product_name=item.name,
                 quantity=item.quantity,
-                unit_price=item.price / 100,
-                total_price=(item.price * item.quantity) / 100,
+                unit_price=pence_to_pounds(item.price),
+                total_price=pence_to_pounds(item.price * item.quantity),
             )
+        )
+
+    # Freeze what each line earned, as it stands (FR-036, FR-037, task T180).
+    #
+    # Both Square paths -- the hosted checkout link and the Web Payments SDK --
+    # persisted an order and its lines and never snapshotted them, while every
+    # other creation path did: the console order (`orders.py`), the storefront
+    # checkout (`shop.py`), the Shopify webhook and the commerce bridge. An
+    # order paid through Square therefore carried no `make_cost_at_sale`, no
+    # itemised fees and no exchange rate, so its margin was re-derived from
+    # whatever the inputs say today -- the fiction FR-038 exists to prevent,
+    # and `realised_margin` and `margin_alert` both select on that column
+    # being set, so the sale was invisible to them entirely.
+    #
+    # Inside the transaction, before the commit below: a snapshot of an order
+    # that rolled back would be a frozen margin for a sale that never
+    # happened. An order the snapshot cannot fully cost is still recorded --
+    # the gaps are reported, never costed at zero (FR-019).
+    await db.flush()
+    await db.refresh(db_order, ["items"])
+    snapshot = await write_sale_snapshot(db, shop_tenant, db_order)
+    if snapshot.incomplete:
+        logger.warning(
+            f"Square order {order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
         )
 
     email_sent = False
@@ -173,12 +202,16 @@ async def _create_order_record(
             customer_name=customer_name,
             order_number=order_number,
             order_items=[
-                {"name": item.name, "quantity": item.quantity, "price": item.price / 100}
+                {
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "price": pence_to_pounds(item.price),
+                }
                 for item in request.items
             ],
-            subtotal=items_total / 100,
-            shipping_cost=request.shipping_cost / 100,
-            total=request.amount / 100,
+            subtotal=pence_to_pounds(items_total),
+            shipping_cost=pence_to_pounds(request.shipping_cost),
+            total=pence_to_pounds(request.amount),
             shipping_address={
                 "address_line1": request.shipping_address.address_line1,
                 "address_line2": request.shipping_address.address_line2,
@@ -227,8 +260,8 @@ async def get_payment_config(
 async def create_hosted_checkout(
     request: HostedCheckoutRequest,
     shop_context: ShopContext,
+    db: ShopDB,
     x_shop_hostname: Annotated[str | None, Header()] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> HostedCheckoutResponse:
     """Create a Square-hosted checkout link and pending Batchivo order."""
     shop_tenant, channel = shop_context
@@ -300,8 +333,8 @@ async def create_hosted_checkout(
 async def process_payment(
     request: PaymentRequest,
     shop_context: ShopContext,
+    db: ShopDB,
     x_shop_hostname: Annotated[str | None, Header()] = None,
-    db: AsyncSession = Depends(get_db),
 ) -> PaymentResponse:
     """
     Process a payment using a Square Web Payments SDK token.
@@ -312,9 +345,6 @@ async def process_payment(
     Uses order_number as idempotency key to prevent duplicate charges.
     Tenant resolved from X-Shop-Hostname header.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
     shop_tenant, channel = shop_context
 
     square_config = _get_square_runtime_config(x_shop_hostname)
@@ -391,9 +421,9 @@ async def process_payment(
             shipping_postcode=request.shipping_address.postcode,
             shipping_country=request.shipping_address.country,
             shipping_method=request.shipping_method,
-            shipping_cost=request.shipping_cost / 100,  # Convert pence to pounds
-            subtotal=items_total / 100,  # Convert pence to pounds
-            total=request.amount / 100,  # Convert pence to pounds
+            shipping_cost=pence_to_pounds(request.shipping_cost),
+            subtotal=pence_to_pounds(items_total),
+            total=pence_to_pounds(request.amount),
             currency=request.currency,
             payment_provider="square_sandbox" if payment_environment == "sandbox" else "square",
             payment_id=result.payment_id,
@@ -424,8 +454,8 @@ async def process_payment(
                     product_sku=product.sku,
                     product_name=item.name,
                     quantity=item.quantity,
-                    unit_price=item.price / 100,  # Convert pence to pounds
-                    total_price=(item.price * item.quantity) / 100,  # Convert pence to pounds
+                    unit_price=pence_to_pounds(item.price),
+                    total_price=pence_to_pounds(item.price * item.quantity),
                 )
             else:
                 # Product not found - store ID as reference (fallback)
@@ -436,10 +466,22 @@ async def process_payment(
                     product_sku=str(item.product_id),
                     product_name=item.name,
                     quantity=item.quantity,
-                    unit_price=item.price / 100,  # Convert pence to pounds
-                    total_price=(item.price * item.quantity) / 100,  # Convert pence to pounds
+                    unit_price=pence_to_pounds(item.price),
+                    total_price=pence_to_pounds(item.price * item.quantity),
                 )
             db.add(db_item)
+
+        # Freeze what each line earned, before the commit (FR-036, task T180).
+        # See `_create_order_record` for why both Square paths need this and
+        # what their absence cost; this is the Web Payments SDK path.
+        await db.flush()
+        await db.refresh(db_order, ["items"])
+        snapshot = await write_sale_snapshot(db, shop_tenant, db_order)
+        if snapshot.incomplete:
+            logger.warning(
+                f"Square order {order_number} was snapshotted with gaps: "
+                f"{'; '.join(snapshot.incomplete)}"
+            )
 
         await db.commit()
 
@@ -459,13 +501,13 @@ async def process_payment(
                     {
                         "name": item.name,
                         "quantity": item.quantity,
-                        "price": item.price / 100,  # Convert pence to pounds
+                        "price": pence_to_pounds(item.price),
                     }
                     for item in request.items
                 ],
-                subtotal=items_total / 100,
-                shipping_cost=request.shipping_cost / 100,
-                total=request.amount / 100,
+                subtotal=pence_to_pounds(items_total),
+                shipping_cost=pence_to_pounds(request.shipping_cost),
+                total=pence_to_pounds(request.amount),
                 shipping_address={
                     "address_line1": request.shipping_address.address_line1,
                     "address_line2": request.shipping_address.address_line2,
@@ -484,9 +526,7 @@ async def process_payment(
         await db.commit()
     except Exception as e:
         # Log error but don't fail the payment - it already succeeded
-        import logging
-
-        logging.error(f"Failed to create order record: {e}")
+        logger.error(f"Failed to create order record: {e}")
         # The payment was successful, so we still return success
         # Order can be reconciled from Square dashboard if needed
 
@@ -569,11 +609,8 @@ async def square_webhook(
     Acknowledge completed or duplicate processing; return 503 on failure so Square retries.
     """
     import json
-    import logging
 
     from app.services.square_webhook_service import SquareWebhookService
-
-    logger = logging.getLogger(__name__)
 
     # Get request body and signature
     body = await request.body()

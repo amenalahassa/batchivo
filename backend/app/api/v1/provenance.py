@@ -40,12 +40,14 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB, require_role
 from app.models.pricing_input_provenance import PROVENANCE_SOURCES
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserTenant
+
 from app.schemas.provenance import (
     EntityProvenanceResponse,
     EstimateRevisionListResponse,
@@ -96,6 +98,22 @@ def _entity_type_or_422(entity_type: str) -> str:
     return entity_type
 
 
+async def _role_in_tenant(db: AsyncSession, user_id, tenant_id) -> Optional[str]:
+    """The role this user holds in this tenant, for FR-001's audit field.
+
+    The same helper `pricing_policy.py` uses to fill `set_by_role`, for the
+    same reason: a figure that drives a decision has to carry who set it and
+    under what authority.
+    """
+    result = await db.execute(
+        select(UserTenant.role).where(
+            UserTenant.user_id == user_id, UserTenant.tenant_id == tenant_id
+        )
+    )
+    role = result.scalars().first()
+    return getattr(role, "value", role)
+
+
 async def _require_write_role(
     db: AsyncSession,
     user: User,
@@ -104,7 +122,7 @@ async def _require_write_role(
     entity_type: str,
     field_name: str,
     requested_source: str,
-) -> None:
+) -> Optional[str]:
     """Admin or owner for a policy figure, member for a measurement (FR-007a).
 
     The classification comes from two places and the stricter wins: a field the
@@ -112,10 +130,18 @@ async def _require_write_role(
     request that *claims* ``policy`` is stating a decision whatever the field
     is. Reading only one of those would let a member either reclassify a lever
     or declare a policy on a measurable field.
+
+    Returns the role the caller actually holds, so the write can record it
+    (task T195). `authorised_by_role` existed on the table and this route was
+    its only caller, passing `None` explicitly -- so the column was never
+    non-null and the provenance screen showed an empty authority for every
+    figure, while the tier that permitted the write was resolved right here and
+    thrown away (FR-001, FR-007a).
     """
     entry = registry_entry(entity_type, field_name)
     is_policy = requested_source in POLICY_SOURCES or not entry.learnable
     await require_role(user, tenant, db, "admin" if is_policy else "member")
+    return await _role_in_tenant(db, user.id, tenant.id)
 
 
 @router.get("/provenance", response_model=EntityProvenanceResponse)
@@ -220,7 +246,7 @@ async def put_provenance(
     except UnknownProvenanceField as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
-    await _require_write_role(
+    authorised_by_role = await _require_write_role(
         db,
         user,
         tenant,
@@ -240,7 +266,11 @@ async def put_provenance(
             as_of=payload.as_of,
             confidence=payload.confidence,
             measured_by_user_id=user.id,
-            authorised_by_role=None,
+            # The tier that permitted this write, recorded rather than
+            # discarded. `_require_write_role` has just established it, and a
+            # reader inspecting a figure's provenance needs to know whether a
+            # member measured it or an admin declared it (task T195, FR-001).
+            authorised_by_role=authorised_by_role,
         )
     except ProvenanceNotEditable as exc:
         # 409 rather than 403: the operator has the role, and the figure is the

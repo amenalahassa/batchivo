@@ -216,9 +216,12 @@ schedule — last quarter's margin does not move.
 What a customer was quoted is also kept, as a price snapshot, so the storefront
 and the order agree about what was offered.
 
-Policy itself is effective-dated. Changing a fee rule or a rate supersedes the
-old one from a date rather than overwriting it, which is what makes a margin
-trend something you can reason about instead of a number that rewrites itself.
+Policy itself is effective-dated. Changing a fee rule, a rate, or a channel's
+own planning figures — its expected discount share, its refund reserve, its
+rounding rule and its free-shipping threshold — supersedes the old one from a
+date rather than overwriting it, which is what makes a margin trend something
+you can reason about instead of a number that rewrites itself. Raising your
+refund reserve today does not change what last month's plan says it reserved.
 
 ### Realised margin
 
@@ -234,6 +237,23 @@ channel is the routine entry, with a specific order's fee recordable when one
 looks anomalous. An order-level figure takes precedence and reduces the period's
 unallocated remainder, so nothing is counted twice. Fees you entered by hand are
 labelled as entered, never as observed.
+
+### When the realised figure parts company with the plan
+
+You set a threshold, in percentage points, for how far a realised margin may
+drift from the margin the line was sold at. Past it, the divergence is raised
+for you rather than waiting to be noticed, and it names **which lines moved** —
+"the fee line is CA$1.80 over and the material line is 13 g heavy" — because a
+shortfall whose cause is named is a decision you can make this afternoon.
+
+An overshoot is reported as well as a shortfall. A line earning twenty points
+more than planned is as much a sign that the estimate is wrong as one earning
+twenty points less, and it is the one that quietly loses sales to a price nobody
+needed to charge.
+
+Nothing is repriced by this. A divergence is an observation about history: no
+snapshot moves, and any change to an estimate still arrives as a proposal for
+you to accept.
 
 ---
 
@@ -306,6 +326,8 @@ next week is not mistaken for today's figures.
 | Change | Required role |
 |---|---|
 | Labour rates, margin basis, machine cost policy, fee rules, target margin | Admin or owner |
+| A channel's expected discount, refund reserve, rounding rule, free-shipping threshold | Admin or owner |
+| A channel's name, platform and whether it is active | Member |
 | Print time, waste, batching, failure mode, finishing minutes | Member |
 | Viewing any cost or margin | Any role, including viewer |
 

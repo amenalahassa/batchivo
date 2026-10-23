@@ -14,18 +14,16 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, func, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
 from app.models.production_run import ProductionRun, ProductionRunItem, ProductionRunMaterial
 from app.models.model import Model
 from app.models.model_material import ModelMaterial
 from app.models.spool import Spool
 from app.models.filament_type import FilamentType
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.schemas.production_run import (
     ProductionRunCreateRequest,
     ProductionRunUpdate,
@@ -57,7 +55,7 @@ router = APIRouter(tags=["production-runs"])
 @router.post("", response_model=ProductionRunDetailResponse, status_code=status.HTTP_201_CREATED)
 async def create_production_run(
     request: ProductionRunCreateRequest,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -174,12 +172,12 @@ async def create_production_run(
 
 @router.get("", response_model=ProductionRunListResponse)
 async def list_production_runs(
+    db: TenantDB,
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     start_date: Optional[datetime] = Query(None, description="Filter by start date (inclusive)"),
     end_date: Optional[datetime] = Query(None, description="Filter by end date (inclusive)"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """
@@ -244,7 +242,7 @@ async def get_failure_reasons():
 @router.get("/{run_id}", response_model=ProductionRunDetailResponse)
 async def get_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -286,7 +284,7 @@ async def get_production_run(
 async def update_production_run(
     run_id: UUID,
     updates: ProductionRunUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -372,7 +370,7 @@ async def update_production_run(
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -419,7 +417,7 @@ async def delete_production_run(
 async def add_production_run_item(
     run_id: UUID,
     item: ProductionRunItemCreate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -480,7 +478,7 @@ async def update_production_run_item(
     run_id: UUID,
     item_id: UUID,
     updates: ProductionRunItemUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -551,7 +549,7 @@ async def update_production_run_item(
 async def delete_production_run_item(
     run_id: UUID,
     item_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -600,7 +598,7 @@ async def delete_production_run_item(
 async def add_production_run_material(
     run_id: UUID,
     material: ProductionRunMaterialCreate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -676,7 +674,7 @@ async def update_production_run_material(
     run_id: UUID,
     material_id: UUID,
     updates: ProductionRunMaterialUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -756,7 +754,7 @@ async def update_production_run_material(
 async def delete_production_run_material(
     run_id: UUID,
     material_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -801,7 +799,7 @@ async def delete_production_run_material(
 @router.post("/{run_id}/complete", response_model=ProductionRunDetailResponse)
 async def complete_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -933,21 +931,15 @@ async def complete_production_run(
                 item.model_weight_grams = model_weight
                 successful_weight += Decimal(str(item.successful_quantity)) * model_weight
 
-    # Calculate cost per gram and per-unit costs
-    if successful_weight > 0:
-        cost_per_gram = total_material_cost / successful_weight
-        production_run.cost_per_gram_actual = cost_per_gram
-        production_run.successful_weight_grams = successful_weight
-
-        # Calculate per-item/plate costs
-        if production_run.is_multi_plate and production_run.plates:
-            for plate in production_run.plates:
-                if plate.model_weight_grams:
-                    plate.actual_cost_per_unit = plate.model_weight_grams * cost_per_gram
-        elif production_run.items:
-            for item in production_run.items:
-                if item.model_weight_grams:
-                    item.actual_cost_per_unit = item.model_weight_grams * cost_per_gram
+    # Cost per gram and per-unit costs, in the service rather than here.
+    # Recording a realised actual is intended; deriving a material cost in a
+    # route handler is the second implementation Constitution III forbids
+    # (task T164).
+    ProductionRunService(db, tenant).record_actual_unit_costs(
+        production_run,
+        total_material_cost=total_material_cost,
+        successful_weight=successful_weight,
+    )
 
     await db.commit()
 
@@ -991,7 +983,7 @@ async def complete_production_run(
 async def cancel_production_run_endpoint(
     run_id: UUID,
     request: CancelProductionRunRequest,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1044,7 +1036,7 @@ async def cancel_production_run_endpoint(
 async def fail_production_run_endpoint(
     run_id: UUID,
     request: FailProductionRunRequest,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1104,7 +1096,7 @@ async def fail_production_run_endpoint(
 async def create_production_run_plate(
     run_id: UUID,
     plate_data: ProductionRunPlateCreate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1136,10 +1128,10 @@ async def create_production_run_plate(
 @router.get("/{run_id}/plates", response_model=ProductionRunPlateListResponse)
 async def list_production_run_plates(
     run_id: UUID,
+    db: TenantDB,
     status_filter: Optional[str] = Query(None, description="Filter by plate status"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1168,7 +1160,7 @@ async def list_production_run_plates(
 async def get_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1205,7 +1197,7 @@ async def update_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
     updates: ProductionRunPlateUpdate,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1244,7 +1236,7 @@ async def update_production_run_plate(
 async def start_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1286,7 +1278,7 @@ async def complete_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
     request: MarkPlateCompleteRequest,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1328,8 +1320,8 @@ async def complete_production_run_plate(
 async def fail_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
+    db: TenantDB,
     notes: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1371,8 +1363,8 @@ async def fail_production_run_plate(
 async def cancel_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
+    db: TenantDB,
     notes: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1414,7 +1406,7 @@ async def cancel_production_run_plate(
 async def delete_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     _: RequireAdmin = None,

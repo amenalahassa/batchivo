@@ -15,6 +15,8 @@ import type {
   FilamentPurchaseCreate,
   FilamentPurchaseListResponse,
   FilamentPurchaseUpdate,
+  ModelCostProfile,
+  ModelCostProfileUpdate,
   PricingPolicy,
   PricingPolicyUpdate,
   PriceLadder,
@@ -32,6 +34,7 @@ export const pricingKeys = {
   policy: (asOf?: string) => ['pricing', 'policy', asOf ?? 'current'] as const,
   printerCostPolicy: (printerId: string) =>
     ['pricing', 'printer-cost-policy', printerId] as const,
+  modelCostProfile: (modelId: string) => ['pricing', 'model-cost-profile', modelId] as const,
   filamentPurchases: () => ['pricing', 'filament-purchases'] as const,
   filamentPurchase: (purchaseId: string) =>
     ['pricing', 'filament-purchase', purchaseId] as const,
@@ -155,6 +158,52 @@ export function useUpdatePrinterCostPolicy(printerId: string) {
   return {
     updateCostPolicy: mutation.mutate,
     updateCostPolicyAsync: mutation.mutateAsync,
+    isUpdating: mutation.isPending,
+    error: mutation.error,
+  }
+}
+
+/**
+ * One printed item's operational figures, with the origin of each.
+ *
+ * Available to every role: a cost nobody can see is a cost nobody can check
+ * (FR-007c).
+ */
+export function useModelCostProfile(modelId: string | undefined) {
+  const query = useQuery<ModelCostProfile>({
+    queryKey: pricingKeys.modelCostProfile(modelId ?? ''),
+    queryFn: () => pricingApi.getModelCostProfile(modelId as string),
+    enabled: Boolean(modelId),
+  })
+
+  return {
+    profile: query.data,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  }
+}
+
+export function useUpdateModelCostProfile(modelId: string) {
+  const queryClient = useQueryClient()
+
+  const mutation = useMutation<ModelCostProfile, Error, ModelCostProfileUpdate>({
+    mutationFn: (changes) => pricingApi.updateModelCostProfile(modelId, changes),
+    onSuccess: () => {
+      // A waste figure, a yield or a labor split changes this item's cost and
+      // the cost of every product and bundle above it, so nothing cached under
+      // `pricing` survives. Constitution V: no derived figure outlives its
+      // inputs, including transitively through nested bills of materials.
+      queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      queryClient.invalidateQueries({ queryKey: ['model', modelId] })
+      queryClient.invalidateQueries({ queryKey: ['models'] })
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+    },
+  })
+
+  return {
+    updateCostProfile: mutation.mutate,
+    updateCostProfileAsync: mutation.mutateAsync,
     isUpdating: mutation.isPending,
     error: mutation.error,
   }

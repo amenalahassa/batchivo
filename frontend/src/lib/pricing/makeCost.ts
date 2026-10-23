@@ -50,15 +50,18 @@ export function makeCostOf(product: MakeCostSource | null | undefined): MoneyStr
   return NO_COST
 }
 
-/**
- * The make-cost as a number, for arithmetic the UI does on top of it
- * (suggested prices, averages). Rounding and float error here affect a
- * derived suggestion, never the cost the operator is shown.
+/*
+ * `makeCostNumber` stood here: the make-cost as a float, "for arithmetic the
+ * UI does on top of it (suggested prices, averages)".
+ *
+ * Both callers are gone. The suggested prices were markups nobody configured
+ * and were deleted (task T140); the averages are computed exactly from the
+ * decimal strings now (task T143). What remained was a float accessor to a
+ * money figure with no reader -- the obvious thing to reach for the next time
+ * a screen wants to multiply a cost, and the reason this feature had three
+ * screens disagreeing in the first place. Exact arithmetic lives in
+ * `@/lib/money`: `addMoney`, `multiplyMoney`, `divideMoney`, `compareMoney`.
  */
-export function makeCostNumber(product: MakeCostSource | null | undefined): number {
-  const parsed = Number.parseFloat(makeCostOf(product))
-  return Number.isNaN(parsed) ? 0 : parsed
-}
 
 /**
  * Whether two payloads report the same make-cost, compared as written rather

@@ -1,6 +1,7 @@
 """Pydantic schemas for webhook endpoints."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -138,7 +139,9 @@ class OrderEventData(BaseModel):
     order_id: str
     order_number: str
     status: str
-    total_amount: float
+    # An outbound event carries the figure a subscriber will reconcile
+    # against, so it leaves as an exact decimal (Constitution IV, FR-047).
+    total_amount: Decimal
     currency: str = "GBP"
     customer_email: str
     items_count: int
@@ -150,7 +153,7 @@ class PaymentEventData(BaseModel):
 
     payment_id: str
     order_id: str
-    amount: float
+    amount: Decimal
     currency: str = "GBP"
     status: str
     payment_method: Optional[str] = None
@@ -174,7 +177,7 @@ class ProductEventData(BaseModel):
     name: str
     is_active: bool
     shop_visible: bool
-    price: Optional[float] = None
+    price: Optional[Decimal] = None
 
 
 class ReviewEventData(BaseModel):

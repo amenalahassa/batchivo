@@ -20,6 +20,7 @@ from app.models.base import TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from app.models.fee_rule import FeeRule
     from app.models.product_pricing import ProductPricing
+    from app.models.sales_channel_economics import SalesChannelEconomics
 
 
 #: Who hands the sales tax to the revenue authority (FR-028b). It changes
@@ -83,7 +84,10 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         default=Decimal("0"),
         server_default="0",
-        comment="Expected discount share, which reduces planned net revenue (FR-026)",
+        comment=(
+            "Expected discount share, which reduces planned net revenue (FR-026). "
+            "The authority for this figure is `sales_channel_economics`, one row per effective period (FR-003, task T136). This column is the fallback the pure costing functions read when a channel has no row -- a unit test's stand-in, or a channel created before the migration. Do not write it."
+        ),
     )
 
     expected_refund_pct: Mapped[Decimal] = mapped_column(
@@ -91,19 +95,28 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         default=Decimal("0"),
         server_default="0",
-        comment="Expected refund share, held as a reserve against planned revenue (FR-026)",
+        comment=(
+            "Expected refund share, held as a reserve against planned revenue (FR-026). "
+            "The authority for this figure is `sales_channel_economics`, one row per effective period (FR-003, task T136). This column is the fallback the pure costing functions read when a channel has no row -- a unit test's stand-in, or a channel created before the migration. Do not write it."
+        ),
     )
 
     free_shipping_threshold: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
-        comment="Order value at which shipping is free; the solver may snap to it (FR-033)",
+        comment=(
+            "Order value at which shipping is free; the solver may snap to it (FR-033). "
+            "The authority for this figure is `sales_channel_economics`, one row per effective period (FR-003, task T136). This column is the fallback the pure costing functions read when a channel has no row -- a unit test's stand-in, or a channel created before the migration. Do not write it."
+        ),
     )
 
     rounding_rule: Mapped[Optional[str]] = mapped_column(
         String(20),
         nullable=True,
-        comment="How a solved price is rounded on this channel, e.g. 'psychological_99' (FR-033)",
+        comment=(
+            "How a solved price is rounded on this channel, e.g. 'psychological_99' (FR-033). "
+            "The authority for this figure is `sales_channel_economics`, one row per effective period (FR-003, task T136). This column is the fallback the pure costing functions read when a channel has no row -- a unit test's stand-in, or a channel created before the migration. Do not write it."
+        ),
     )
 
     currency_code: Mapped[str] = mapped_column(
@@ -135,6 +148,14 @@ class SalesChannel(Base, UUIDMixin, TimestampMixin):
         back_populates="sales_channel",
         cascade="all, delete-orphan",
         order_by="FeeRule.sort_order",
+        lazy="select",
+    )
+
+    economics: Mapped[list["SalesChannelEconomics"]] = relationship(
+        "SalesChannelEconomics",
+        back_populates="sales_channel",
+        cascade="all, delete-orphan",
+        order_by="SalesChannelEconomics.effective_from",
         lazy="select",
     )
 

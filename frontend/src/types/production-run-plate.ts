@@ -4,6 +4,7 @@
  * Mirrors the backend Pydantic schemas for type safety
  */
 
+import type { Money } from '@/types/pricing';
 import type { ModelSummary } from './production-run';
 import type { PrinterSummary } from './printer';
 
@@ -56,9 +57,11 @@ export interface ProductionRunPlate extends ProductionRunPlateBase {
   created_at: string;
   updated_at: string;
 
-  // Cost analysis (calculated on run completion)
-  model_weight_grams?: number | null;
-  actual_cost_per_unit?: number | null;
+  // Cost analysis (calculated on run completion). Decimal strings, like the
+  // same two fields on a run item: the backend types them `Decimal` and a
+  // Decimal reaches the client as a JSON string (FR-040/FR-047).
+  model_weight_grams?: Money | null;
+  actual_cost_per_unit?: Money | null;
 
   // Nested model and printer details
   model?: ModelSummary | null;

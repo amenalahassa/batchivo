@@ -26,6 +26,7 @@ import {
 
 import { getOrder, shipOrder, deliverOrder, updateOrder } from '@/lib/api/orders'
 import { useCurrency } from '@/hooks/useCurrency'
+import { compareMoney, ZERO } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -217,7 +218,7 @@ export function OrderDetail() {
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-muted-foreground">Shipping ({order.shipping_method})</span>
-                  <span>{order.shipping_cost === 0 ? 'Free' : formatCurrency(order.shipping_cost)}</span>
+                  <span>{compareMoney(order.shipping_cost, ZERO) === 0 ? 'Free' : formatCurrency(order.shipping_cost)}</span>
                 </div>
                 <div className="flex justify-between font-medium text-lg pt-2 border-t">
                   <span>Total</span>

@@ -4,6 +4,9 @@
  * Displays full sales channel information including fee structure.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
@@ -69,6 +72,7 @@ function DetailItem({ label, value }: { label: string; value: string | React.Rea
 }
 
 export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
+  const { currency } = useCurrency()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -87,10 +91,13 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
     },
   })
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(2)}`
-  }
+  // Rendered from the decimal string the API sent, in the tenant's own
+  // currency. A channel's monthly cost is a figure `channel_pnl.py` absorbs
+  // over a period's orders (FR-025), so a `parseFloat` here and an exact
+  // decimal there is two answers to one question (Constitution IV, task
+  // T162).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currency.symbol)
 
   if (isLoading) {
     return (

@@ -120,7 +120,7 @@ describe('TeamSettings', () => {
   it('opens invite dialog when button clicked', async () => {
     vi.mocked(settingsApi.listTenantMembers).mockResolvedValue(mockMembers)
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<TeamSettings />)
 
@@ -141,7 +141,7 @@ describe('TeamSettings', () => {
   it('shows invite form fields when dialog opened', async () => {
     vi.mocked(settingsApi.listTenantMembers).mockResolvedValue(mockMembers)
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<TeamSettings />)
 

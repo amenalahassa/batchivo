@@ -60,6 +60,7 @@ import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { formatMoney } from '@/lib/money'
 
 interface EditingDesigner {
   id: string
@@ -152,7 +153,12 @@ export function DesignerList() {
         description: editingDesigner.description || null,
         logo_url: editingDesigner.logo_url || null,
         website_url: editingDesigner.website_url || null,
-        membership_cost: editingDesigner.membership_cost ? parseFloat(editingDesigner.membership_cost) : null,
+        // The string the operator typed, passed through as a decimal string.
+        // `parseFloat` here put a figure the column holds as Numeric(10,2)
+        // through a binary double on its way back in (Constitution IV).
+        membership_cost: editingDesigner.membership_cost
+          ? formatMoney(editingDesigner.membership_cost, '')
+          : null,
         membership_renewal_date: editingDesigner.membership_renewal_date || null,
         notes: editingDesigner.notes || null,
       },
@@ -168,7 +174,7 @@ export function DesignerList() {
       description: designer.description || '',
       logo_url: designer.logo_url || '',
       website_url: designer.website_url || '',
-      membership_cost: designer.membership_cost?.toString() || '',
+      membership_cost: designer.membership_cost ?? '',
       membership_renewal_date: designer.membership_renewal_date || '',
       notes: designer.notes || '',
     })
@@ -402,7 +408,9 @@ export function DesignerList() {
                       </TableCell>
                       <TableCell>
                         {designer.membership_cost ? (
-                          <span className="tabular-nums">&pound;{designer.membership_cost.toFixed(2)}</span>
+                          <span className="tabular-nums">
+                            {formatMoney(designer.membership_cost, '£')}
+                          </span>
                         ) : (
                           <span className="text-muted-foreground">—</span>
                         )}

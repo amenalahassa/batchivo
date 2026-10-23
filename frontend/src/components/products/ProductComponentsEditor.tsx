@@ -21,6 +21,7 @@ import {
   type ProductComponent,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -83,7 +84,7 @@ interface ProductComponentsEditorProps {
 export function ProductComponentsEditor({ productId, components }: ProductComponentsEditorProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency } = useCurrency()
 
   // Fetch available products for selection (excluding current product)
   const { data: availableProducts } = useQuery({
@@ -146,17 +147,19 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
       (p) => !existingProductIds.includes(p.id) && p.id !== productId
     ) || []
 
-  // Calculate total cost of all child products
-  const totalComponentsCost = components.reduce((total, pc) => {
-    const productCost = parseFloat(pc.child_product_cost || '0')
-    return total + productCost * pc.quantity
-  }, 0)
+  // The bundle's total, from the decimal strings the API sent. Each line is a
+  // unit cost times a whole quantity, which `parseFloat` and `*` get wrong in
+  // the last cent often enough to make this total disagree with the lines
+  // above it (Constitution IV).
+  const totalComponentsCost = sumMoney(
+    components.map((pc) => multiplyMoney(pc.child_product_cost, pc.quantity)),
+  )
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total child products cost: <span className="font-semibold">{formatCurrency(totalComponentsCost)}</span>
+          Total child products cost: <span className="font-semibold">{formatMoney(totalComponentsCost, currency.symbol)}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -265,8 +268,8 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
           </TableHeader>
           <TableBody>
             {components.map((component) => {
-              const unitCost = parseFloat(component.child_product_cost || '0')
-              const totalCost = unitCost * component.quantity
+              const unitCost = component.child_product_cost ?? null
+              const totalCost = multiplyMoney(unitCost, component.quantity)
 
               return (
                 <TableRow key={component.id}>
@@ -296,7 +299,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(unitCost)}
+                    {formatMoney(unitCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
@@ -324,7 +327,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-semibold">
-                    {formatCurrency(totalCost)}
+                    {formatMoney(totalCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right">
                     <AlertDialog>
@@ -358,7 +361,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                 Total Child Products Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatCurrency(totalComponentsCost)}
+                {formatMoney(totalComponentsCost, currency.symbol)}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

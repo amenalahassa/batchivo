@@ -113,7 +113,7 @@ describe('SpoolAllocationTable', () => {
   })
 
   it('offers the derivation, so the figure can be checked', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<SpoolAllocationTable spools={[spool()]} />)
 
     await user.click(screen.getByText('How this was worked out'))
@@ -189,7 +189,7 @@ describe('FilamentPurchaseForm', () => {
   })
 
   it('records a new purchase without loading one first', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<FilamentPurchaseForm />)
 
     expect(mocked.getFilamentPurchase).not.toHaveBeenCalled()
@@ -208,7 +208,7 @@ describe('FilamentPurchaseForm', () => {
   })
 
   it('refuses a purchase with no date', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<FilamentPurchaseForm />)
 
     await user.type(screen.getByLabelText('Supplier'), 'Polymaker')
@@ -221,7 +221,7 @@ describe('FilamentPurchaseForm', () => {
   })
 
   it('refuses negative shipping', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<FilamentPurchaseForm />)
 
     await user.type(screen.getByLabelText('Purchase date'), '2026-03-01')
@@ -260,7 +260,7 @@ describe('FilamentPurchaseForm', () => {
   })
 
   it('corrects an existing purchase rather than creating another', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     renderForm(<FilamentPurchaseForm purchaseId={PURCHASE_ID} />)
 
     const shipping = await screen.findByLabelText('Inbound shipping')
@@ -278,7 +278,7 @@ describe('FilamentPurchaseForm', () => {
   })
 
   it('reports a failed save instead of appearing to have saved', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     mocked.createFilamentPurchase.mockRejectedValue(new Error('Validation failed'))
     renderForm(<FilamentPurchaseForm />)
 
@@ -295,7 +295,7 @@ describe('FilamentPurchaseForm', () => {
     // handler used to let that rejection escape: the message below appeared
     // *and* the browser reported an unhandled rejection, which would have
     // reached Sentry as an uncaught error on a failure the UI had handled.
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const unhandled = vi.fn()
     process.on('unhandledRejection', unhandled)
     mocked.createFilamentPurchase.mockRejectedValue(new Error('Validation failed'))
