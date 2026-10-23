@@ -87,7 +87,9 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
     updateMutation.mutate(formData)
   }
 
-  const handleInputChange = (field: keyof ConsumableTypeUpdate, value: string | number | boolean | null) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumableTypeUpdate>(field: K, value: ConsumableTypeUpdate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -215,10 +217,10 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
                     placeholder="0.00"
                     value={formData.current_cost_per_unit ?? ''}
                     onChange={(e) =>
-                      handleInputChange(
-                        'current_cost_per_unit',
-                        e.target.value ? parseFloat(e.target.value) : null
-                      )
+                      // The typed string, not a double: the costing engine
+                      // reads this for a linked packaging consumable, and the
+                      // backend takes a `Decimal` (FR-047, task T210).
+                      handleInputChange('current_cost_per_unit', e.target.value || null)
                     }
                   />
                 </div>

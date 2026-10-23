@@ -3,6 +3,7 @@
  */
 
 import { api } from '@/lib/api'
+import type { Money } from '@/types/pricing'
 
 const API_V1_PREFIX = '/api/v1'
 
@@ -125,7 +126,7 @@ export async function updateOnboardingStep4(data: {
   skip?: boolean
   product_name?: string
   product_description?: string
-  product_price?: number
+  product_price?: Money
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {
   const response = await api.put(`${API_V1_PREFIX}/onboarding/wizard/step/4`, data)
   return response.data

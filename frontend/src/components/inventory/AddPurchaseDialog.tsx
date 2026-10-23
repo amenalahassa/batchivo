@@ -104,7 +104,9 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
     createMutation.mutate(formData as ConsumablePurchaseCreate)
   }
 
-  const handleInputChange = (field: keyof ConsumablePurchaseCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumablePurchaseCreate>(field: K, value: ConsumablePurchaseCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 

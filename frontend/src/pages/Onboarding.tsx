@@ -200,7 +200,7 @@ export function Onboarding() {
 
             {currentStep === 4 && (
               <Step4FirstProduct
-                initialData={stepData.step_4 as { product_name?: string; product_description?: string; product_price?: number } | undefined}
+                initialData={stepData.step_4 as { product_name?: string; product_description?: string; product_price?: string } | undefined}
                 onSubmit={step4Mutation.mutate}
                 onBack={goBack}
                 isLoading={isLoading}

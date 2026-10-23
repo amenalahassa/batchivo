@@ -280,7 +280,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
     createMutation.mutate(formData as SpoolCreate)
   }
 
-  const handleInputChange = (field: keyof SpoolCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof SpoolCreate>(field: K, value: SpoolCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 

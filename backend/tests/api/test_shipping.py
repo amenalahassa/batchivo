@@ -22,7 +22,8 @@ class TestShippingEndpoints:
         data = response.json()
         assert data["postcode_valid"] is True
         assert len(data["options"]) >= 3
-        assert data["free_shipping_threshold_pence"] == 5000
+        # No tenant, so no channel and no threshold (T208).
+        assert data["free_shipping_threshold_pence"] is None
 
         # Check first option structure
         first_option = data["options"][0]
@@ -70,28 +71,27 @@ class TestShippingEndpoints:
         assert first_option["price_pence"] == 595  # 295 + 300 surcharge
 
     @pytest.mark.asyncio
-    async def test_get_shipping_rates_free_shipping(
+    async def test_get_shipping_rates_applies_no_threshold_without_a_channel(
         self,
         client: AsyncClient,
     ):
-        """Test free shipping when cart meets threshold."""
+        """A tenantless route has no channel threshold, so nothing ships free (T208)."""
         response = await client.post(
             "/api/v1/shipping/rates",
             json={
                 "postcode": "SW1A 1AA",
-                "cart_total_pence": 5500,  # £55, above £50 threshold
+                "cart_total_pence": 5500,  # above the old hardcoded £50
             },
         )
 
         assert response.status_code == 200
         data = response.json()
-        assert data["qualifies_for_free_shipping"] is True
+        assert data["qualifies_for_free_shipping"] is False
+        assert data["free_shipping_threshold_pence"] is None
 
-        # Check that basic shipping is free
-        free_option = next((opt for opt in data["options"] if opt["id"] == "royal-mail-2nd"), None)
-        assert free_option is not None
-        assert free_option["price_pence"] == 0
-        assert "FREE" in free_option["name"]
+        basic = next((opt for opt in data["options"] if opt["id"] == "royal-mail-2nd"), None)
+        assert basic is not None
+        assert basic["price_pence"] == 295
 
     @pytest.mark.asyncio
     async def test_validate_postcode_valid(
@@ -161,7 +161,7 @@ class TestShippingEndpoints:
         data = response.json()
         assert "methods" in data
         assert len(data["methods"]) >= 3
-        assert data["free_shipping_threshold_pence"] == 5000
+        assert data["free_shipping_threshold_pence"] is None
         assert data["highland_island_surcharge_pence"] == 300
 
         # Check method structure

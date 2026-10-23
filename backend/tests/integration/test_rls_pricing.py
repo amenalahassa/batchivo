@@ -149,6 +149,9 @@ SHOP_ROUTES: list[tuple[str, str, str]] = [
     ("POST", f"{API}/shop/checkout/validate-discount", "T171"),
     ("GET", f"{API}/shop/categories", "T171"),
     ("GET", f"{API}/shop/designers", "T171"),
+    # Applies the shop channel's free-shipping threshold, read from its
+    # effective-dated economics on the scoped session (T208).
+    ("POST", f"{API}/shop/checkout/shipping-rates", "T208"),
 ]
 
 
@@ -660,7 +663,7 @@ def test_the_scoping_helper_issues_the_statement_rls_reads() -> None:
 #   the `APIRoute` objects whose dependency graph is the thing under test;
 # * each route must take one of the four scoped sessions, or be named below.
 #
-# `NOT_YET_SCOPED` is the consequence: the 121 routes still on `get_db` that
+# `NOT_YET_SCOPED` is the consequence: the 120 routes still on `get_db` that
 # are not deliberate exceptions, listed by module. It is asserted as an exact
 # set, so it can only shrink -- a route moved onto a scoped session and left
 # on the list fails here, and so does a new route added on `get_db`.
@@ -918,12 +921,11 @@ NOT_YET_SCOPED: set[tuple[str, str]] = {
     ("POST", f"{API}/shipping/rates"),
     ("GET", f"{API}/shipping/validate-postcode/{{postcode}}"),
     ("GET", f"{API}/shipping/methods"),
-    # shop.py (6)
+    # shop.py (5)
     ("GET", f"{API}/shop/cart/{{session_id}}"),
     ("POST", f"{API}/shop/cart"),
     ("DELETE", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"),
     ("PATCH", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"),
-    ("POST", f"{API}/shop/checkout/shipping-rates"),
     ("POST", f"{API}/shop/contact"),
     # sku.py (2)
     ("GET", f"{API}/sku/next/{{entity_type}}"),

@@ -12,12 +12,19 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, Package, ArrowRight } from 'lucide-react'
+import type { Money } from '@/types/pricing'
 
 const step4Schema = z.object({
   skip: z.boolean().default(false),
   product_name: z.string().optional(),
   product_description: z.string().optional(),
-  product_price: z.number().min(0).optional(),
+  // The typed decimal string, not `valueAsNumber`: a price is `Money` on the
+  // wire, and a double would round it before the backend saw it (T211).
+  product_price: z
+    .string()
+    .regex(/^\d+(\.\d+)?$/, 'Enter a price such as 12.50')
+    .optional()
+    .or(z.literal('').transform(() => undefined)),
 })
 
 type Step4FormData = z.infer<typeof step4Schema>
@@ -26,7 +33,7 @@ interface Step4FirstProductProps {
   initialData?: {
     product_name?: string
     product_description?: string
-    product_price?: number
+    product_price?: Money
   }
   onSubmit: (data: Step4FormData) => void
   onBack: () => void
@@ -128,7 +135,7 @@ export function Step4FirstProduct({
                   min="0"
                   placeholder="0.00"
                   className="pl-7"
-                  {...register('product_price', { valueAsNumber: true })}
+                  {...register('product_price')}
                   disabled={isLoading}
                 />
               </div>

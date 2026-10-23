@@ -106,7 +106,9 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
     createMutation.mutate(formData as ConsumableTypeCreate)
   }
 
-  const handleInputChange = (field: keyof ConsumableTypeCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumableTypeCreate>(field: K, value: ConsumableTypeCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -246,7 +248,10 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
                   placeholder="0.00"
                   value={formData.current_cost_per_unit || ''}
                   onChange={(e) =>
-                    handleInputChange('current_cost_per_unit', e.target.value ? parseFloat(e.target.value) : undefined)
+                    // The typed string, not a double: the costing engine reads
+                    // this for a linked packaging consumable, and the backend
+                    // takes a `Decimal` (FR-047, task T210).
+                    handleInputChange('current_cost_per_unit', e.target.value || undefined)
                   }
                 />
               </div>

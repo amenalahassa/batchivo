@@ -1,6 +1,10 @@
 """Shipping rates API endpoints.
 
 Provides shipping rate calculations and postcode validation.
+
+These routes carry no tenant, so they know no sales channel and therefore no
+free-shipping threshold: they report none and apply none. The storefront's
+`POST /shop/checkout/shipping-rates` applies the channel's own (task T208).
 """
 
 from fastapi import APIRouter, Depends
@@ -23,9 +27,9 @@ async def get_shipping_rates(
     """
     Get available shipping rates for a UK postcode.
 
-    Returns a list of shipping options with prices. Automatically applies:
-    - Highland/Island surcharges for remote UK areas
-    - Free shipping on orders over the threshold
+    Returns a list of shipping options with prices. Automatically applies
+    Highland/Island surcharges for remote UK areas. Free shipping is a sales
+    channel's policy, so it is applied by the storefront route, not here.
 
     **Note**: Prices are in pence (e.g., 395 = £3.95)
     """
@@ -77,6 +81,6 @@ async def list_shipping_methods(
             }
             for opt in shipping_service.STANDARD_OPTIONS
         ],
-        "free_shipping_threshold_pence": shipping_service.FREE_SHIPPING_THRESHOLD_PENCE,
+        "free_shipping_threshold_pence": shipping_service.free_shipping_threshold_pence,
         "highland_island_surcharge_pence": shipping_service.HIGHLAND_ISLAND_SURCHARGE_PENCE,
     }

@@ -182,7 +182,9 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
     updateMutation.mutate(formData as SpoolUpdate)
   }
 
-  const handleInputChange = (field: keyof SpoolUpdate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof SpoolUpdate>(field: K, value: SpoolUpdate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -502,7 +504,10 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
                     placeholder="8.30"
                     value={formData.purchase_price || ''}
                     onChange={(e) =>
-                      handleInputChange('purchase_price', e.target.value ? parseFloat(e.target.value) : undefined)
+                      // The typed string, not a double: this is the figure
+                      // `landed_cost.py` allocates across and `cost_per_gram`
+                      // divides, and the backend takes a `Decimal` (task T209).
+                      handleInputChange('purchase_price', e.target.value || undefined)
                     }
                   />
                   <p className="text-xs text-muted-foreground">

@@ -10,7 +10,7 @@ the shop by subdomain (tenant.batchivo.shop) or custom domain.
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -32,13 +32,15 @@ from app.models.order import OrderItem as OrderItemModel
 from app.models.order import OrderStatus
 from app.models.product import Product
 from app.models.review import Review
+from app.models.sales_channel import SalesChannel
 from app.services.cart import CartItem, CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
+from app.services.channel_economics import resolve_channel_economics
 from app.services.commerce_handover import legacy_product_write_guard, legacy_shop_write_guard
 from app.services.postage import postage_for_product
 from app.services.sale_snapshot import write_sale_snapshot
 from app.services.search_service import SearchService, get_search_service
-from app.services.shipping_service import ShippingService, get_shipping_service
+from app.services.shipping_service import ShippingService
 from app.services.temporal_pricing import storefront_price
 from app.services.stock_reservation import (
     ReservationItem,
@@ -1111,18 +1113,36 @@ async def update_cart_item(
 # ============================================
 
 
+async def shop_shipping_service(db: AsyncSession, channel: SalesChannel) -> ShippingService:
+    """The shipping service for this shop, applying its channel's threshold.
+
+    The free-shipping threshold is the operator's, effective-dated on the
+    channel's economics; the solver plans the ladder against the same figure,
+    so the storefront must apply that one and not a constant (task T208).
+
+    A helper rather than a dependency so the handler itself takes the scoped
+    `ShopDB` the economics are read on.
+    """
+    economics = await resolve_channel_economics(db, channel)
+    return ShippingService.for_economics(economics)
+
+
 @router.post("/checkout/shipping-rates")
 async def get_checkout_shipping_rates(
     request: dict,
-    shipping_service: ShippingService = Depends(get_shipping_service),
+    shop_context: ShopContext,
+    db: ShopDB,
 ):
     """Get shipping rates for postcode.
 
     Uses the shipping service for postcode validation and rate calculation.
-    Applies Highland/Island surcharges for remote UK areas.
+    Applies Highland/Island surcharges for remote UK areas, and free shipping
+    at the shop channel's own threshold.
     """
     postcode = request.get("postcode", "")
     cart_total_pence = request.get("cart_total_pence")
+    _, channel = shop_context
+    shipping_service = await shop_shipping_service(db, channel)
 
     # Get rates from shipping service
     rates_response = await shipping_service.get_shipping_rates(
@@ -1222,7 +1242,6 @@ async def create_checkout_session(
     cart_service: CartService = Depends(get_cart_service),
     checkout_service: CheckoutSessionService = Depends(get_checkout_session_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
-    shipping_service: ShippingService = Depends(get_shipping_service),
 ):
     """Create checkout/payment session with stock reservation. Tenant from X-Shop-Hostname."""
     shop_tenant, channel = shop_context
@@ -1235,8 +1254,12 @@ async def create_checkout_session(
     subtotal = cart.subtotal
 
     # Get shipping cost from shipping service (with postcode-aware pricing)
+    shipping_service = await shop_shipping_service(db, channel)
     postcode = request.shippingAddress.postcode
-    cart_total_pence = int(subtotal * 100)  # Convert to pence for free shipping check
+    # The cart already holds pence (`unit_price` is pence, see `add_to_cart`).
+    # Multiplying by a hundred again made every cart over 50p look like £50+
+    # to the threshold check (task T208).
+    cart_total_pence = int(subtotal.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     shipping_method_name, shipping_cost_pence = shipping_service.get_shipping_cost(
         shipping_method_id=request.shippingMethodId,
         postcode=postcode,

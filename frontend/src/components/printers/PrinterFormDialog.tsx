@@ -153,7 +153,9 @@ export function PrinterFormDialog({ open, onOpenChange, printerId }: PrinterForm
     }
   }
 
-  const handleInputChange = (field: keyof PrinterCreate, value: unknown) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof PrinterCreate>(field: K, value: PrinterCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 

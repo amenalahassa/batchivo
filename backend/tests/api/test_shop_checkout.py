@@ -15,6 +15,7 @@ from app.models.discount import DiscountCode, DiscountType
 from app.models.product import Product
 from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
+from app.models.sales_channel_economics import SalesChannelEconomics
 from app.models.tenant import Tenant
 from app.services.cart import CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
@@ -326,9 +327,9 @@ class TestCartOperations:
 class TestShippingRates:
     """Tests for shipping rate calculation."""
 
-    async def test_get_shipping_rates_valid_postcode(self, client: AsyncClient):
+    async def test_get_shipping_rates_valid_postcode(self, shop_client: AsyncClient):
         """Test getting shipping rates for valid UK postcode."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "SW1A 1AA", "cart_total_pence": 2000},
         )
@@ -338,19 +339,9 @@ class TestShippingRates:
         assert "data" in data
         assert len(data["data"]) > 0
 
-    async def test_get_shipping_rates_free_shipping(self, client: AsyncClient):
-        """Test free shipping threshold."""
-        response = await client.post(
-            "/api/v1/shop/checkout/shipping-rates",
-            json={"postcode": "SW1A 1AA", "cart_total_pence": 5000},  # Over threshold
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "qualifies_for_free_shipping" in data
-
-    async def test_get_shipping_rates_highland(self, client: AsyncClient):
+    async def test_get_shipping_rates_highland(self, shop_client: AsyncClient):
         """Test Highland postcode surcharge."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "IV1 1AA", "cart_total_pence": 2000},  # Inverness
         )
@@ -358,15 +349,142 @@ class TestShippingRates:
         data = response.json()
         assert data["postcode_valid"] is True
 
-    async def test_get_shipping_rates_invalid_postcode(self, client: AsyncClient):
+    async def test_get_shipping_rates_invalid_postcode(self, shop_client: AsyncClient):
         """Test invalid postcode handling."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "INVALID", "cart_total_pence": 2000},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["postcode_valid"] is False
+
+
+# ============================================
+# The free-shipping threshold is the operator's (T208)
+# ============================================
+
+
+async def _set_threshold(
+    db_session: AsyncSession, channel: SalesChannel, threshold: str
+) -> SalesChannelEconomics:
+    row = SalesChannelEconomics(
+        tenant_id=channel.tenant_id,
+        sales_channel_id=channel.id,
+        free_shipping_threshold=Decimal(threshold),
+        effective_from=date(2020, 1, 1),
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row
+
+
+def _second_class(data: dict) -> dict:
+    return next(rate for rate in data["data"] if rate["id"] == "royal-mail-2nd")
+
+
+async def _checkout_one(shop_client: AsyncClient, product: Product):
+    session_id = str(uuid4())
+    await shop_client.post(
+        f"/api/v1/shop/cart/{session_id}/items",
+        json={"product_id": str(product.id), "quantity": 1},
+    )
+    return await shop_client.post(
+        "/api/v1/shop/checkout/create-payment",
+        json={
+            "cart_session_id": session_id,
+            "shippingAddress": {
+                "name": "John Doe",
+                "email": "john@example.com",
+                "line1": "123 Test St",
+                "city": "London",
+                "postcode": "SW1A 1AA",
+                "country": "United Kingdom",
+            },
+            "shippingMethodId": "royal-mail-2nd",
+        },
+    )
+
+
+class TestFreeShippingThresholdIsTheChannels:
+    """The storefront ships free at the threshold the solver planned against."""
+
+    async def test_applies_the_channels_threshold(
+        self, shop_client: AsyncClient, db_session: AsyncSession, sales_channel: SalesChannel
+    ):
+        await _set_threshold(db_session, sales_channel, "30.00")
+
+        at = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 3000},
+        )
+        below = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 2999},
+        )
+
+        assert at.status_code == 200
+        assert at.json()["free_shipping_threshold"] == 3000
+        assert at.json()["qualifies_for_free_shipping"] is True
+        assert Decimal(str(_second_class(at.json())["price"])) == 0
+        assert below.json()["qualifies_for_free_shipping"] is False
+        assert Decimal(str(_second_class(below.json())["price"])) == 295
+
+    async def test_a_threshold_above_fifty_pounds_is_honoured(
+        self, shop_client: AsyncClient, db_session: AsyncSession, sales_channel: SalesChannel
+    ):
+        """The old constant shipped free at 5000p whatever the operator set."""
+        await _set_threshold(db_session, sales_channel, "75.00")
+
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 5000},
+        )
+
+        assert response.json()["free_shipping_threshold"] == 7500
+        assert response.json()["qualifies_for_free_shipping"] is False
+
+    async def test_a_channel_without_a_threshold_ships_nothing_free(self, shop_client: AsyncClient):
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 1_000_000},
+        )
+
+        assert response.json()["free_shipping_threshold"] is None
+        assert response.json()["qualifies_for_free_shipping"] is False
+
+    async def test_checkout_charges_shipping_below_the_threshold(
+        self,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        sales_channel: SalesChannel,
+        shop_product: Product,
+    ):
+        """A 1999p cart is below a 5000p threshold, so shipping is charged.
+
+        The cart holds pence; the checkout used to multiply it by a hundred
+        again, so this cart looked like 199,900p and shipped free.
+        """
+        await _set_threshold(db_session, sales_channel, "50.00")
+
+        response = await _checkout_one(shop_client, shop_product)
+
+        assert response.status_code == 200
+        assert Decimal(str(response.json()["data"]["orderTotal"])) == Decimal("1999") + 295
+
+    async def test_checkout_ships_free_at_the_channels_threshold(
+        self,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        sales_channel: SalesChannel,
+        shop_product: Product,
+    ):
+        await _set_threshold(db_session, sales_channel, "19.99")
+
+        response = await _checkout_one(shop_client, shop_product)
+
+        assert response.status_code == 200
+        assert Decimal(str(response.json()["data"]["orderTotal"])) == Decimal("1999")
 
 
 # ============================================
