@@ -355,3 +355,116 @@ class TestTheLegacyColumnsAreNotTheAuthority:
         response = await client.get(f"{URL}/{created['id']}")
 
         assert response.json()["expected_refund_pct"] == OLD_RESERVE
+
+
+async def _periods(db_session, channel_id: str) -> list[SalesChannelEconomics]:
+    return list(
+        (
+            await db_session.execute(
+                select(SalesChannelEconomics)
+                .where(SalesChannelEconomics.sales_channel_id == UUID(channel_id))
+                .order_by(SalesChannelEconomics.effective_from)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+class TestEveryLeverHasAHistoryAndAnAdministrator:
+    """The four levers T136 left behind are dated and admin-only too (T216).
+
+    `monthly_cost`, `tax_remitter`, `offsite_ads_opt_in` and `currency_code`
+    stayed plain columns that any role could set in place, so a member could
+    flip who remits the tax and a subscription change restated every past
+    period's P&L.
+    """
+
+    LEVERS = {
+        "monthly_cost": "25.00",
+        "tax_remitter": "marketplace",
+        "offsite_ads_opt_in": True,
+        "currency_code": "USD",
+    }
+
+    @pytest.mark.parametrize("lever", sorted(LEVERS))
+    async def test_a_change_opens_a_period_and_the_old_value_stays_readable(
+        self, client: AsyncClient, db_session, lever: str
+    ) -> None:
+        created = await _create(client, suffix=f"lever-{lever}")
+        before = created[lever]
+        tomorrow = TODAY + timedelta(days=1)
+
+        response = await client.put(
+            f"{URL}/{created['id']}",
+            json={lever: self.LEVERS[lever], "effective_from": tomorrow.isoformat()},
+        )
+
+        assert response.status_code == 200, response.text
+        assert len(await _periods(db_session, created["id"])) == 2
+        then = await client.get(f"{URL}/{created['id']}", params={"as_of": TODAY.isoformat()})
+        later = await client.get(f"{URL}/{created['id']}", params={"as_of": tomorrow.isoformat()})
+        assert then.json()[lever] == before
+        assert later.json()[lever] == self.LEVERS[lever]
+
+    @pytest.mark.parametrize("lever", sorted(LEVERS))
+    async def test_a_member_is_refused_and_the_figure_and_its_origin_are_untouched(
+        self, client: AsyncClient, db_session, as_role, lever: str
+    ) -> None:
+        created = await _create(client, suffix=f"member-{lever}")
+        [period] = await _periods(db_session, created["id"])
+        set_by = (period.set_by_user_id, period.set_by_role)
+
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.put(f"{URL}/{created['id']}", json={lever: self.LEVERS[lever]})
+
+        assert response.status_code == 403
+        db_session.expire_all()
+        [period] = await _periods(db_session, created["id"])
+        assert getattr(period, lever) != (
+            Decimal(self.LEVERS[lever]) if lever == "monthly_cost" else self.LEVERS[lever]
+        )
+        assert (period.set_by_user_id, period.set_by_role) == set_by
+
+    async def test_creating_a_channel_with_economics_needs_an_administrator(
+        self, as_role, db_session
+    ) -> None:
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.post(
+                URL, json=_body(suffix="member-create", tax_remitter="marketplace")
+            )
+
+        assert response.status_code == 403
+        assert (
+            await db_session.execute(
+                select(SalesChannel).where(SalesChannel.name == "Economics member-create")
+            )
+        ).scalar_one_or_none() is None
+
+    async def test_a_member_may_create_a_channel_on_the_defaults(self, as_role) -> None:
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.post(
+                URL, json={"name": "Member defaults", "platform_type": "fair"}
+            )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["tax_remitter"] == "operator"
+
+    async def test_the_first_period_records_who_set_the_levers(
+        self, client: AsyncClient, db_session
+    ) -> None:
+        created = await _create(client, suffix="first-levers", monthly_cost="12.50")
+
+        [period] = await _periods(db_session, created["id"])
+
+        assert period.monthly_cost == Decimal("12.50")
+        assert period.currency_code == "CAD"
+        assert period.set_by_role in {"admin", "owner"}
+        assert period.set_by_user_id is not None
+
+    async def test_an_unknown_remitter_is_a_422(self, client: AsyncClient) -> None:
+        created = await _create(client, suffix="bad-remitter")
+
+        response = await client.put(f"{URL}/{created['id']}", json={"tax_remitter": "nobody"})
+
+        assert response.status_code == 422

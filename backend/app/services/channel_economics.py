@@ -1,8 +1,9 @@
 """The one authority for a channel's planning economics (task T136).
 
-Four figures -- the expected discount share, the refund reserve, the
-free-shipping threshold and the rounding rule -- are operator decisions about
-how a channel is planned against. FR-003 requires a decision to be
+Eight figures -- the expected discount share, the refund reserve, the
+free-shipping threshold, the rounding rule and, since task T216, the monthly
+subscription, the tax remitter, the offsite-ads opt-in and the selling
+currency -- are operator decisions about how a channel is planned against. FR-003 requires a decision to be
 effective-dated, so they live in ``sales_channel_economics``, one row per
 period, and this module is the only thing that reads them.
 
@@ -69,6 +70,14 @@ class ChannelEconomics:
     free_shipping_threshold: Optional[Decimal] = None
     rounding_rule: Optional[str] = None
 
+    #: The subscription or booth fee, absorbed over a period's orders (FR-025).
+    monthly_cost: Decimal = ZERO
+    #: Who remits the sales tax; a liability only where the operator does
+    #: (FR-028b, FR-028d).
+    tax_remitter: str = "operator"
+    offsite_ads_opt_in: bool = False
+    currency_code: str = "GBP"
+
     #: First day these figures applied, where they came from a dated row.
     effective_from: Optional[date] = None
     #: ``"economics_row"`` or ``"channel_default"`` -- which is the difference
@@ -98,6 +107,10 @@ def economics_from_row(row: SalesChannelEconomics) -> ChannelEconomics:
             else None
         ),
         rounding_rule=row.rounding_rule,
+        monthly_cost=_decimal(row.monthly_cost),
+        tax_remitter=row.tax_remitter or "operator",
+        offsite_ads_opt_in=bool(row.offsite_ads_opt_in),
+        currency_code=row.currency_code or "GBP",
         effective_from=row.effective_from,
         origin="economics_row",
     )
@@ -119,6 +132,10 @@ def channel_defaults(channel: Optional["SalesChannel"]) -> ChannelEconomics:
         expected_refund_pct=_decimal(getattr(channel, "expected_refund_pct", None)),
         free_shipping_threshold=_decimal(threshold) if threshold is not None else None,
         rounding_rule=getattr(channel, "rounding_rule", None),
+        monthly_cost=_decimal(getattr(channel, "monthly_cost", None)),
+        tax_remitter=getattr(channel, "tax_remitter", None) or "operator",
+        offsite_ads_opt_in=bool(getattr(channel, "offsite_ads_opt_in", False)),
+        currency_code=getattr(channel, "currency_code", None) or "GBP",
         effective_from=None,
         origin="channel_default",
     )
@@ -238,6 +255,64 @@ async def resolve_many(
     return resolved
 
 
+async def economics_over(
+    db: AsyncSession,
+    channel: "SalesChannel",
+    start: date,
+    end: date,
+) -> list[tuple[ChannelEconomics, date, date]]:
+    """Each set of figures in force during ``start``..``end``, with the days it covered.
+
+    What a period-scale read needs: a subscription raised mid-quarter is owed
+    at the old figure for the first part and the new one for the rest, and
+    resolving once at either end would charge the whole quarter at one of them
+    (task T214). Days before the channel's first period, if any, fall back to
+    the channel's own figures exactly as a single-date read does. Where two
+    rows share a day the later write wins, as in :func:`resolve_economics_row`.
+    """
+    rows = list(
+        (
+            await db.execute(
+                select(SalesChannelEconomics)
+                .where(
+                    SalesChannelEconomics.sales_channel_id == channel.id,
+                    SalesChannelEconomics.effective_from <= end,
+                )
+                .where(
+                    (SalesChannelEconomics.effective_to.is_(None))
+                    | (SalesChannelEconomics.effective_to >= start)
+                )
+                .order_by(
+                    SalesChannelEconomics.effective_from,
+                    SalesChannelEconomics.effective_to.is_(None),
+                    SalesChannelEconomics.created_at,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    segments: list[tuple[ChannelEconomics, date, date]] = []
+    cursor = start
+    for index, row in enumerate(rows):
+        lo = max(cursor, row.effective_from)
+        hi = end if row.effective_to is None else min(end, row.effective_to)
+        # A later row starting on the same day supersedes this one from then.
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        if following is not None and following.effective_from <= hi:
+            hi = following.effective_from - timedelta(days=1)
+        if lo > hi:
+            continue
+        if lo > cursor:
+            segments.append((channel_defaults(channel), cursor, lo - timedelta(days=1)))
+        segments.append((economics_from_row(row), lo, hi))
+        cursor = hi + timedelta(days=1)
+    if cursor <= end:
+        segments.append((channel_defaults(channel), cursor, end))
+    return segments
+
+
 def _validate(values: dict[str, Any]) -> None:
     for field in ("expected_discount_pct", "expected_refund_pct"):
         rate = _decimal(values.get(field))
@@ -247,6 +322,21 @@ def _validate(values: dict[str, Any]) -> None:
     threshold = values.get("free_shipping_threshold")
     if threshold is not None and _decimal(threshold) < ZERO:
         raise EconomicsMisconfigured(f"free_shipping_threshold cannot be negative, got {threshold}")
+
+    if _decimal(values.get("monthly_cost")) < ZERO:
+        raise EconomicsMisconfigured(
+            f"monthly_cost cannot be negative, got {values.get('monthly_cost')}"
+        )
+
+    remitter = values.get("tax_remitter")
+    if remitter not in ("marketplace", "operator"):
+        raise EconomicsMisconfigured(
+            f"tax_remitter must be 'marketplace' or 'operator', got {remitter!r}"
+        )
+
+    currency = values.get("currency_code")
+    if not isinstance(currency, str) or len(currency) != 3:
+        raise EconomicsMisconfigured(f"currency_code must be a 3-letter code, got {currency!r}")
 
 
 async def write_economics(
@@ -343,6 +433,7 @@ __all__ = [
     "channel_defaults",
     "current_economics_row",
     "economics_from_row",
+    "economics_over",
     "ensure_economics_row",
     "resolve_channel_economics",
     "resolve_economics_row",

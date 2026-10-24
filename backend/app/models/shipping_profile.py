@@ -85,6 +85,15 @@ class ShippingProfile(Base, UUIDMixin, TimestampMixin):
         comment="First day this postage applied; carriers reprice annually",
     )
 
+    effective_to: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment=(
+            "Last day this postage applied; NULL while it still does. A repricing "
+            "closes the row and opens a new one rather than editing it (FR-003, T233)"
+        ),
+    )
+
     __table_args__ = (
         Index(
             "ix_shipping_profiles_zone_bracket",
@@ -102,8 +111,18 @@ class ShippingProfile(Base, UUIDMixin, TimestampMixin):
             name="check_shipping_profile_bracket_not_negative",
         ),
         CheckConstraint("postage_cost >= 0", name="check_shipping_profile_postage_not_negative"),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to >= effective_from",
+            name="check_shipping_profile_effective_range",
+        ),
         {"comment": "Postage paid per zone and weight bracket (FR-024)"},
     )
+
+    def applies_on(self, on: date) -> bool:
+        """Whether this postage was in force on ``on``."""
+        if on < self.effective_from:
+            return False
+        return self.effective_to is None or on <= self.effective_to
 
     def covers(self, grams: Decimal) -> bool:
         """Whether a parcel of ``grams`` falls in this bracket.

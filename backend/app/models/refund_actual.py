@@ -52,7 +52,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -149,7 +149,7 @@ class RefundActual(Base, UUIDMixin, TimestampMixin):
             "tenant_id",
             "provider_refund_id",
             unique=True,
-            postgresql_where=Text("provider_refund_id IS NOT NULL"),
+            postgresql_where=text("provider_refund_id IS NOT NULL"),
         ),
         CheckConstraint("amount > 0", name="check_refund_actual_amount_positive"),
         CheckConstraint(

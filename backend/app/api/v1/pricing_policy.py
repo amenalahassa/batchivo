@@ -12,11 +12,8 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
-from app.models.user import UserTenant
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB, role_in_tenant
 from app.schemas.pricing_policy import PricingPolicyResponse, PricingPolicyUpdate
 from app.services.pricing_policy import (
     PolicyMisconfigured,
@@ -64,17 +61,6 @@ def _response(
     )
 
 
-async def _role_in_tenant(db: AsyncSession, user_id, tenant_id) -> Optional[str]:
-    """The role this user holds in this tenant, for FR-007a's audit field."""
-    result = await db.execute(
-        select(UserTenant.role).where(
-            UserTenant.user_id == user_id, UserTenant.tenant_id == tenant_id
-        )
-    )
-    role = result.scalars().first()
-    return getattr(role, "value", role)
-
-
 @router.get("/pricing-policy", response_model=PricingPolicyResponse)
 async def get_pricing_policy(
     user: CurrentUser,
@@ -114,7 +100,7 @@ async def update_pricing_policy(
     Requires admin or owner. Levers the body does not name are copied forward
     from the current row, and the superseded row is closed rather than edited.
     """
-    role = await _role_in_tenant(db, user.id, tenant.id)
+    role = await role_in_tenant(db, user.id, tenant.id)
     try:
         row = await write_policy(
             db,

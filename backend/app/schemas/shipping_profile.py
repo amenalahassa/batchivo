@@ -53,6 +53,9 @@ class ShippingProfileUpdate(BaseModel):
     weight_bracket_max_grams: Optional[Decimal] = Field(None, gt=0)
     postage_cost: Optional[Decimal] = Field(None, ge=0)
     carrier: Optional[str] = Field(None, max_length=50)
+    # When the postage, a bracket or the zone changes, the profile is
+    # superseded (task T233) and this is the first day the new figures apply,
+    # today by default. Otherwise it corrects the profile's own start date.
     effective_from: Optional[date] = None
 
     def changes(self) -> dict:
@@ -64,6 +67,7 @@ class ShippingProfileResponse(ShippingProfileBase):
 
     id: UUID
     tenant_id: UUID
+    effective_to: Optional[date] = None
 
     model_config = ConfigDict(from_attributes=True)
 

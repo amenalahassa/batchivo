@@ -40,7 +40,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Index, Numeric, String
+from sqlalchemy import Boolean, CheckConstraint, Date, ForeignKey, Index, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -52,11 +52,20 @@ if TYPE_CHECKING:
 
 #: The figures this table carries. Named once so the resolver, the write path
 #: and the response all agree on what "the channel's economics" means.
+#:
+#: The last four joined in task T216. They are levers of exactly the same kind
+#: -- the spec's Channel economics entity lists them together -- and while they
+#: stayed plain columns any role could flip who remits the tax, and a
+#: subscription change restated every past period's P&L.
 ECONOMICS_FIELDS: tuple[str, ...] = (
     "expected_discount_pct",
     "expected_refund_pct",
     "free_shipping_threshold",
     "rounding_rule",
+    "monthly_cost",
+    "tax_remitter",
+    "offsite_ads_opt_in",
+    "currency_code",
 )
 
 
@@ -105,6 +114,38 @@ class SalesChannelEconomics(Base, UUIDMixin, TimestampMixin):
         String(20),
         nullable=True,
         comment="How a solved price is rounded on this channel, e.g. 'psychological_99' (FR-033)",
+    )
+
+    monthly_cost: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0"),
+        server_default="0",
+        comment="Monthly subscription or booth fee, absorbed over order volume (FR-025)",
+    )
+
+    tax_remitter: Mapped[str] = mapped_column(
+        String(12),
+        nullable=False,
+        default="operator",
+        server_default="operator",
+        comment="Who remits sales tax on this channel's sales: marketplace or operator (FR-028b)",
+    )
+
+    offsite_ads_opt_in: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="Whether the operator opted into marketplace offsite advertising (FR-002)",
+    )
+
+    currency_code: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        default="GBP",
+        server_default="GBP",
+        comment="Currency the channel sells in (FR-028)",
     )
 
     effective_from: Mapped[date] = mapped_column(
@@ -167,6 +208,14 @@ class SalesChannelEconomics(Base, UUIDMixin, TimestampMixin):
         CheckConstraint(
             "free_shipping_threshold IS NULL OR free_shipping_threshold >= 0",
             name="ck_channel_economics_threshold_is_not_negative",
+        ),
+        CheckConstraint(
+            "monthly_cost >= 0",
+            name="ck_channel_economics_monthly_cost_is_not_negative",
+        ),
+        CheckConstraint(
+            "tax_remitter IN ('marketplace', 'operator')",
+            name="ck_channel_economics_tax_remitter",
         ),
         {
             "comment": (

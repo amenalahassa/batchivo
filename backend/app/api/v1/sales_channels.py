@@ -3,11 +3,13 @@
 ## The planning economics are not columns on this resource any more
 
 ``expected_discount_pct``, ``expected_refund_pct``,
-``free_shipping_threshold`` and ``rounding_rule`` are operator decisions
-(FR-002) and are effective-dated (FR-003, task T136): they live in
-``sales_channel_economics``, one row per period, and
-``app/services/channel_economics.py`` is the only thing that reads or writes
-them.
+``free_shipping_threshold``, ``rounding_rule`` and -- since task T216 --
+``monthly_cost``, ``tax_remitter``, ``offsite_ads_opt_in`` and
+``currency_code`` are operator decisions (FR-002) and are effective-dated
+(FR-003, task T136): they live in ``sales_channel_economics``, one row per
+period, and ``app/services/channel_economics.py`` is the only thing that reads
+or writes them. Every one of them needs the owner or admin, on create as on
+update (FR-007a).
 
 They still appear on this resource's body, because to an operator they are
 part of "the channel" and splitting the screen in two would be a storage
@@ -23,12 +25,16 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    TenantDB,
+    MONETARY_ROLES,
+    role_in_tenant,
+)
 from app.models.sales_channel import SalesChannel
 from app.models.sales_channel_economics import ECONOMICS_FIELDS
-from app.models.user import UserRole, UserTenant
 from app.schemas.sales_channel import (
     SalesChannelCreate,
     SalesChannelListResponse,
@@ -39,7 +45,6 @@ from app.services.channel_economics import (
     ChannelEconomics,
     EconomicsMisconfigured,
     economics_from_row,
-    ensure_economics_row,
     resolve_channel_economics,
     resolve_many,
     write_economics,
@@ -47,27 +52,10 @@ from app.services.channel_economics import (
 
 router = APIRouter()
 
-#: Changing a reserve or a rounding rule is monetary policy, which FR-007a
-#: reserves to the owner and the admin. The rest of a channel -- its name, its
-#: platform, whether it is active -- is operational, so the gate is on the
-#: figures rather than on the endpoint.
-MONETARY_ROLES = frozenset({UserRole.OWNER.value, UserRole.ADMIN.value})
-
-
-async def _role_in_tenant(db: AsyncSession, user_id: UUID, tenant_id: UUID) -> Optional[str]:
-    """The role this user holds in this tenant (FR-007a)."""
-    role = (
-        (
-            await db.execute(
-                select(UserTenant.role).where(
-                    UserTenant.user_id == user_id, UserTenant.tenant_id == tenant_id
-                )
-            )
-        )
-        .scalars()
-        .first()
-    )
-    return getattr(role, "value", role)
+# Changing a reserve or a rounding rule is monetary policy, which FR-007a
+# reserves to the owner and the admin (`MONETARY_ROLES`). The rest of a channel
+# -- its name, its platform, whether it is active -- is operational, so the
+# gate is on the figures rather than on the endpoint.
 
 
 def _response(channel: SalesChannel, economics: ChannelEconomics) -> SalesChannelResponse:
@@ -117,11 +105,24 @@ async def create_sales_channel(
             detail=f"Invalid platform type. Must be one of: {', '.join(valid_platforms)}",
         )
 
-    # Create channel instance
-    channel = SalesChannel(
-        tenant_id=tenant.id,
-        **channel_data.model_dump(),
-    )
+    # The levers are monetary policy (FR-007a): a body that names any of them
+    # needs the owner or admin, refused before anything is written. A member
+    # may still create a channel with the defaults -- naming it and choosing
+    # its platform is operational, and the defaults decide nothing.
+    body = channel_data.model_dump()
+    named = channel_data.model_fields_set
+    economics_values = {field: body.pop(field) for field in ECONOMICS_FIELDS}
+    role = await role_in_tenant(db, user.id, tenant.id)
+    if named & set(ECONOMICS_FIELDS) and role not in MONETARY_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Setting a channel's economics requires the owner or admin role",
+        )
+
+    # The levers are not written onto the channel's own columns, which are a
+    # fallback for a channel with no period (task T216); the first period
+    # carries them, with who set them.
+    channel = SalesChannel(tenant_id=tenant.id, **body)
 
     db.add(channel)
     await db.flush()
@@ -129,7 +130,21 @@ async def create_sales_channel(
     # The channel's first period, dated from today and carrying the figures the
     # body asked for. Every channel gets one, which is what keeps the
     # legacy-column fallback unreachable in a live database.
-    economics = await ensure_economics_row(db, tenant, channel)
+    try:
+        economics = await write_economics(
+            db,
+            tenant,
+            channel,
+            economics_values,
+            user=user,
+            role=role,
+        )
+    except EconomicsMisconfigured as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     await db.commit()
     await db.refresh(channel)
     await db.refresh(economics)
@@ -297,7 +312,7 @@ async def update_sales_channel(
         setattr(channel, field, value)
 
     if economics_changes:
-        role = await _role_in_tenant(db, user.id, tenant.id)
+        role = await role_in_tenant(db, user.id, tenant.id)
         if role not in MONETARY_ROLES:
             # FR-007a: a reserve is monetary policy. Refused before anything is
             # written, so a member's attempt leaves nothing half-applied.

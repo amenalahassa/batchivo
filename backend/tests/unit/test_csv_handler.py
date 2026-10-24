@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from decimal import Decimal
+
 import pytest
 
 from app.utils.csv_handler import (
@@ -164,8 +166,30 @@ class TestParseCsvFile:
         assert rows[0].category == "dragons"
         assert rows[0].description == "A dragon"
         assert rows[0].units_in_stock == 3
-        assert rows[0].cost == pytest.approx(10.50)
-        assert rows[0].sell_price == pytest.approx(45.00)
+        # A cost and a sell price are derived and set elsewhere, never imported
+        # (task T225); the row says it carried them so the import can report
+        # them as ignored instead of dropping them silently.
+        assert rows[0].ignored_columns == ["cost", "sell"]
+
+    def test_cost_inputs_are_exact_decimals(self):
+        """Task T225: `float()` put a binary approximation into a cost input."""
+        rows = parse_csv_file(
+            "name,sku,labor_hours,overhead_percentage,weight1\nA,P-1,0.35,12.5,0.1\n"
+        )
+
+        assert rows[0].labor_hours == Decimal("0.35")
+        assert rows[0].overhead_percentage == Decimal("12.5")
+        assert rows[0].weight_1 == Decimal("0.1")
+        assert isinstance(rows[0].labor_hours, Decimal)
+
+    def test_a_labour_rate_column_is_reported_as_ignored(self):
+        rows = parse_csv_file("name,sku,labor_rate\nA,P-1,25\n")
+
+        assert rows[0].ignored_columns == ["labor_rate"]
+
+    def test_a_non_numeric_cost_input_names_its_row(self):
+        with pytest.raises(CSVImportError, match="Row 2"):
+            parse_csv_file("name,sku,labor_hours\nA,P-1,lots\n")
 
     def test_parses_multiple_rows(self):
         csv = "name,sku\nDragon A,PROD-001\nDragon B,PROD-002\n"

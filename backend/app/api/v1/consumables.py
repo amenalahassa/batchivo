@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
@@ -65,6 +65,7 @@ async def create_consumable_type(
     consumable_data: ConsumableTypeCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Create a new consumable type."""
@@ -196,6 +197,7 @@ async def update_consumable_type(
     consumable_data: ConsumableTypeUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Update a consumable type."""
@@ -232,6 +234,7 @@ async def delete_consumable_type(
     consumable_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> None:
     """Delete a consumable type."""
@@ -259,6 +262,7 @@ async def adjust_stock(
     adjustment: StockAdjustment,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Adjust stock level for a consumable type."""
@@ -358,6 +362,7 @@ async def create_purchase(
     purchase_data: ConsumablePurchaseCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ConsumablePurchaseResponse:
     """Record a new consumable purchase."""
@@ -491,6 +496,7 @@ async def delete_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> None:
     """Delete a purchase record (also reverses stock increase)."""
@@ -535,6 +541,7 @@ async def record_usage(
     usage_data: ConsumableUsageCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ConsumableUsageResponse:
     """Record consumable usage (deduct from stock)."""

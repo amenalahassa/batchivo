@@ -1558,7 +1558,9 @@ class CostingService:
 
         # Who owes the tax. It is never revenue under either answer (FR-028c),
         # and it is a liability only where the operator remits it (FR-028d).
-        remitter = getattr(channel, "tax_remitter", "operator") or "operator"
+        # Effective-dated with the rest of the channel's levers (task T216),
+        # so a settled line reports who remitted the tax when it sold.
+        remitter = rates.tax_remitter
         liability = collected if remitter == "operator" else ZERO
 
         return MarginResult(

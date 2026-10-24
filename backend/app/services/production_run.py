@@ -595,11 +595,25 @@ class ProductionRunService:
         """
         Complete a production run and deduct materials from spool inventory.
 
-        This method:
-        1. Validates sufficient spool weight for all materials
-        2. Updates run status to 'completed'
-        3. Deducts actual material usage from spool current_weight
-        4. Creates inventory transaction records for audit trail
+        The one implementation of completion (task T218). `POST
+        /production-runs/{id}/complete` is a thin call into this; it used to
+        carry its own ~150-line copy -- validation, deduction, cost -- while
+        this method, the one the suite tested, had no caller. Where the two
+        disagreed this keeps, deliberately:
+
+        * the route's refusals: a run already completed, and a material with
+          no actual usage recorded, are both errors rather than a silent
+          deduction of nothing;
+        * this method's audit trail: an `InventoryTransaction` per material
+          and an atomic `UPDATE` of the spool, which the route skipped;
+        * this method's telemetry dispatch and rolling-average update, which
+          the route never reached -- so a run completed from the console
+          never asked the printer what it used;
+        * the route's exact cost: `record_actual_unit_costs`, rounded once to
+          each column's scale, instead of a second copy of that arithmetic.
+
+        The material cost is `ProductionRunMaterial.total_cost` summed -- the
+        one place the weight-times-rate multiplication lives.
 
         Args:
             run_id: UUID of the production run
@@ -608,7 +622,8 @@ class ProductionRunService:
             Completed ProductionRun instance or None if not found
 
         Raises:
-            ValueError: If insufficient spool weight for deduction
+            ValueError: If the run is already completed, a material has no
+                recorded usage, or a spool holds too little filament
         """
         with tracer.start_as_current_span("complete_production_run") as span:
             span.set_attribute("production_run.id", str(run_id))
@@ -624,6 +639,23 @@ class ProductionRunService:
             span.set_attribute("production_run.run_number", production_run.run_number)
             span.set_attribute("production_run.materials_count", len(production_run.materials))
 
+            if production_run.status == "completed":
+                raise ValueError("Production run is already completed")
+
+            # Every material needs a recorded usage -- a weighing or a manual
+            # figure. Deducting nothing for a material nobody weighed would
+            # report a run that consumed no filament (FR-019).
+            for material in production_run.materials:
+                has_weighing = (
+                    material.spool_weight_before_grams is not None
+                    and material.spool_weight_after_grams is not None
+                )
+                if not has_weighing and material.actual_model_weight_grams is None:
+                    raise ValueError(
+                        f"Material {material.id} does not have actual usage recorded. "
+                        f"Please weigh spools or enter manual usage."
+                    )
+
             try:
                 # Batch-fetch all spools for this run's materials in one query
                 spool_ids = [m.spool_id for m in production_run.materials]
@@ -637,12 +669,12 @@ class ProductionRunService:
 
                 # Validate sufficient spool weight for all materials
                 for material in production_run.materials:
-                    actual_weight = float(material.actual_total_weight)
+                    actual_weight = material.actual_total_weight
                     spool = spools_by_id[material.spool_id]
 
-                    if float(spool.current_weight) < actual_weight:
+                    if Decimal(str(spool.current_weight)) < actual_weight:
                         error_msg = (
-                            f"Insufficient weight in spool {spool.spool_id}: "
+                            f"Insufficient inventory (weight) in spool {spool.spool_id}: "
                             f"Required {actual_weight}g, Available {spool.current_weight}g"
                         )
                         span.set_status(Status(StatusCode.ERROR, error_msg))
@@ -667,9 +699,10 @@ class ProductionRunService:
                             "100"
                         )
 
-                    # Calculate material cost
+                    # The material's own cost, from the one multiplication
+                    # that exists for it (task T218).
                     if material.cost_per_gram:
-                        total_material_cost += actual_weight * material.cost_per_gram
+                        total_material_cost += material.total_cost
 
                     # Update spool weight atomically
                     await self.db.execute(
@@ -702,8 +735,9 @@ class ProductionRunService:
                     )
                     self.db.add(transaction)
 
-                # Calculate cost analysis (distributes waste across successful items)
-                await self._calculate_cost_analysis(production_run, total_material_cost)
+                # What each finished unit actually cost, with the run's waste
+                # spread across the units that survived (FR-040).
+                await self._record_run_actuals(production_run, total_material_cost)
 
                 # Update production run status
                 production_run.status = "completed"
@@ -1239,7 +1273,7 @@ class ProductionRunService:
                             # Validate sufficient weight
                             if weight_before < actual_used:
                                 error_msg = (
-                                    f"Insufficient weight in spool {spool.spool_id}: "
+                                    f"Insufficient inventory (weight) in spool {spool.spool_id}: "
                                     f"Requested {actual_used}g, Available {weight_before}g"
                                 )
                                 span.set_status(Status(StatusCode.ERROR, error_msg))
@@ -1387,7 +1421,7 @@ class ProductionRunService:
                         # Validate sufficient weight
                         if weight_before < waste_amount:
                             error_msg = (
-                                f"Insufficient weight in spool {spool.spool_id}: "
+                                f"Insufficient inventory (weight) in spool {spool.spool_id}: "
                                 f"Waste amount {waste_amount}g exceeds available {weight_before}g"
                             )
                             span.set_status(Status(StatusCode.ERROR, error_msg))
@@ -1467,83 +1501,61 @@ class ProductionRunService:
                 logger.error(f"Failed to fail production run {run_id}, rolled back: {e}")
                 raise
 
-    async def _calculate_cost_analysis(
+    async def _record_run_actuals(
         self,
         production_run: ProductionRun,
         total_material_cost: Decimal,
     ) -> None:
-        """
-        Calculate cost analysis for a completed production run.
+        """Weigh the successful output, record its unit costs, update averages.
 
-        Calculates:
-        - cost_per_gram_actual = total_material_cost / total_successful_weight
-        - Per-item actual_cost_per_unit = model_weight × cost_per_gram_actual
-
-        This distributes waste (purge, tower, supports, failures) proportionally
-        by weight across all successful items.
-
-        Args:
-            production_run: ProductionRun instance to calculate costs for
-            total_material_cost: Total material cost from all materials
+        The successful weight is each successful unit's BOM weight. The unit
+        costs themselves are `record_actual_unit_costs`'s -- the exact,
+        once-rounded figures -- so this method decides only which units count
+        and feeds each model's rolling average from what was recorded.
         """
         successful_weight = Decimal("0")
-
-        # Handle multi-plate runs
         if production_run.is_multi_plate and production_run.plates:
-            for plate in production_run.plates:
-                if plate.successful_prints > 0 and plate.model:
-                    # Get model weight from BOM
-                    model_weight = await self._get_model_weight(plate.model_id)
-                    plate.model_weight_grams = model_weight
-                    successful_weight += Decimal(str(plate.successful_prints)) * model_weight
-
-        # Handle legacy item-based runs
-        elif production_run.items:
-            for item in production_run.items:
-                if item.successful_quantity > 0:
-                    # Get model weight from BOM
-                    model_weight = await self._get_model_weight(item.model_id)
-                    item.model_weight_grams = model_weight
-                    successful_weight += Decimal(str(item.successful_quantity)) * model_weight
-
-        # Calculate cost per gram if we have successful weight
-        if successful_weight > 0:
-            cost_per_gram = total_material_cost / successful_weight
-            production_run.cost_per_gram_actual = cost_per_gram
-            production_run.successful_weight_grams = successful_weight
-
-            # Calculate per-item/plate costs and update model rolling averages
-            if production_run.is_multi_plate and production_run.plates:
-                for plate in production_run.plates:
-                    if plate.model_weight_grams:
-                        plate.actual_cost_per_unit = plate.model_weight_grams * cost_per_gram
-                        # Phase 2: Update model rolling average
-                        if plate.model_id and plate.successful_prints > 0:
-                            await self._update_model_rolling_average(
-                                model_id=plate.model_id,
-                                actual_cost_per_unit=plate.actual_cost_per_unit,
-                                successful_quantity=plate.successful_prints,
-                            )
-            elif production_run.items:
-                for item in production_run.items:
-                    if item.model_weight_grams:
-                        item.actual_cost_per_unit = item.model_weight_grams * cost_per_gram
-                        # Phase 2: Update model rolling average
-                        if item.model_id and item.successful_quantity > 0:
-                            await self._update_model_rolling_average(
-                                model_id=item.model_id,
-                                actual_cost_per_unit=item.actual_cost_per_unit,
-                                successful_quantity=item.successful_quantity,
-                            )
-
-            logger.info(
-                f"Calculated cost analysis for run {production_run.run_number}: "
-                f"cost_per_gram={cost_per_gram:.6f}, successful_weight={successful_weight}g"
-            )
+            units = [
+                (plate, plate.successful_prints)
+                for plate in production_run.plates
+                if plate.successful_prints > 0
+            ]
         else:
+            units = [
+                (item, item.successful_quantity)
+                for item in (production_run.items or [])
+                if item.successful_quantity > 0
+            ]
+
+        for unit, quantity in units:
+            unit.model_weight_grams = await self._get_model_weight(unit.model_id)
+            successful_weight += Decimal(str(quantity)) * unit.model_weight_grams
+
+        self.record_actual_unit_costs(
+            production_run,
+            total_material_cost=total_material_cost,
+            successful_weight=successful_weight,
+        )
+
+        if successful_weight <= Decimal("0"):
             logger.warning(
                 f"No successful items for run {production_run.run_number}, skipping cost analysis"
             )
+            return
+
+        for unit, quantity in units:
+            if unit.model_id and getattr(unit, "actual_cost_per_unit", None) is not None:
+                await self._update_model_rolling_average(
+                    model_id=unit.model_id,
+                    actual_cost_per_unit=unit.actual_cost_per_unit,
+                    successful_quantity=quantity,
+                )
+
+        logger.info(
+            f"Recorded run actuals for {production_run.run_number}: "
+            f"cost_per_gram={production_run.cost_per_gram_actual}, "
+            f"successful_weight={successful_weight}g"
+        )
 
     async def _get_model_weight(self, model_id: UUID) -> Decimal:
         """

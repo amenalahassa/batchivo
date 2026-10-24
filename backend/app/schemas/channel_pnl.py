@@ -70,6 +70,14 @@ class ChannelPnLResponse(BaseModel):
     shipping_net: Decimal
 
     planned_fee_total: Decimal
+    planned_fees_from_rules: int = Field(
+        0,
+        description=(
+            "Orders whose planned fees were recomputed from the rules on their own date "
+            "because they predate sale snapshots; every other order's are read from what "
+            "it froze at sale (FR-036)"
+        ),
+    )
     actual_fee_total: Optional[Decimal]
     unallocated_remainder: Decimal
     fee_difference: Optional[Decimal]
@@ -78,8 +86,28 @@ class ChannelPnLResponse(BaseModel):
     absorbed_costs: list[AbsorbedCostResponse]
     unabsorbed_total: Decimal
 
-    make_cost_total: Decimal
+    make_cost_total: Decimal = Field(
+        ..., description="What the period's settled lines froze as their make-cost at sale"
+    )
+    make_cost_unrecorded_lines: int = Field(
+        0, description="Lines that froze no make-cost, left out rather than recomputed"
+    )
     profit: Decimal
     margin_pct: Optional[Decimal]
     margin_basis: MarginBasis
     margin_basis_label: str
+    margin_bases_in_period: list[MarginBasis] = Field(
+        default_factory=list,
+        description="Every basis an order in the period sold under, plus the reported one",
+    )
+    margin_basis_spans_change: bool = Field(
+        False,
+        description=(
+            "True when the period's orders sold under more than one basis; the "
+            "percentage is on the period-end basis and is not a blend (FR-031d)"
+        ),
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="What the figures could not read from the record, said plainly",
+    )

@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.shop_resolver import resolve_tenant_by_slug
 from app.config import get_settings
 from app.database import get_db, scope_session_to_tenant
+from app.services.channel_economics import ensure_economics_row
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.sales_channel import SalesChannel
 from app.services.sale_snapshot import write_sale_snapshot
@@ -151,8 +152,14 @@ def _extract_order_data(payload: dict) -> dict:
     }
 
 
-async def _get_or_create_shopify_channel(db: AsyncSession, tenant_id, slug: str) -> Optional[str]:
-    """Return the Shopify sales channel ID for the tenant, creating if needed."""
+async def _get_or_create_shopify_channel(db: AsyncSession, tenant, slug: str) -> Optional[str]:
+    """Return the Shopify sales channel ID for the tenant, creating if needed.
+
+    A channel created here gets its first economics period at once, as the
+    console's create path does, so its levers have a date and the
+    legacy-column fallback stays unreachable (task T216).
+    """
+    tenant_id = tenant.id
     result = await db.execute(
         select(SalesChannel).where(
             SalesChannel.tenant_id == tenant_id,
@@ -173,6 +180,7 @@ async def _get_or_create_shopify_channel(db: AsyncSession, tenant_id, slug: str)
     )
     db.add(channel)
     await db.flush()
+    await ensure_economics_row(db, tenant, channel)
     return channel.id
 
 
@@ -291,7 +299,7 @@ async def shopify_webhook(
             f"orders/updated received for unseen Shopify order {shopify_order_id} — creating"
         )
 
-    sales_channel_id = await _get_or_create_shopify_channel(db, tenant.id, tenant_slug)
+    sales_channel_id = await _get_or_create_shopify_channel(db, tenant, tenant_slug)
 
     order = Order(
         tenant_id=tenant.id,

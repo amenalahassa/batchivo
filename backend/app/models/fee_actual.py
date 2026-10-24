@@ -11,6 +11,13 @@ Two granularities, and exactly one per row (FR-041a, FR-041b):
   while reconciliation is a human reading a monthly statement, and
 * an **order-scoped** amount, for when one order looks anomalous.
 
+An order-scoped row may name the **statement period** its charge appeared in.
+The spec's edge case is an order placed on the 31st and settled on next
+month's statement: that charge belongs to next month's reconciliation, not to
+the month the order was placed in (task T235). A row that names no statement
+period falls back to the period containing the order's placed date, which is
+how every row recorded before the column existed is read.
+
 Where both exist for a category and period, the order-scoped rows take
 precedence and reduce the period's unallocated remainder (FR-041c), so no
 amount is counted twice. That arithmetic lives in
@@ -95,6 +102,22 @@ class FeeActual(Base, UUIDMixin, TimestampMixin):
         comment="The one order this amount belongs to; NULL on a period row",
     )
 
+    statement_period_start: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment=(
+            "On an order-scoped row: the first day of the statement period the "
+            "statement put this charge in, which need not contain the day the "
+            "order was placed (FR-041c, task T235). NULL on a period row"
+        ),
+    )
+
+    statement_period_end: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment="On an order-scoped row: the last day of that statement period",
+    )
+
     amount: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
@@ -144,6 +167,20 @@ class FeeActual(Base, UUIDMixin, TimestampMixin):
         CheckConstraint(
             "period_end IS NULL OR period_start IS NULL OR period_end >= period_start",
             name="check_fee_actual_period_range",
+        ),
+        # A statement period belongs only on an order-scoped row, and whole.
+        # It says which statement reconciles the order's charge; it is not a
+        # second scope, so the row is still counted once.
+        CheckConstraint(
+            "("
+            " statement_period_start IS NULL AND statement_period_end IS NULL"
+            ") OR ("
+            " order_id IS NOT NULL"
+            " AND statement_period_start IS NOT NULL"
+            " AND statement_period_end IS NOT NULL"
+            " AND statement_period_end >= statement_period_start"
+            ")",
+            name="check_fee_actual_statement_period",
         ),
         CheckConstraint(
             "source IN ('entered', 'ingested')",

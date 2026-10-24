@@ -35,9 +35,10 @@ All arithmetic is :class:`~decimal.Decimal`. Constitution IV, enforced by
 ``tests/unit/pricing/test_no_float_in_money_paths.py``.
 """
 
+import calendar
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -91,8 +92,11 @@ class OrderContext:
     #: Live listings, for the periodic view. A sale's stack never charges these.
     listings: int = 1
 
-    #: Months the periodic view covers, for a ``per_month`` rule.
-    months: int = 1
+    #: Months the periodic view covers, for a ``per_month`` rule. A
+    #: :class:`~decimal.Decimal` where a period covers part of a month --
+    #: :func:`months_in` measures it exactly rather than rounding a fortnight
+    #: up to a month (task T214).
+    months: Decimal | int = 1
 
     #: Sales tax taken from the customer. Present so one context can describe a
     #: whole sale, and deliberately absent from every basis below (FR-028c).
@@ -474,3 +478,74 @@ def compute(
             charges.append(charge)
 
     return FeeStack(charges=charges, periodic=periodic)
+
+
+def months_in(start: date, end: date) -> Decimal:
+    """How many months the inclusive range ``start``..``end`` covers, exactly.
+
+    Each calendar month contributes the share of its own days the range
+    covers, so a whole month is exactly one, a quarter exactly three, and the
+    first half of a 31-day month 15/31 of one. A per-month charge over a
+    period is then its monthly amount times this -- once for the period, not
+    once per order (task T214). Nothing is rounded: the caller rounds once, at
+    the edge.
+    """
+    if end < start:
+        return ZERO
+    total = ZERO
+    cursor = start
+    while cursor <= end:
+        days_in_month = calendar.monthrange(cursor.year, cursor.month)[1]
+        month_end = cursor.replace(day=days_in_month)
+        segment_end = min(month_end, end)
+        covered = (segment_end - cursor).days + 1
+        total += Decimal(covered) / Decimal(days_in_month)
+        cursor = segment_end + timedelta(days=1)
+    return total
+
+
+def _overlap(
+    start: date, end: date, other_start: date, other_end: Optional[date]
+) -> Optional[tuple[date, date]]:
+    """The part of ``start``..``end`` that ``other_start``..``other_end`` covers."""
+    lo = max(start, other_start)
+    hi = end if other_end is None else min(end, other_end)
+    return (lo, hi) if lo <= hi else None
+
+
+def periodic_charges(
+    rules: Sequence["FeeRule"],
+    period_start: date,
+    period_end: date,
+    *,
+    listings: int,
+) -> list[FeeCharge]:
+    """The per-month and per-listing charges a channel owes over one period.
+
+    Computed **once for the period** from the rules in force during it, never
+    summed from per-order stacks: summing them charged a monthly fee once per
+    order -- fifty times in a month with fifty orders, and not at all in a
+    month with none (task T214, FR-025).
+
+    A per-month rule is charged for the months of the period it was in force,
+    so a rule superseded mid-period contributes its share and its successor
+    the rest. A per-listing rule is charged once per live listing for a period
+    it was in force during any part of. Both go through :func:`_charge_for`,
+    the same arithmetic every other fee does, so clamps and incidence apply.
+    """
+    charges: list[FeeCharge] = []
+    ordered = sorted(
+        (rule for rule in rules if rule.basis in PERIODIC_BASES),
+        key=lambda rule: (rule.sort_order, rule.name, rule.applies_from),
+    )
+    for rule in ordered:
+        covered = _overlap(period_start, period_end, rule.applies_from, rule.applies_to)
+        if covered is None:
+            continue
+        context = OrderContext(
+            item_subtotal=ZERO,
+            listings=listings,
+            months=months_in(*covered),
+        )
+        charges.append(_charge_for(rule, context))
+    return charges

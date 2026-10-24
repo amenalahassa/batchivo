@@ -469,6 +469,126 @@ async def record_origin(
     return row
 
 
+def changed_fields(
+    entity_type: str,
+    entity: object,
+    changes: Mapping[str, object],
+) -> list[str]:
+    """The registered inputs ``changes`` would actually move on ``entity``.
+
+    A body that resends a figure unchanged is not a new measurement of it, so
+    it must not restamp the figure's date or its author. Compared as
+    :class:`~decimal.Decimal` where both sides are numbers, so ``"12.50"`` and
+    ``Decimal("12.5")`` are the same figure. Pass ``entity=None`` for a record
+    being created: every registered input the body names is then a change.
+    """
+    fields = registered_fields(entity_type)
+    moved: list[str] = []
+    for field_name, new_value in changes.items():
+        if field_name not in fields:
+            continue
+        if entity is None:
+            if new_value is not None:
+                moved.append(field_name)
+            continue
+        old_value = getattr(entity, field_name, None)
+        if _same_figure(old_value, new_value):
+            continue
+        moved.append(field_name)
+    return sorted(moved)
+
+
+def _same_figure(old: object, new: object) -> bool:
+    if old is None or new is None:
+        return old is new
+    try:
+        return Decimal(str(old)) == Decimal(str(new))
+    except (ArithmeticError, ValueError):
+        return old == new
+
+
+async def refuse_overwriting_observed(
+    db: AsyncSession,
+    tenant: "Tenant",
+    *,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    fields: Iterable[str],
+) -> None:
+    """Raise before anything is written if a person would type over an observed figure.
+
+    FR-004: an observed figure is read-only to the operator and refreshed only
+    from its source. Checked for every field first, so a body naming one
+    observed figure among several changes none of them rather than half.
+    """
+    names = sorted(set(fields))
+    if not names:
+        return
+    recorded = await origins_for(db, tenant, [(entity_type, entity_id)])
+    observed = [
+        name
+        for name in names
+        if (origin := recorded.get((entity_type, entity_id, name))) is not None
+        and origin.source == "observed"
+    ]
+    if observed:
+        raise ProvenanceNotEditable(
+            f"{entity_type} {', '.join(observed)} "
+            f"{'is' if len(observed) == 1 else 'are'} observed from its source and "
+            f"read-only; it is refreshed only from that source (FR-004)"
+        )
+
+
+async def record_operator_write(
+    db: AsyncSession,
+    tenant: "Tenant",
+    *,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    fields: Iterable[str],
+    user_id: Optional[uuid.UUID],
+    role: Optional[str] = None,
+    as_of: Optional[date] = None,
+) -> list[str]:
+    """Record where each figure a person just wrote came from (task T229).
+
+    The one path every console writer of a cost input goes through, so that a
+    figure an operator measured stops reading as ``assumed`` from the
+    migration date forever, and one telemetry observed is never silently
+    relabelled by a person typing over it -- which would make the observed
+    share (FR-046, SC-010) wrong in both directions.
+
+    A registered operator decision -- a field whose default origin is
+    ``policy`` and that no observation may move -- is recorded as ``policy``
+    with the authorising role; every other figure as ``measured`` against the
+    user. Both are dated ``as_of``, today by default. Raises
+    :class:`ProvenanceNotEditable` before writing anything if any field is
+    currently observed.
+
+    Call it with the fields that actually moved (:func:`changed_fields`), in
+    the same transaction as the write itself.
+    """
+    names = sorted(set(fields))
+    await refuse_overwriting_observed(
+        db, tenant, entity_type=entity_type, entity_id=entity_id, fields=names
+    )
+    for name in names:
+        entry = registry_entry(entity_type, name)
+        is_decision = entry.default_source == "policy" and not entry.learnable
+        await record_origin(
+            db,
+            tenant,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            field_name=name,
+            source="policy" if is_decision else "measured",
+            as_of=as_of,
+            measured_by_user_id=user_id,
+            authorised_by_role=role,
+        )
+    return names
+
+
 async def seed_assumed_origins(
     db: AsyncSession,
     tenant: "Tenant",

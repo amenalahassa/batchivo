@@ -7,7 +7,15 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+    role_in_tenant,
+)
 from app.schemas.printer import (
     PowerReadingBatch,
     PowerReadingResult,
@@ -55,6 +63,7 @@ async def create_printer(
     printer_data: PrinterCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> PrinterResponse:
     """
@@ -119,6 +128,7 @@ async def update_printer(
     printer_data: PrinterUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> PrinterResponse:
     """
@@ -144,6 +154,7 @@ async def delete_printer(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -235,6 +246,12 @@ async def update_printer_cost_policy(
 
     Fields the body does not name are left alone, so entering the power draw
     later does not erase the purchase price entered today.
+
+    Each figure that moves records where it came from (FR-001, task T229): the
+    purchase price, lifetime, maintenance reserve and electricity rate as
+    `policy` with the administrator's role, and the measured draw as
+    `measured`. A draw telemetry has observed is refused rather than typed
+    over (FR-004) -- it is refreshed by the plug, through the variance path.
     """
     service = PrinterService(db, tenant, user)
     printer = await service.get_printer(printer_id)
@@ -246,10 +263,22 @@ async def update_printer_cost_policy(
         )
 
     changes = policy_data.model_dump(exclude_none=True)
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="printer", entity=printer, changes=changes
+    )
     for field, value in changes.items():
         setattr(printer, field, value)
 
     db.add(printer)
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="printer",
+        entity_id=printer.id,
+        fields=fields,
+        user=user,
+        role=await role_in_tenant(db, user.id, tenant.id),
+    )
     await db.commit()
     await db.refresh(printer)
     logger.info(
@@ -270,6 +299,7 @@ async def record_power_readings(
     batch: PowerReadingBatch,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> PowerReadingResult:
     """Record smart-plug readings of this machine's draw. Any member may.

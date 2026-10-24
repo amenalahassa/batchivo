@@ -202,6 +202,46 @@ async def require_role(
     return True
 
 
+#: The roles FR-007a reserves monetary policy to: a rate, a percentage, a
+#: reserve, a channel lever. Named once so every route asks the same question.
+MONETARY_ROLES: frozenset[str] = frozenset({"owner", "admin"})
+
+
+async def role_in_tenant(db: AsyncSession, user_id, tenant_id) -> Optional[str]:
+    """The role this user holds in this tenant, as a plain string.
+
+    What a write records as its authority (FR-001, FR-007a): a figure that
+    drives a decision carries who set it and under which role. One helper,
+    where three routers each used to keep their own copy.
+    """
+    result = await db.execute(
+        select(UserTenant.role).where(
+            UserTenant.user_id == user_id, UserTenant.tenant_id == tenant_id
+        )
+    )
+    role = result.scalars().first()
+    return getattr(role, "value", role)
+
+
+def require_member():
+    """Dependency that requires member role or higher -- refuses a viewer.
+
+    FR-007c makes the viewer a reader: every cost and margin is visible to
+    them, and no figure is theirs to change. Every route that writes a figure
+    the pricing engine reads takes this (task T227); one that writes monetary
+    policy takes `RequireAdmin` instead.
+    """
+
+    async def check_member(
+        user: Annotated[User, Depends(get_current_user)],
+        tenant: Annotated[Tenant, Depends(get_current_tenant)],
+        db: Annotated[AsyncSession, Depends(get_db)],
+    ) -> bool:
+        return await require_role(user, tenant, db, "member")
+
+    return check_member
+
+
 def require_admin():
     """Dependency that requires admin role or higher."""
 
@@ -219,6 +259,7 @@ def require_admin():
 CurrentUser = Annotated[User, Depends(get_current_user)]
 CurrentTenant = Annotated[Tenant, Depends(get_current_tenant)]
 RequireAdmin = Annotated[bool, Depends(require_admin())]
+RequireMember = Annotated[bool, Depends(require_member())]
 
 
 async def get_platform_admin(

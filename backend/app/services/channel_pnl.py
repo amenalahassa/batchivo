@@ -27,7 +27,6 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Iterable, Optional, Sequence
 
 from app.services.costing import MARGIN_BASIS_LABELS, basis_amount_for
-from app.services.fee_engine import FeeStack
 
 if TYPE_CHECKING:
     from app.models.fee_actual import FeeActual
@@ -283,6 +282,7 @@ def period_margin(
     postage_paid: Decimal,
     absorbed_costs: Sequence[AbsorbedCost],
     basis: str,
+    make_cost_total: Decimal = ZERO,
 ) -> PeriodMargin:
     """A period's profit and margin, on the basis in effect.
 
@@ -297,7 +297,9 @@ def period_margin(
     amount is nothing: zero reads as break-even.
     """
     charged = sum((cost.total for cost in absorbed_costs if not cost.is_unabsorbed), ZERO)
-    profit = revenue_tax_exclusive - planned_fee_total - postage_paid - charged
+    # The make-cost is what the settled lines froze at sale (FR-036), so the
+    # period's margin is a realised one (FR-045) rather than revenue less fees.
+    profit = revenue_tax_exclusive - planned_fee_total - postage_paid - charged - make_cost_total
 
     basis_amount = basis_amount_for(
         basis,
@@ -319,15 +321,17 @@ def period_margin(
     )
 
 
-def planned_total(stacks: Iterable[FeeStack]) -> dict[str, Decimal]:
-    """Planned fees per category across a period's orders.
+def sum_by_category(amounts: Iterable[tuple[str, Decimal]]) -> dict[str, Decimal]:
+    """Planned fees per category from ``(name, exact amount)`` pairs.
 
-    Summed from the exact amounts and rounded once per category, for the same
-    reason the margin chain does: a hundred orders' worth of rounding error is
-    a figure that cannot be reconciled against anything.
+    What the period P&L sums now that a settled line's planned fees are read
+    from its snapshot rather than recomputed (task T215): the snapshot gives
+    named amounts, a pre-snapshot order gives a stack, and both reduce to
+    pairs. Summed exactly and rounded once per category: a hundred orders'
+    worth of rounding error is a figure that cannot be reconciled against
+    anything.
     """
     totals: dict[str, Decimal] = {}
-    for stack in stacks:
-        for charge in stack.charges:
-            totals[charge.name] = totals.get(charge.name, ZERO) + charge.amount_exact
+    for name, amount in amounts:
+        totals[name] = totals.get(name, ZERO) + Decimal(str(amount))
     return {name: amount.quantize(CENT) for name, amount in totals.items()}

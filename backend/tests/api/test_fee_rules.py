@@ -579,3 +579,150 @@ class TestPlannedFeesMatchTheSchedule:
 
         assert abs(planned - from_schedule) <= from_schedule * Decimal("0.01")
         assert planned == from_schedule.quantize(Decimal("0.01"))
+
+
+# ============================================================================
+# A rule is superseded, never edited (task T233)
+# ============================================================================
+
+
+async def _order_on(db_session: AsyncSession, tenant: Tenant, channel: SalesChannel, day: str):
+    from datetime import datetime, timezone
+
+    from app.models.order import Order
+
+    placed = datetime.fromisoformat(day).replace(hour=12, tzinfo=timezone.utc)
+    order = Order(
+        id=uuid4(),
+        tenant_id=tenant.id,
+        sales_channel_id=channel.id,
+        order_number=f"ORD-{uuid4().hex[:8]}",
+        customer_name="Fee Customer",
+        customer_email="fee@example.com",
+        shipping_address_line1="1 Test Street",
+        shipping_city="Testville",
+        shipping_postcode="T35T",
+        shipping_country="Canada",
+        shipping_method="Standard",
+        shipping_cost=Decimal("0"),
+        subtotal=Decimal("100"),
+        total=Decimal("100"),
+        currency="CAD",
+        status="delivered",
+        created_at=placed,
+        updated_at=placed,
+    )
+    db_session.add(order)
+    await db_session.commit()
+    return order
+
+
+async def _preview(client: AsyncClient, channel: SalesChannel, as_of: str) -> str:
+    response = await client.post(
+        _url(channel, "/preview"), json={"item_subtotal": "100.00", "as_of": as_of}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["total"]
+
+
+class TestARuleIsSupersededNotEdited:
+    async def test_a_rate_change_after_an_order_opens_a_new_rule(
+        self, client: AsyncClient, db_session, test_tenant, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+        await _order_on(db_session, test_tenant, channel, "2024-06-15")
+
+        response = await client.put(
+            _url(channel, f"/{created['id']}"),
+            json={"rate_pct": "9.5", "effective_from": "2025-01-01"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] != created["id"]
+        assert response.json()["applies_from"] == "2025-01-01"
+        rules = await _stored_rules(db_session, channel)
+        for rule in rules:
+            await db_session.refresh(rule)
+        old = next(rule for rule in rules if str(rule.id) == created["id"])
+        assert old.rate_pct == Decimal("6.5")
+        assert str(old.applies_to) == "2024-12-31"
+
+    async def test_a_past_dates_preview_is_unchanged_after_an_edit(
+        self, client: AsyncClient, db_session, test_tenant, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+        await _order_on(db_session, test_tenant, channel, "2024-06-15")
+        before = await _preview(client, channel, "2024-06-15")
+
+        await client.put(
+            _url(channel, f"/{created['id']}"),
+            json={"rate_pct": "20", "effective_from": "2025-01-01"},
+        )
+
+        assert await _preview(client, channel, "2024-06-15") == before == "6.50"
+        assert await _preview(client, channel, "2025-06-15") == "20.00"
+
+    async def test_an_unused_rule_is_corrected_in_place(
+        self, client: AsyncClient, db_session, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+
+        response = await client.put(
+            _url(channel, f"/{created['id']}"),
+            json={"rate_pct": "7.0", "effective_from": APPLIES_FROM},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["id"] == created["id"]
+        assert len(await _stored_rules(db_session, channel)) == 1
+
+    async def test_a_change_dated_into_a_used_rules_life_start_is_a_422(
+        self, client: AsyncClient, db_session, test_tenant, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+        await _order_on(db_session, test_tenant, channel, "2024-06-15")
+
+        response = await client.put(
+            _url(channel, f"/{created['id']}"),
+            json={"rate_pct": "9.5", "effective_from": APPLIES_FROM},
+        )
+
+        assert response.status_code == 422
+
+    async def test_renaming_alone_is_made_in_place(
+        self, client: AsyncClient, db_session, test_tenant, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+        await _order_on(db_session, test_tenant, channel, "2024-06-15")
+
+        response = await client.put(_url(channel, f"/{created['id']}"), json={"sort_order": 30})
+
+        assert response.status_code == 200
+        assert response.json()["id"] == created["id"]
+
+
+class TestDeletingARule:
+    async def test_a_rule_nothing_used_is_deleted(
+        self, client: AsyncClient, db_session, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+
+        response = await client.delete(_url(channel, f"/{created['id']}"))
+
+        assert response.status_code == 204
+        assert await _stored_rules(db_session, channel) == []
+
+    async def test_a_rule_an_order_used_is_closed_not_deleted(
+        self, client: AsyncClient, db_session, test_tenant, channel
+    ) -> None:
+        created = (await client.post(_url(channel), json=_body())).json()
+        await _order_on(db_session, test_tenant, channel, "2024-06-15")
+
+        response = await client.delete(_url(channel, f"/{created['id']}"))
+
+        assert response.status_code == 204
+        [rule] = await _stored_rules(db_session, channel)
+        await db_session.refresh(rule)
+        assert rule.applies_to is not None
+        # The order it priced still reads it.
+        assert await _preview(client, channel, "2024-06-15") == "6.50"

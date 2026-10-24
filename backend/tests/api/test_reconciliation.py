@@ -11,7 +11,7 @@ The two requirements this suite exists for:
   zero, because a channel that sold nothing has not become free.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -691,5 +691,436 @@ class TestReconciliationReporting:
         self, client: AsyncClient, channel: SalesChannel
     ) -> None:
         response = await client.get(PNL_URL, params={"channel_id": str(channel.id)})
+
+        assert response.status_code == 422
+
+
+# ============================================================================
+# Periodic fees are owed once per period (task T214)
+# ============================================================================
+
+
+def _pnl_query(channel: SalesChannel, start: str = PERIOD_START, end: str = PERIOD_END) -> dict:
+    return {"channel_id": str(channel.id), "period_start": start, "period_end": end}
+
+
+async def _add_rule(
+    db_session: AsyncSession,
+    tenant: Tenant,
+    channel: SalesChannel,
+    *,
+    name: str,
+    basis: str,
+    fixed: str,
+    rate: str = "0",
+    applies_from: date | None = None,
+    applies_to: date | None = None,
+) -> FeeRule:
+    rule = FeeRule(
+        id=uuid4(),
+        tenant_id=tenant.id,
+        sales_channel_id=channel.id,
+        name=name,
+        basis=basis,
+        rate_pct=Decimal(rate),
+        fixed_amount=Decimal(fixed),
+        sort_order=20,
+        applies_from=applies_from or IN_PERIOD.date() - timedelta(days=365),
+        applies_to=applies_to,
+    )
+    db_session.add(rule)
+    await db_session.commit()
+    return rule
+
+
+def _absorbed(body: dict) -> dict:
+    return {cost["key"]: cost for cost in body["absorbed_costs"]}
+
+
+class TestPeriodicFeesAreOwedOncePerPeriod:
+    """A monthly fee is a monthly fee however many orders arrive.
+
+    The P&L used to build one fee stack per order, each carrying every
+    per-month rule with a one-month context, and sum them -- so a CA$10
+    monthly fee was absorbed as CA$30 over three orders and as nothing over
+    none, the reverse of the spec's zero-order edge case. The subscription had
+    the opposite fault: absorbed once whatever the period's length.
+    """
+
+    async def test_a_monthly_rule_over_three_orders_is_charged_once(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        await _add_rule(
+            db_session, test_tenant, channel, name="shop", basis="per_month", fixed="10"
+        )
+        for _ in range(3):
+            await _make_order(db_session, test_tenant, channel)
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        periodic = _absorbed(body)["periodic_fees"]
+        assert Decimal(periodic["total"]) == Decimal("10.00")
+        assert Decimal(periodic["per_order"]) == Decimal("3.3333")
+
+    async def test_a_monthly_rule_over_no_orders_is_reported_unabsorbed(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        await _add_rule(
+            db_session, test_tenant, channel, name="shop", basis="per_month", fixed="10"
+        )
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        periodic = _absorbed(body)["periodic_fees"]
+        assert Decimal(periodic["total"]) == Decimal("10.00")
+        assert periodic["is_unabsorbed"] is True
+        # The subscription (30.00) and the rule, both owed, neither divided.
+        assert Decimal(body["unabsorbed_total"]) == Decimal("40.00")
+
+    async def test_a_two_month_period_owes_two_months_of_rule_and_subscription(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        await _add_rule(
+            db_session, test_tenant, channel, name="shop", basis="per_month", fixed="10"
+        )
+        await _make_order(db_session, test_tenant, channel)
+
+        body = (
+            await client.get(PNL_URL, params=_pnl_query(channel, "2026-06-01", "2026-07-31"))
+        ).json()
+
+        absorbed = _absorbed(body)
+        assert Decimal(absorbed["periodic_fees"]["total"]) == Decimal("20.00")
+        assert Decimal(absorbed["monthly_cost"]["total"]) == Decimal("60.00")
+
+    async def test_a_rule_superseded_mid_period_contributes_its_share(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        await _add_rule(
+            db_session,
+            test_tenant,
+            channel,
+            name="shop",
+            basis="per_month",
+            fixed="10",
+            applies_to=date(2026, 6, 15),
+        )
+        await _add_rule(
+            db_session,
+            test_tenant,
+            channel,
+            name="shop",
+            basis="per_month",
+            fixed="40",
+            applies_from=date(2026, 6, 16),
+        )
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        # 15/30 of 10 plus 15/30 of 40.
+        assert Decimal(_absorbed(body)["periodic_fees"]["total"]) == Decimal("25.00")
+
+    async def test_a_subscription_raised_mid_period_is_owed_at_each_figure(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        from app.services.channel_economics import write_economics
+
+        await write_economics(db_session, test_tenant, channel, {}, effective_from=date(2026, 1, 1))
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"monthly_cost": Decimal("90.00")},
+            effective_from=date(2026, 6, 16),
+        )
+        await db_session.commit()
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        # 15/30 of 30 plus 15/30 of 90.
+        assert Decimal(_absorbed(body)["monthly_cost"]["total"]) == Decimal("60.00")
+
+    async def test_a_per_listing_rule_counts_the_channels_live_listings(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        from app.models.product import Product
+        from app.models.product_pricing import ProductPricing
+
+        await _add_rule(
+            db_session, test_tenant, channel, name="listing", basis="per_listing", fixed="0.20"
+        )
+        for index in range(3):
+            product = Product(
+                id=uuid4(), tenant_id=test_tenant.id, sku=f"LIST-{index}", name=f"Listed {index}"
+            )
+            db_session.add(product)
+            await db_session.flush()
+            db_session.add(
+                ProductPricing(
+                    id=uuid4(),
+                    product_id=product.id,
+                    sales_channel_id=channel.id,
+                    list_price=Decimal("10.00"),
+                    valid_from=date(2026, 1, 1),
+                )
+            )
+        await db_session.commit()
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert Decimal(_absorbed(body)["periodic_fees"]["total"]) == Decimal("0.60")
+
+
+# ============================================================================
+# A closed period reads what was frozen and in force then (task T215)
+# ============================================================================
+
+
+async def _snapshot_line(
+    db_session: AsyncSession,
+    tenant: Tenant,
+    order: Order,
+    *,
+    fees: list[tuple[str, str]],
+    make_cost: str = "20.00",
+    basis: str = "customer_total",
+) -> None:
+    from app.models.order import OrderItem
+
+    db_session.add(
+        OrderItem(
+            id=uuid4(),
+            tenant_id=tenant.id,
+            order_id=order.id,
+            product_sku="SNAP-1",
+            product_name="Snapshotted",
+            quantity=1,
+            unit_price=order.subtotal,
+            total_price=order.subtotal,
+            make_cost_at_sale=Decimal(make_cost),
+            fees_json=[{"name": name, "amount": amount} for name, amount in fees],
+            margin_basis_at_sale=basis,
+            pricing_rev=1,
+        )
+    )
+    await db_session.commit()
+    await db_session.refresh(order, ["items"])
+
+
+class TestAClosedPeriodIsNotRestated:
+    """Changing a rule, the remitter or the basis today leaves last month alone."""
+
+    async def test_planned_fees_are_read_from_the_snapshot_not_the_rules(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        order = await _make_order(db_session, test_tenant, channel)
+        # The snapshot froze 6.50 at sale; the rule is then rewritten to 20%.
+        await _snapshot_line(db_session, test_tenant, order, fees=[("transaction", "6.50")])
+        before = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+        rule = (
+            await db_session.execute(select(FeeRule).where(FeeRule.sales_channel_id == channel.id))
+        ).scalar_one()
+        rule.rate_pct = Decimal("20")
+        await db_session.commit()
+
+        after = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert Decimal(before["planned_fee_total"]) == Decimal("6.50")
+        assert after["planned_fee_total"] == before["planned_fee_total"]
+        assert after["planned_fees_from_rules"] == 0
+
+    async def test_a_pre_snapshot_order_uses_the_rules_on_its_own_date_and_says_so(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        rule = (
+            await db_session.execute(select(FeeRule).where(FeeRule.sales_channel_id == channel.id))
+        ).scalar_one()
+        rule.applies_to = date(2026, 6, 20)
+        await db_session.commit()
+        await _add_rule(
+            db_session,
+            test_tenant,
+            channel,
+            name="transaction",
+            basis="item_plus_shipping",
+            fixed="0",
+            rate="10",
+            applies_from=date(2026, 6, 21),
+        )
+        await _make_order(db_session, test_tenant, channel)  # placed on the 15th
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        # 6.5% in force on the 15th, not the 10% in force at the period's end.
+        assert Decimal(body["planned_fee_total"]) == Decimal("6.50")
+        assert body["planned_fees_from_rules"] == 1
+        assert any("before sale snapshots" in note for note in body["notes"])
+
+    async def test_the_make_cost_comes_from_the_snapshot(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        order = await _make_order(db_session, test_tenant, channel)
+        await _snapshot_line(
+            db_session, test_tenant, order, fees=[("transaction", "6.50")], make_cost="20.00"
+        )
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert Decimal(body["make_cost_total"]) == Decimal("20.00")
+        assert body["make_cost_unrecorded_lines"] == 0
+        # 100 revenue - 6.50 fees - 30 subscription - 20 make-cost.
+        assert Decimal(body["profit"]) == Decimal("43.50")
+
+    async def test_changing_the_remitter_today_leaves_the_periods_liability(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        from app.services.channel_economics import write_economics
+
+        await write_economics(db_session, test_tenant, channel, {}, effective_from=date(2026, 1, 1))
+        await db_session.commit()
+        await _make_order(db_session, test_tenant, channel, tax=Decimal("13.00"))
+        before = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"tax_remitter": "marketplace"},
+            effective_from=date(2026, 9, 1),
+        )
+        await db_session.commit()
+        after = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert Decimal(before["sales_tax_liability"]) == Decimal("13.00")
+        assert after["sales_tax_liability"] == before["sales_tax_liability"]
+
+    async def test_changing_the_basis_today_leaves_the_periods_basis(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        from app.services.pricing_policy import write_policy
+
+        await write_policy(
+            db_session,
+            test_tenant,
+            {"margin_basis": "customer_total"},
+            effective_from=date(2026, 1, 1),
+        )
+        await db_session.commit()
+        await _make_order(db_session, test_tenant, channel)
+        before = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        await write_policy(
+            db_session, test_tenant, {"margin_basis": "item_price"}, effective_from=date(2026, 9, 1)
+        )
+        await db_session.commit()
+        after = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert before["margin_basis"] == "customer_total"
+        assert after["margin_basis"] == before["margin_basis"]
+        assert after["margin_pct"] == before["margin_pct"]
+        assert after["margin_basis_spans_change"] is False
+
+    async def test_a_period_whose_orders_sold_on_two_bases_is_labelled(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        from app.services.pricing_policy import write_policy
+
+        await write_policy(
+            db_session, test_tenant, {"margin_basis": "item_price"}, effective_from=date(2026, 1, 1)
+        )
+        await db_session.commit()
+        order = await _make_order(db_session, test_tenant, channel)
+        await _snapshot_line(
+            db_session, test_tenant, order, fees=[("transaction", "6.50")], basis="net_revenue"
+        )
+
+        body = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+
+        assert body["margin_basis"] == "item_price"
+        assert body["margin_basis_spans_change"] is True
+        assert body["margin_bases_in_period"] == ["item_price", "net_revenue"]
+        assert any("more than one margin basis" in note for note in body["notes"])
+
+
+# ============================================================================
+# An order-level actual belongs to its statement's period (task T235)
+# ============================================================================
+
+LATE_ON_THE_30TH = datetime(2026, 6, 30, 23, 0, tzinfo=timezone.utc)
+
+
+def _order_body(channel: SalesChannel, order: Order, **overrides) -> dict:
+    body = {
+        "sales_channel_id": str(channel.id),
+        "fee_category": "transaction",
+        "amount": "6.50",
+        "order_id": str(order.id),
+        "statement_period_start": "2026-07-01",
+        "statement_period_end": "2026-07-31",
+    }
+    body.update(overrides)
+    return body
+
+
+class TestAnOrderSpanningTwoPeriods:
+    """Placed on 30 June, settled on July's statement."""
+
+    async def test_the_actual_is_reconciled_against_the_statement_it_names(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        order = await _make_order(db_session, test_tenant, channel, placed=LATE_ON_THE_30TH)
+        response = await client.post(ACTUALS_URL, json=_order_body(channel, order))
+        assert response.status_code == 201, response.text
+        assert response.json()["statement_period_start"] == "2026-07-01"
+
+        june = (await client.get(PNL_URL, params=_pnl_query(channel))).json()
+        july = (
+            await client.get(PNL_URL, params=_pnl_query(channel, "2026-07-01", "2026-07-31"))
+        ).json()
+
+        june_row = next(r for r in june["reconciliation"] if r["category"] == "transaction")
+        july_row = next(r for r in july["reconciliation"] if r["category"] == "transaction")
+        assert june_row["actual_total"] is None
+        assert Decimal(july_row["actual_order_scoped"]) == Decimal("6.50")
+
+    async def test_the_conflict_check_uses_the_statement_period(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        order = await _make_order(db_session, test_tenant, channel, placed=LATE_ON_THE_30TH)
+        await client.post(
+            ACTUALS_URL,
+            json=_period_body(
+                sales_channel_id=str(channel.id),
+                amount="2.00",
+                period_start="2026-07-01",
+                period_end="2026-07-31",
+            ),
+        )
+
+        response = await client.post(ACTUALS_URL, json=_order_body(channel, order))
+
+        # July's statement total is 2.00, which this order amount exceeds.
+        assert response.status_code == 409
+
+    async def test_a_statement_period_on_a_period_row_is_a_422(self, client, channel) -> None:
+        response = await client.post(
+            ACTUALS_URL,
+            json=_period_body(
+                sales_channel_id=str(channel.id),
+                statement_period_start="2026-07-01",
+                statement_period_end="2026-07-31",
+            ),
+        )
+
+        assert response.status_code == 422
+
+    async def test_half_a_statement_period_is_a_422(
+        self, client, db_session, test_tenant, channel
+    ) -> None:
+        order = await _make_order(db_session, test_tenant, channel)
+        body = _order_body(channel, order)
+        del body["statement_period_end"]
+
+        response = await client.post(ACTUALS_URL, json=body)
 
         assert response.status_code == 422

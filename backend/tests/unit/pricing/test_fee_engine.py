@@ -383,3 +383,76 @@ class TestRounding:
         summed_rounded = sum((c.amount for c in stack.charges), Decimal("0"))
         assert stack.total == stack.total_exact.quantize(Decimal("0.01"))
         assert stack.total != summed_rounded
+
+
+# ---------------------------------------------------------------------------
+# A period's periodic charges, computed once (task T214)
+# ---------------------------------------------------------------------------
+
+
+class TestMonthsIn:
+    @pytest.mark.parametrize(
+        ("start", "end", "months"),
+        [
+            (date(2026, 6, 1), date(2026, 6, 30), Decimal("1")),
+            (date(2026, 1, 1), date(2026, 3, 31), Decimal("3")),
+            (date(2026, 2, 1), date(2026, 2, 28), Decimal("1")),
+            (date(2026, 6, 1), date(2026, 6, 15), Decimal("0.5")),
+            (date(2026, 6, 16), date(2026, 7, 31), Decimal("1.5")),
+        ],
+    )
+    def test_whole_and_partial_months_are_measured_exactly(self, start, end, months) -> None:
+        assert fee_engine.months_in(start, end) == months
+
+    def test_a_reversed_range_covers_nothing(self) -> None:
+        assert fee_engine.months_in(date(2026, 6, 30), date(2026, 6, 1)) == Decimal("0")
+
+
+class TestPeriodicCharges:
+    def test_a_monthly_rule_is_charged_for_the_months_of_the_period(self) -> None:
+        rule = make_fee_rule("shop", "per_month", fixed_amount=Decimal("10"))
+
+        charges = fee_engine.periodic_charges(
+            [rule], date(2026, 1, 1), date(2026, 3, 31), listings=0
+        )
+
+        assert [c.amount_exact for c in charges] == [Decimal("30")]
+
+    def test_a_listing_rule_is_charged_per_listing_once_per_period(self) -> None:
+        rule = make_fee_rule("listing", "per_listing", fixed_amount=Decimal("0.20"))
+
+        charges = fee_engine.periodic_charges(
+            [rule], date(2026, 1, 1), date(2026, 3, 31), listings=7
+        )
+
+        assert [c.amount_exact for c in charges] == [Decimal("1.40")]
+
+    def test_a_rule_not_in_force_during_the_period_charges_nothing(self) -> None:
+        rule = make_fee_rule(
+            "shop", "per_month", fixed_amount=Decimal("10"), applies_to=date(2025, 12, 31)
+        )
+
+        assert (
+            fee_engine.periodic_charges([rule], date(2026, 1, 1), date(2026, 1, 31), listings=0)
+            == []
+        )
+
+    def test_a_per_sale_rule_is_not_a_periodic_charge(self) -> None:
+        rule = make_fee_rule("transaction", "item_subtotal", rate_pct=Decimal("6.5"))
+
+        assert (
+            fee_engine.periodic_charges([rule], date(2026, 1, 1), date(2026, 1, 31), listings=3)
+            == []
+        )
+
+    def test_a_cap_still_binds_at_period_scale(self) -> None:
+        rule = make_fee_rule(
+            "shop", "per_month", fixed_amount=Decimal("10"), max_amount=Decimal("25")
+        )
+
+        [charge] = fee_engine.periodic_charges(
+            [rule], date(2026, 1, 1), date(2026, 3, 31), listings=0
+        )
+
+        assert charge.amount_exact == Decimal("25")
+        assert charge.clamp_applied == "max"

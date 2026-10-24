@@ -33,6 +33,14 @@ class FeeActualCreate(BaseModel):
     period_start: Optional[date] = None
     period_end: Optional[date] = None
     order_id: Optional[UUID] = None
+    statement_period_start: Optional[date] = Field(
+        None,
+        description=(
+            "Order scope only: the statement period this charge appeared in, when it "
+            "is not the period the order was placed in (FR-041c)"
+        ),
+    )
+    statement_period_end: Optional[date] = None
 
     @model_validator(mode="after")
     def _exactly_one_scope(self) -> "FeeActualCreate":
@@ -56,6 +64,22 @@ class FeeActualCreate(BaseModel):
             and self.period_end < self.period_start
         ):
             raise ValueError("period_end cannot be before period_start")
+
+        has_statement = (
+            self.statement_period_start is not None or self.statement_period_end is not None
+        )
+        if has_statement:
+            if not has_order:
+                raise ValueError(
+                    "a statement period belongs on an order-scoped fee; a period-scoped "
+                    "fee already is its statement period"
+                )
+            if self.statement_period_start is None or self.statement_period_end is None:
+                raise ValueError(
+                    "a statement period needs both statement_period_start and statement_period_end"
+                )
+            if self.statement_period_end < self.statement_period_start:
+                raise ValueError("statement_period_end cannot be before statement_period_start")
         return self
 
 
@@ -70,6 +94,8 @@ class FeeActualResponse(BaseModel):
     period_start: Optional[date]
     period_end: Optional[date]
     order_id: Optional[UUID]
+    statement_period_start: Optional[date] = None
+    statement_period_end: Optional[date] = None
     source: str = Field(
         ..., description="'entered' by a human, never presented as observed (FR-041e)"
     )

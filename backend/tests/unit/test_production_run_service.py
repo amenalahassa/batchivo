@@ -393,7 +393,7 @@ class TestProductionRunCompletion:
         run = await service.create_production_run(run_data, materials=[material_data])
 
         # Attempt to complete should raise error
-        with pytest.raises(ValueError, match="Insufficient weight"):
+        with pytest.raises(ValueError, match="Insufficient inventory"):
             await service.complete_production_run(run.id)
 
     @pytest.mark.asyncio

@@ -576,3 +576,110 @@ class TestTheOpenRow:
 
         assert await current_economics_row(db_session, channel.id) is None
         assert await resolve_economics_row(db_session, channel.id, AS_OF) is None
+
+
+# ---------------------------------------------------------------------------
+# A period-scale read sees every figure in force across it (task T214)
+# ---------------------------------------------------------------------------
+
+
+class TestEconomicsOver:
+    pytestmark = ASYNC
+
+    async def test_one_open_period_covers_the_whole_range(self, db_session, test_tenant) -> None:
+        from app.services.channel_economics import economics_over
+
+        channel = await _channel(db_session, test_tenant)
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"monthly_cost": Decimal("30")},
+            effective_from=date(2026, 1, 1),
+        )
+
+        segments = await economics_over(db_session, channel, date(2026, 6, 1), date(2026, 6, 30))
+
+        assert [(e.monthly_cost, lo, hi) for e, lo, hi in segments] == [
+            (Decimal("30"), date(2026, 6, 1), date(2026, 6, 30))
+        ]
+
+    async def test_a_change_mid_range_splits_it_at_the_change(
+        self, db_session, test_tenant
+    ) -> None:
+        from app.services.channel_economics import economics_over
+
+        channel = await _channel(db_session, test_tenant)
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"monthly_cost": Decimal("30")},
+            effective_from=date(2026, 1, 1),
+        )
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"tax_remitter": "marketplace"},
+            effective_from=date(2026, 6, 16),
+        )
+
+        segments = await economics_over(db_session, channel, date(2026, 6, 1), date(2026, 6, 30))
+
+        assert [(e.tax_remitter, lo, hi) for e, lo, hi in segments] == [
+            ("operator", date(2026, 6, 1), date(2026, 6, 15)),
+            ("marketplace", date(2026, 6, 16), date(2026, 6, 30)),
+        ]
+
+    async def test_days_before_the_first_period_fall_back_to_the_channel(
+        self, db_session, test_tenant
+    ) -> None:
+        from app.services.channel_economics import economics_over
+
+        channel = await _channel(db_session, test_tenant, monthly_cost=Decimal("5"))
+        await write_economics(
+            db_session,
+            test_tenant,
+            channel,
+            {"monthly_cost": Decimal("50")},
+            effective_from=date(2026, 6, 11),
+        )
+
+        segments = await economics_over(db_session, channel, date(2026, 6, 1), date(2026, 6, 30))
+
+        assert [(e.origin, e.monthly_cost, lo, hi) for e, lo, hi in segments] == [
+            ("channel_default", Decimal("5"), date(2026, 6, 1), date(2026, 6, 10)),
+            ("economics_row", Decimal("50"), date(2026, 6, 11), date(2026, 6, 30)),
+        ]
+
+    async def test_two_changes_on_one_day_read_as_the_later(self, db_session, test_tenant) -> None:
+        from app.services.channel_economics import economics_over
+
+        channel = await _channel(db_session, test_tenant)
+        for cost in ("10", "20"):
+            await write_economics(
+                db_session,
+                test_tenant,
+                channel,
+                {"monthly_cost": Decimal(cost)},
+                effective_from=date(2026, 6, 1),
+            )
+
+        segments = await economics_over(db_session, channel, date(2026, 6, 1), date(2026, 6, 30))
+
+        assert [(e.monthly_cost, lo, hi) for e, lo, hi in segments] == [
+            (Decimal("20"), date(2026, 6, 1), date(2026, 6, 30))
+        ]
+
+    async def test_the_new_levers_are_validated(self, db_session, test_tenant) -> None:
+        from app.services.channel_economics import EconomicsMisconfigured
+
+        channel = await _channel(db_session, test_tenant)
+        for bad in (
+            {"monthly_cost": Decimal("-1")},
+            {"tax_remitter": "nobody"},
+            {"currency_code": "POUNDS"},
+        ):
+            with pytest.raises(EconomicsMisconfigured):
+                await write_economics(db_session, test_tenant, channel, bad)

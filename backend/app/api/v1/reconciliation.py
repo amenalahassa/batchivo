@@ -17,16 +17,18 @@ reported rather than absorbed (FR-041c).
 import logging
 from datetime import date
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
 from app.models.fee_actual import FeeActual
 from app.models.fee_rule import FeeRule
 from app.models.order import Order
+from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.schemas.channel_pnl import (
     AbsorbedCostResponse,
@@ -40,6 +42,7 @@ from app.schemas.margin_alert import (
     MarginDivergenceResponse,
 )
 from app.services import channel_pnl, fee_engine, margin_alert
+from app.services.channel_economics import ChannelEconomics, economics_over
 from app.services.channel_pnl import ReconciliationConflict
 from app.services.costing import resolve_margin_basis
 from app.services.pricing_policy import resolve_cost_policy
@@ -112,9 +115,12 @@ async def _actuals_in_period(
 ) -> list[FeeActual]:
     """Recorded actuals touching this period.
 
-    A period-scoped row counts when its period is the one asked about; an
-    order-scoped row counts when its order falls inside the period, which is
-    how an order amount reduces the right period's remainder (FR-041c).
+    A period-scoped row counts when its period is the one asked about. An
+    order-scoped row counts when the statement it appeared on is this period
+    (task T235): "the order-level actual belongs to the period its statement
+    assigned it to, not the period it was placed in". A row that names no
+    statement period -- every row recorded before the column existed -- falls
+    back to the period its order was placed in, which is ``order_ids``.
     """
     result = await db.execute(
         select(FeeActual).where(
@@ -125,7 +131,13 @@ async def _actuals_in_period(
     rows = []
     for row in result.scalars().all():
         if row.order_id is not None:
-            if row.order_id in order_ids:
+            if row.statement_period_start is not None:
+                if (row.statement_period_start, row.statement_period_end) == (
+                    period_start,
+                    period_end,
+                ):
+                    rows.append(row)
+            elif row.order_id in order_ids:
                 rows.append(row)
         elif row.period_start == period_start and row.period_end == period_end:
             rows.append(row)
@@ -165,6 +177,8 @@ async def record_fee_actual(
         period_start=payload.period_start,
         period_end=payload.period_end,
         order_id=payload.order_id,
+        statement_period_start=payload.statement_period_start,
+        statement_period_end=payload.statement_period_end,
         # FR-041e: entered by a human, and never presented as observed until it
         # comes from an automated source.
         source="entered",
@@ -205,7 +219,12 @@ async def _refuse_conflicting_order_amount(
         )
 
     placed = order.created_at.date() if order.created_at is not None else None
-    if placed is None:
+    statement = (
+        (payload.statement_period_start, payload.statement_period_end)
+        if payload.statement_period_start is not None
+        else None
+    )
+    if placed is None and statement is None:
         return
 
     periods = (
@@ -226,7 +245,12 @@ async def _refuse_conflicting_order_amount(
     for period in periods:
         if period.period_start is None or period.period_end is None:
             continue
-        if not (period.period_start <= placed <= period.period_end):
+        # The period this amount reconciles against: the statement it names,
+        # or -- where it names none -- the one containing the placed date.
+        if statement is not None:
+            if (period.period_start, period.period_end) != statement:
+                continue
+        elif not (period.period_start <= placed <= period.period_end):
             continue
 
         order_ids = {
@@ -268,8 +292,63 @@ class _Pending:
 
     def __init__(self, payload: FeeActualCreate) -> None:
         self.order_id = payload.order_id
+        self.statement_period_start = payload.statement_period_start
+        self.statement_period_end = payload.statement_period_end
         self.fee_category = payload.fee_category
         self.amount = payload.amount
+
+
+def _placed_on(order: Order) -> Optional[date]:
+    return order.created_at.date() if order.created_at is not None else None
+
+
+def _has_snapshot(order: Order) -> bool:
+    """Whether the sale snapshot was written for this order (FR-036).
+
+    ``pricing_rev`` is set on every line the snapshot writes, whether or not
+    the channel had fee rules to freeze -- so an empty ``fees_json`` on a
+    snapshotted line means "no planned fees", not "unknown".
+    """
+    return any(item.pricing_rev is not None for item in (order.items or []))
+
+
+def _frozen_fees(order: Order) -> list[tuple[str, Decimal]]:
+    """The planned fees the order's lines froze at sale, by name."""
+    return [
+        (str(charge.get("name")), Decimal(str(charge.get("amount") or ZERO)))
+        for item in (order.items or [])
+        for charge in (item.fees_json or [])
+    ]
+
+
+def _economics_on(
+    segments: list[tuple[ChannelEconomics, date, date]], on: Optional[date]
+) -> ChannelEconomics:
+    for economics, lo, hi in segments:
+        if on is not None and lo <= on <= hi:
+            return economics
+    return segments[-1][0]
+
+
+async def _live_listings(
+    db: AsyncSession, channel_id: UUID, period_start: date, period_end: date
+) -> int:
+    """Products with a price on this channel at any point in the period.
+
+    What a per-listing rule multiplies by (task T214). Counted per product,
+    not per price row: a quantity tier or a mid-period price change is still
+    one listing. Price rows carry no tenant of their own; the channel does,
+    and the caller has already resolved it within this tenant.
+    """
+    result = await db.execute(
+        select(func.count(func.distinct(ProductPricing.product_id))).where(
+            ProductPricing.sales_channel_id == channel_id,
+            ProductPricing.is_active.is_(True),
+            ProductPricing.valid_from <= period_end,
+            (ProductPricing.valid_to.is_(None)) | (ProductPricing.valid_to >= period_start),
+        )
+    )
+    return int(result.scalar() or 0)
 
 
 @router.get("/channel-pnl", response_model=ChannelPnLResponse)
@@ -287,6 +366,14 @@ async def get_channel_pnl(
     (FR-028c, FR-028d). Periodic and per-listing costs are absorbed over the
     period's actual order volume, and reported as unabsorbed where there were
     no orders rather than divided by zero (FR-025).
+
+    A past period reads what was frozen and in force then, never today's
+    channel (task T215): each settled order's planned fees are the ones its
+    snapshot froze at sale (FR-036), the remitter is the one in force on the
+    day each order was placed, and the margin basis is the one in force at the
+    period's end -- with a period whose orders sold under more than one basis
+    labelled as such rather than blended (FR-031d). Changing a fee rule, the
+    remitter or the basis today therefore leaves a closed period unchanged.
     """
     if period_end < period_start:
         raise HTTPException(
@@ -310,14 +397,25 @@ async def get_channel_pnl(
         .scalars()
         .all()
     )
+    # The channel's levers as they stood across the period (T216): the
+    # remitter on each order's day, the subscription for each part.
+    segments = await economics_over(db, channel, period_start, period_end)
 
-    # --- Revenue, tax-exclusive, and the planned fee stack per order -------
+    # --- Revenue, tax-exclusive, the planned fees and the make-cost --------
     revenue = ZERO
     shipping_revenue = ZERO
     postage = ZERO
     tax_collected = ZERO
-    stacks = []
+    tax_liability = ZERO
+    make_cost_total = ZERO
+    make_cost_unrecorded_lines = 0
+    planned_amounts: list[tuple[str, Decimal]] = []
+    planned_from_rules = 0
+    bases_sold_on: set[str] = set()
+    policy_by_day: dict[date, str] = {}
+
     for order in orders:
+        placed = _placed_on(order)
         subtotal = Decimal(str(order.subtotal or ZERO))
         shipping = Decimal(str(order.shipping_cost or ZERO))
         tax = Decimal(str(getattr(order, "sales_tax_collected", ZERO) or ZERO))
@@ -333,12 +431,43 @@ async def get_channel_pnl(
             tax_inclusive=False,
             quantity=sum(item.quantity for item in (order.items or [])) or 1,
         )
-        stacks.append(fee_engine.compute(channel, context, period_end, rules=rules))
         revenue += context.item_subtotal + context.shipping_revenue
         shipping_revenue += shipping
         tax_collected += tax
+        if _economics_on(segments, placed).tax_remitter == "operator":
+            tax_liability += tax
 
-    planned_by_category = channel_pnl.planned_total(stacks)
+        if _has_snapshot(order):
+            # The figures the sale froze -- a rule superseded since, or one
+            # superseded mid-period, cannot reprice it (FR-036, FR-038).
+            planned_amounts.extend(_frozen_fees(order))
+        else:
+            # Sold before snapshots existed: the rules as they stood on the
+            # order's own day, never the period's end, and counted so the
+            # response can say how many figures were derived rather than read.
+            stack = fee_engine.compute(channel, context, placed or period_end, rules=rules)
+            planned_amounts.extend((charge.name, charge.amount_exact) for charge in stack.charges)
+            planned_from_rules += 1
+
+        for item in order.items or []:
+            if item.has_snapshot:
+                make_cost_total += Decimal(str(item.make_cost_at_sale)) * Decimal(
+                    item.quantity or 0
+                )
+            else:
+                make_cost_unrecorded_lines += 1
+            if item.margin_basis_at_sale:
+                bases_sold_on.add(item.margin_basis_at_sale)
+
+        if not any(item.margin_basis_at_sale for item in (order.items or [])):
+            day = placed or period_end
+            if day not in policy_by_day:
+                policy_by_day[day] = resolve_margin_basis(
+                    await resolve_cost_policy(db, tenant, day)
+                )
+            bases_sold_on.add(policy_by_day[day])
+
+    planned_by_category = channel_pnl.sum_by_category(planned_amounts)
     planned_fee_total = sum(planned_by_category.values(), ZERO)
 
     # --- Plan against statement (FR-041d) ----------------------------------
@@ -357,19 +486,28 @@ async def get_channel_pnl(
         ZERO,
     )
 
-    # --- Absorption over actual order volume (FR-025) ----------------------
+    # --- Absorption over actual order volume (FR-025, task T214) -----------
+    # Each periodic cost is owed once for the period -- the subscription for
+    # the months it covers, at the figure in force for each part of it, and
+    # the periodic fee rules from the rules in force during it -- and is then
+    # spread over however many orders arrived, or reported unabsorbed.
     absorbed = []
-    monthly = Decimal(str(channel.monthly_cost or ZERO))
-    if monthly > ZERO:
+    subscription = sum(
+        (economics.monthly_cost * fee_engine.months_in(lo, hi) for economics, lo, hi in segments),
+        ZERO,
+    )
+    if subscription > ZERO:
         absorbed.append(
             channel_pnl.absorb(
                 key="monthly_cost",
                 label="Channel subscription",
-                total=monthly,
+                total=subscription,
                 order_count=len(orders),
             )
         )
-    periodic_total = sum((stack.periodic_total_exact for stack in stacks), ZERO)
+    listings = await _live_listings(db, channel.id, period_start, period_end)
+    periodic = fee_engine.periodic_charges(rules, period_start, period_end, listings=listings)
+    periodic_total = sum((charge.amount_exact for charge in periodic), ZERO)
     if periodic_total > ZERO:
         absorbed.append(
             channel_pnl.absorb(
@@ -381,22 +519,42 @@ async def get_channel_pnl(
         )
     unabsorbed = sum((cost.total for cost in absorbed if cost.is_unabsorbed), ZERO)
 
-    # --- Margin, on the basis in effect ------------------------------------
-    # Derived by `channel_pnl`, not here. This route used to subtract its own
-    # profit and choose its own denominator with a three-way `if`, which made
-    # it a second implementation of the percentage `CostingService.margin`
-    # already owns -- the divergence Constitution III forbids (task T160).
-    policy = await resolve_cost_policy(db, tenant)
+    # --- Margin, on the basis in force at the period's end -----------------
+    # Derived by `channel_pnl`, not here (task T160). Resolved as at the
+    # period's end rather than today, so changing the basis now does not
+    # restate a closed period (FR-031d).
+    basis = resolve_margin_basis(await resolve_cost_policy(db, tenant, period_end))
+    bases = sorted(bases_sold_on | {basis})
+    spans_change = len(bases) > 1
     margin = channel_pnl.period_margin(
         revenue_tax_exclusive=revenue,
         shipping_revenue=shipping_revenue,
         planned_fee_total=planned_fee_total,
         postage_paid=postage,
         absorbed_costs=absorbed,
-        basis=resolve_margin_basis(policy),
+        basis=basis,
+        make_cost_total=make_cost_total,
     )
-    profit = margin.profit
-    margin_pct = margin.margin_pct
+
+    notes: list[str] = []
+    if planned_from_rules:
+        notes.append(
+            f"{planned_from_rules} of {len(orders)} orders were sold before sale snapshots, "
+            f"so their planned fees are recomputed from the rules in force on each order's "
+            f"own date rather than read from what was frozen"
+        )
+    if make_cost_unrecorded_lines:
+        notes.append(
+            f"{make_cost_unrecorded_lines} order lines froze no make-cost at sale, so the "
+            f"period's make-cost leaves them out rather than recomputing them from today's "
+            f"inputs"
+        )
+    if spans_change:
+        notes.append(
+            f"orders in this period sold under more than one margin basis "
+            f"({', '.join(bases)}); the percentage is on the basis in force at the "
+            f"period's end ({basis}) and is not a blend of them"
+        )
 
     return ChannelPnLResponse(
         channel_id=channel.id,
@@ -405,13 +563,12 @@ async def get_channel_pnl(
         order_count=len(orders),
         revenue_tax_exclusive=revenue.quantize(CENT),
         sales_tax_collected=tax_collected.quantize(CENT),
-        sales_tax_liability=(
-            tax_collected.quantize(CENT) if channel.tax_remitter == "operator" else ZERO
-        ),
+        sales_tax_liability=tax_liability.quantize(CENT),
         postage_paid=postage.quantize(CENT),
         shipping_revenue=shipping_revenue.quantize(CENT),
         shipping_net=(shipping_revenue - postage).quantize(CENT),
         planned_fee_total=planned_fee_total.quantize(CENT),
+        planned_fees_from_rules=planned_from_rules,
         actual_fee_total=actual_fee_total.quantize(CENT) if actual_fee_total is not None else None,
         unallocated_remainder=unallocated.quantize(CENT),
         fee_difference=(
@@ -444,14 +601,15 @@ async def get_channel_pnl(
             for cost in absorbed
         ],
         unabsorbed_total=unabsorbed.quantize(CENT),
-        # The period's make-cost needs the snapshot Tier 3 writes at the moment
-        # of sale (FR-036); until then it is reported as zero rather than
-        # recomputed from today's inputs, which would restate history.
-        make_cost_total=ZERO,
-        profit=profit.quantize(CENT),
-        margin_pct=margin_pct,
+        make_cost_total=make_cost_total.quantize(CENT),
+        make_cost_unrecorded_lines=make_cost_unrecorded_lines,
+        profit=margin.profit.quantize(CENT),
+        margin_pct=margin.margin_pct,
         margin_basis=margin.basis,
         margin_basis_label=margin.basis_label,
+        margin_bases_in_period=bases,
+        margin_basis_spans_change=spans_change,
+        notes=notes,
     )
 
 

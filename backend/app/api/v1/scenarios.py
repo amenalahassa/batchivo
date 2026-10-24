@@ -26,7 +26,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB, RequireMember
 from app.schemas.scenario import (
     ScenarioRunListResponse,
     ScenarioRunRequest,
@@ -55,6 +55,7 @@ async def create_scenario(
     payload: ScenarioRunRequest,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ScenarioRunResponse:
     """Accept a shock and hand it to a worker (FR-044a).

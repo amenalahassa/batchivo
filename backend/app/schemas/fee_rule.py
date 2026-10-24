@@ -92,6 +92,17 @@ class FeeRuleUpdate(BaseModel):
     applies_from: Optional[date] = None
     applies_to: Optional[date] = None
 
+    # A change to what the rule charges supersedes it rather than editing it
+    # (FR-022, task T233). This is the day the new figures apply from, today
+    # by default; the current row closes the day before.
+    effective_from: Optional[date] = Field(
+        None,
+        description=(
+            "First day a changed rate, amount, clamp, incidence or basis applies; "
+            "today by default. The current rule closes the day before (FR-022)"
+        ),
+    )
+
     def changes(self) -> dict:
         """Only the fields the body actually carried."""
         return self.model_dump(exclude_unset=True)

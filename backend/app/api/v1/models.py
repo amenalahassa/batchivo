@@ -10,7 +10,16 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import (
+    MONETARY_ROLES,
+    CurrentTenant,
+    CurrentUser,
+    RequireMember,
+    TenantDB,
+    role_in_tenant,
+)
+from app.models.user import User
 from app.models.model import Model
 from app.models.model_component import ModelComponent
 from app.models.model_material import ModelMaterial
@@ -43,10 +52,14 @@ from app.services.costing import CostingService
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.provenance import (
     ProvenanceNotEditable,
+    changed_fields,
     origins_for_entity,
+    record_operator_write,
     record_origin,
+    refuse_overwriting_observed,
 )
 from app.utils.csv_handler import (
+    IGNORED_COLUMNS,
     CSVImportError,
     generate_csv_export,
     parse_csv_file,
@@ -77,11 +90,51 @@ async def model_with_cost(model: Model, tenant: Tenant, db: AsyncSession) -> dic
     }
 
 
+#: Per-item overrides of a tenant rate. `labor_rate_override` replaces the
+#: tenant's labour rate for this item and `overhead_percentage` its overhead
+#: percentage, so both are monetary policy (FR-007a) -- the owner or admin only,
+#: on every path that writes them (task T217).
+POLICY_OVERRIDE_FIELDS: frozenset[str] = frozenset({"labor_rate_override", "overhead_percentage"})
+
+
+async def _authorise_model_write(
+    db: AsyncSession,
+    tenant: Tenant,
+    user: User,
+    model: Optional[Model],
+    changes: dict,
+) -> tuple[list[str], Optional[str]]:
+    """Check a write to a model's cost inputs, before anything is applied.
+
+    Returns the registered inputs that move, and the caller's role, so the
+    route can record each figure's origin once the write is made (FR-001,
+    task T229). Refuses with a ``403`` a non-administrator moving a per-item
+    rate or percentage (FR-007a, task T217), and with a ``409`` anyone typing
+    over an observed figure (FR-004).
+    """
+    role = await role_in_tenant(db, user.id, tenant.id)
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="model", entity=model, changes=changes
+    )
+    overrides = sorted(set(fields) & POLICY_OVERRIDE_FIELDS)
+    if overrides and role not in MONETARY_ROLES:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Setting an item's {' and '.join(overrides)} overrides the tenant's "
+                f"rate and requires the owner or admin role"
+            ),
+        )
+    return fields, role
+
+
 @router.post("", response_model=ModelDetailResponse, status_code=status.HTTP_201_CREATED)
 async def create_model(
     model_data: ModelCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ModelDetailResponse:
     """
@@ -104,6 +157,10 @@ async def create_model(
             detail=f"Model with SKU '{model_data.sku}' already exists",
         )
 
+    fields, role = await _authorise_model_write(
+        db, tenant, user, None, model_data.model_dump(exclude_unset=True)
+    )
+
     # Create model instance
     model = Model(
         tenant_id=tenant.id,
@@ -111,6 +168,12 @@ async def create_model(
     )
 
     db.add(model)
+    await db.flush()
+    # The figures the body named are this person's measurement or, for a
+    # per-item rate, their decision -- not assumptions (FR-001, task T229).
+    await record_operator_origins(
+        db, tenant, entity_type="model", entity_id=model.id, fields=fields, user=user, role=role
+    )
     await db.commit()
     await db.refresh(model)
 
@@ -451,6 +514,7 @@ async def update_model_cost_profile(
     profile_data: ModelCostProfileUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ModelCostProfileResponse:
     """Record this item's operational figures. Any member may.
@@ -458,8 +522,10 @@ async def update_model_cost_profile(
     These are measurements of a printed item -- a purge weight on the scale, a
     plate time off the slicer, minutes of finishing with a stopwatch -- so
     FR-007b puts them with the member who takes them rather than behind the
-    administrator who sets a rate. The labor rate and overhead percentage on
-    the same table are monetary policy and keep their own, stricter route.
+    administrator who sets a rate. A viewer is refused (FR-007c). The labor
+    rate override and overhead percentage on the same table are monetary
+    policy: `PUT /models/{id}` and the CSV import accept them only from the
+    owner or admin (task T217).
 
     A field the body does not name is left alone, and each field that moves has
     its origin written as `measured`, dated today, against the user who entered
@@ -621,13 +687,16 @@ async def update_model(
     model_data: ModelUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ModelDetailResponse:
     """
     Update an existing model.
 
-    Requires authentication.
-    Model must belong to current tenant.
+    Requires the member role (FR-007c). A per-item labour rate or overhead
+    percentage needs the owner or admin (FR-007a, task T217); every cost
+    input that moves has its origin recorded against the person who moved it,
+    and an observed one is refused rather than typed over (task T229).
     """
     # Fetch model
     query = (
@@ -668,9 +737,13 @@ async def update_model(
 
     # Update fields
     update_data = model_data.model_dump(exclude_unset=True)
+    fields, role = await _authorise_model_write(db, tenant, user, model, update_data)
     for field, value in update_data.items():
         setattr(model, field, value)
 
+    await record_operator_origins(
+        db, tenant, entity_type="model", entity_id=model.id, fields=fields, user=user, role=role
+    )
     await db.commit()
     await db.refresh(model)
 
@@ -682,6 +755,7 @@ async def delete_model(
     model_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -723,6 +797,7 @@ async def add_model_material(
     material_data: ModelMaterialCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ModelMaterialResponse:
     """
@@ -754,6 +829,22 @@ async def add_model_material(
     )
 
     db.add(material)
+    await db.flush()
+    # The weight and the cost per gram are what this person entered (T229).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="model_material",
+        entity_id=material.id,
+        fields=await refuse_observed_or_409(
+            db,
+            tenant,
+            entity_type="model_material",
+            entity=None,
+            changes=material_data.model_dump(),
+        ),
+        user=user,
+    )
     await db.commit()
     await db.refresh(material)
 
@@ -766,6 +857,7 @@ async def remove_model_material(
     material_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -811,6 +903,7 @@ async def add_model_component(
     component_data: ModelComponentCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ModelComponentResponse:
     """
@@ -834,6 +927,22 @@ async def add_model_component(
     )
 
     db.add(component)
+    await db.flush()
+    # The quantity and the unit cost are what this person entered (T229).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="model_component",
+        entity_id=component.id,
+        fields=await refuse_observed_or_409(
+            db,
+            tenant,
+            entity_type="model_component",
+            entity=None,
+            changes=component_data.model_dump(),
+        ),
+        user=user,
+    )
     await db.commit()
     await db.refresh(component)
 
@@ -846,6 +955,7 @@ async def remove_model_component(
     component_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -885,6 +995,7 @@ async def remove_model_component(
 async def import_models_csv(
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
     file: UploadFile = File(...),
 ):
@@ -901,6 +1012,18 @@ async def import_models_csv(
 
     Creates new models or updates existing ones based on SKU.
     Returns summary of import results.
+
+    The cost inputs are written as exact decimals into the columns the engine
+    reads (task T225): the sheet's "labor hours" is handling per item, so it
+    goes to `labor_hours_per_item` -- the deprecated single `labor_hours` is
+    read only when the per-item and per-plate figures are both zero, so
+    writing it onto a model with a cost profile changed nothing and said
+    nothing. Every figure that moves has its origin recorded as `measured`
+    against the importing user (FR-001), an observed one is refused, and an
+    overhead percentage is refused from anyone but the owner or admin
+    (FR-007a, task T217) -- each refusal skips that row and says why.
+    Columns the import reads past (a labour rate, a cost, a sell price) are
+    reported as ignored.
     """
     # Validate file type
     if not file.filename or not file.filename.endswith(".csv"):
@@ -933,8 +1056,14 @@ async def import_models_csv(
     updated_count = 0
     skipped_count = 0
     errors = []
+    ignored: list[str] = []
+    role = await role_in_tenant(db, user.id, tenant.id)
 
     for row in rows:
+        for column in row.ignored_columns:
+            ignored.append(
+                f"SKU '{row.sku}': '{column}' was not imported -- {IGNORED_COLUMNS[column]}"
+            )
         try:
             # Check if model exists by SKU
             existing = await db.execute(
@@ -949,6 +1078,28 @@ async def import_models_csv(
             print_time_minutes = parse_print_time(row.print_time) if row.print_time else None
             last_printed_date = parse_date(row.last_printed_date) if row.last_printed_date else None
 
+            # The cost inputs this row carries. A blank cell leaves the figure
+            # alone rather than zeroing it.
+            cost_inputs = {
+                key: value
+                for key, value in (
+                    ("print_time_minutes", print_time_minutes),
+                    ("labor_hours_per_item", row.labor_hours),
+                    ("overhead_percentage", row.overhead_percentage),
+                )
+                if value is not None
+            }
+            fields = changed_fields("model", model, cost_inputs)
+            if "overhead_percentage" in fields and role not in MONETARY_ROLES:
+                raise ValueError(
+                    "an overhead percentage overrides the tenant's and requires the "
+                    "owner or admin role; the row was not imported"
+                )
+            if model is not None:
+                await refuse_overwriting_observed(
+                    db, tenant, entity_type="model", entity_id=model.id, fields=fields
+                )
+
             if model:
                 # Update existing model
                 model.name = row.name
@@ -957,11 +1108,10 @@ async def import_models_csv(
                 model.designer = row.designer
                 model.source = row.source
                 model.machine = row.machine
-                model.print_time_minutes = print_time_minutes
                 model.last_printed_date = last_printed_date
                 model.units_in_stock = row.units_in_stock or 0
-                model.labor_hours = row.labor_hours
-                model.overhead_percentage = row.overhead_percentage
+                for key, value in cost_inputs.items():
+                    setattr(model, key, value)
 
                 updated_count += 1
             else:
@@ -975,14 +1125,23 @@ async def import_models_csv(
                     designer=row.designer,
                     source=row.source,
                     machine=row.machine,
-                    print_time_minutes=print_time_minutes,
                     last_printed_date=last_printed_date,
                     units_in_stock=row.units_in_stock or 0,
-                    labor_hours=row.labor_hours,
-                    overhead_percentage=row.overhead_percentage,
+                    **cost_inputs,
                 )
                 db.add(model)
+                await db.flush()
                 created_count += 1
+
+            await record_operator_write(
+                db,
+                tenant,
+                entity_type="model",
+                entity_id=model.id,
+                fields=fields,
+                user_id=user.id,
+                role=role,
+            )
 
         except Exception as e:
             errors.append(f"SKU '{row.sku}': {str(e)}")
@@ -1006,4 +1165,5 @@ async def import_models_csv(
         "skipped": skipped_count,
         "total_rows": len(rows),
         "errors": errors if errors else None,
+        "ignored": ignored if ignored else None,
     }

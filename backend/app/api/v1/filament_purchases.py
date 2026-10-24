@@ -15,7 +15,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.filament_purchase import FilamentPurchase
 from app.schemas.filament_purchase import (
     FilamentPurchaseCreate,
@@ -100,11 +101,29 @@ async def create_filament_purchase(
     purchase_data: FilamentPurchaseCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> FilamentPurchaseResponse:
     """Record a purchase. Spools are attached to it afterwards."""
     purchase = FilamentPurchase(tenant_id=tenant.id, **purchase_data.model_dump())
     db.add(purchase)
+    await db.flush()
+    # The inbound shipping and tax read off the invoice are this person's
+    # record, allocated across every spool's landed cost (FR-001, task T229).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="filament_purchase",
+        entity_id=purchase.id,
+        fields=await refuse_observed_or_409(
+            db,
+            tenant,
+            entity_type="filament_purchase",
+            entity=None,
+            changes=purchase_data.model_dump(exclude_unset=True),
+        ),
+        user=user,
+    )
     await db.commit()
     await db.refresh(purchase, attribute_names=["spools"])
     logger.info(f"Recorded filament purchase {purchase.id} for tenant {tenant.id}")
@@ -161,15 +180,28 @@ async def update_filament_purchase(
     purchase_data: FilamentPurchaseUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> FilamentPurchaseResponse:
     """Correct a purchase; every spool's share follows from the new figures."""
     purchase = await _load(db, tenant, purchase_id)
 
-    for field, value in purchase_data.model_dump(exclude_none=True).items():
+    changes = purchase_data.model_dump(exclude_none=True)
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="filament_purchase", entity=purchase, changes=changes
+    )
+    for field, value in changes.items():
         setattr(purchase, field, value)
 
     db.add(purchase)
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="filament_purchase",
+        entity_id=purchase.id,
+        fields=fields,
+        user=user,
+    )
     await db.commit()
     await db.refresh(purchase, attribute_names=["spools"])
     return _render(purchase)
@@ -180,6 +212,7 @@ async def delete_filament_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> None:
     """Delete a purchase. Its spools survive and cost from their own price.

@@ -13,6 +13,7 @@ from app.models.model import Model
 from app.models.printer import Printer
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.services.provenance import changed_fields, record_operator_write
 from app.schemas.model_printer_config import (
     ModelPrinterConfigCreate,
     ModelPrinterConfigUpdate,
@@ -80,6 +81,15 @@ class ModelPrinterConfigService:
         config = ModelPrinterConfig(**data.model_dump())
 
         self.db.add(config)
+        await self.db.flush()
+        # The plate time, weight and parts per plate entered for this printer
+        # are a measurement, recorded against whoever entered it (FR-001,
+        # task T229). Raises `ProvenanceNotEditable` -- a new row has no
+        # observed figure, so in practice it cannot here.
+        await self._record_origins(
+            config,
+            changed_fields("model_printer_config", None, data.model_dump(exclude_unset=True)),
+        )
         await self.db.commit()
         await self.db.refresh(config)
 
@@ -260,6 +270,10 @@ class ModelPrinterConfigService:
 
         # Update only provided fields
         update_data = data.model_dump(exclude_unset=True)
+        fields = changed_fields("model_printer_config", config, update_data)
+        # Refuses before anything is set if a figure is currently observed
+        # (FR-004): telemetry's reading is not typed over (task T229).
+        await self._record_origins(config, fields)
         for field, value in update_data.items():
             setattr(config, field, value)
 
@@ -291,6 +305,16 @@ class ModelPrinterConfigService:
 
         logger.info(f"Deleted config (id={config_id})")
         return True
+
+    async def _record_origins(self, config: ModelPrinterConfig, fields: list[str]) -> None:
+        await record_operator_write(
+            self.db,
+            self.tenant,
+            entity_type="model_printer_config",
+            entity_id=config.id,
+            fields=fields,
+            user_id=self.user.id if self.user is not None else None,
+        )
 
     async def _load_relationships(self, config: ModelPrinterConfig) -> None:
         """Load relationships for a config."""

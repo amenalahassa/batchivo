@@ -403,3 +403,116 @@ class TestTheBracketLookup:
 
         assert profile.covers(Decimal("50000")) is True
         assert profile.covers(Decimal("1999")) is False
+
+
+# ============================================================================
+# A repricing supersedes the profile; each figure says who set it
+# (tasks T233, T229)
+# ============================================================================
+
+
+async def _an_order_on(db_session: AsyncSession, test_tenant, day: str) -> None:
+    from datetime import datetime, timezone
+
+    from app.models.order import Order
+
+    placed = datetime.fromisoformat(day).replace(hour=12, tzinfo=timezone.utc)
+    db_session.add(
+        Order(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            order_number=f"ORD-{uuid4().hex[:8]}",
+            customer_name="Postage Customer",
+            customer_email="postage@example.com",
+            shipping_address_line1="1 Test Street",
+            shipping_city="Testville",
+            shipping_postcode="T35T",
+            shipping_country="Canada",
+            shipping_method="Standard",
+            shipping_cost=Decimal("0"),
+            subtotal=Decimal("10"),
+            total=Decimal("10"),
+            currency="CAD",
+            status="delivered",
+            created_at=placed,
+            updated_at=placed,
+        )
+    )
+    await db_session.commit()
+
+
+class TestARepricingSupersedesTheProfile:
+    async def test_a_new_postage_after_an_order_opens_a_successor(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        created = (await client.post(URL, json=_body())).json()
+        await _an_order_on(db_session, test_tenant, "2026-03-01")
+
+        response = await client.put(
+            f"{URL}/{created['id']}",
+            json={"postage_cost": "11.25", "effective_from": "2026-07-01"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["id"] != created["id"]
+        db_session.expire_all()
+        old = next(p for p in await _stored(db_session) if str(p.id) == created["id"])
+        assert old.postage_cost == Decimal("9.50")
+        assert str(old.effective_to) == "2026-06-30"
+
+    async def test_postage_is_read_as_at_the_date_asked(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        from datetime import date
+
+        from app.services.postage import postage_for_grams
+
+        created = (await client.post(URL, json=_body())).json()
+        await _an_order_on(db_session, test_tenant, "2026-03-01")
+        await client.put(
+            f"{URL}/{created['id']}",
+            json={"postage_cost": "11.25", "effective_from": "2026-07-01"},
+        )
+
+        march = await postage_for_grams(db_session, test_tenant, Decimal("100"), date(2026, 3, 1))
+        july = await postage_for_grams(db_session, test_tenant, Decimal("100"), date(2026, 7, 2))
+
+        assert march == Decimal("9.50")
+        assert july == Decimal("11.25")
+
+    async def test_a_used_profile_is_closed_on_delete(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        created = (await client.post(URL, json=_body())).json()
+        await _an_order_on(db_session, test_tenant, "2026-03-01")
+
+        response = await client.delete(f"{URL}/{created['id']}")
+
+        assert response.status_code == 204
+        db_session.expire_all()
+        [profile] = await _stored(db_session)
+        assert profile.effective_to is not None
+
+    async def test_an_unused_profile_is_deleted(self, client: AsyncClient, db_session) -> None:
+        created = (await client.post(URL, json=_body())).json()
+
+        await client.delete(f"{URL}/{created['id']}")
+
+        assert await _stored(db_session) == []
+
+    async def test_the_postage_records_who_set_it(self, client: AsyncClient, db_session) -> None:
+        from app.models.pricing_input_provenance import PricingInputProvenance
+
+        created = (await client.post(URL, json=_body())).json()
+
+        origin = (
+            await db_session.execute(
+                select(PricingInputProvenance).where(
+                    PricingInputProvenance.entity_type == "shipping_profile",
+                    PricingInputProvenance.field_name == "postage_cost",
+                )
+            )
+        ).scalar_one()
+        assert str(origin.entity_id) == created["id"]
+        assert origin.source == "measured"
+        assert origin.authorised_by_role in {"admin", "owner"}

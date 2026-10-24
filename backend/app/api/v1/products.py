@@ -25,7 +25,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import clock
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+    role_in_tenant,
+)
 from app.models.designer import Designer
 from app.models.fee_rule import FeeRule
 from app.models.model import Model
@@ -295,6 +303,14 @@ async def create_product(
     child_products_data = product_data.child_products or []
     product_dict = product_data.model_dump(exclude={"models", "child_products"})
 
+    fields = await refuse_observed_or_409(
+        db,
+        tenant,
+        entity_type="product",
+        entity=None,
+        changes=product_data.model_dump(exclude_unset=True),
+    )
+
     # Create product instance
     product = Product(
         tenant_id=tenant.id,
@@ -307,6 +323,17 @@ async def create_product(
 
     db.add(product)
     await db.flush()  # Get the product ID
+    # Packaging and assembly figures the body named are this person's
+    # measurement, not an assumption (FR-001, task T229).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="product",
+        entity_id=product.id,
+        fields=fields,
+        user=user,
+        role=await role_in_tenant(db, user.id, tenant.id),
+    )
 
     # Add models if provided
     for model_data in models_data:
@@ -1257,10 +1284,15 @@ async def update_product(
     product_data: ProductUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductDetailResponse:
     """
     Update an existing product.
+
+    Requires the member role (FR-007c). A packaging cost or quantity, or the
+    assembly minutes, that moves has its origin recorded as `measured` against
+    the person who moved it, and an observed one is refused (task T229).
     """
     # Fetch product
     query = (
@@ -1307,8 +1339,20 @@ async def update_product(
 
     # Update fields
     update_data = product_data.model_dump(exclude_unset=True)
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="product", entity=product, changes=update_data
+    )
     for field, value in update_data.items():
         setattr(product, field, value)
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="product",
+        entity_id=product.id,
+        fields=fields,
+        user=user,
+        role=await role_in_tenant(db, user.id, tenant.id),
+    )
 
     # Auto-generate seo_slug from (new) name if name changed and seo_slug wasn't explicitly set
     if "name" in update_data and "seo_slug" not in update_data and not product.seo_slug:
@@ -1378,6 +1422,7 @@ async def add_product_model(
     model_data: ProductModelCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductModelResponse:
     """
@@ -1448,6 +1493,7 @@ async def update_product_model(
     model_data: ProductModelCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductModelResponse:
     """
@@ -1501,6 +1547,7 @@ async def remove_product_model(
     product_model_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -1575,6 +1622,7 @@ async def add_product_pricing(
     pricing_data: ProductPricingCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductPricingResponse:
     """
@@ -1735,6 +1783,7 @@ async def update_product_pricing(
     pricing_data: ProductPricingUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductPricingResponse:
     """Change a product's price, or delist it (task T097).
@@ -1841,6 +1890,7 @@ async def remove_product_pricing(
     pricing_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """Delist a product from a channel by closing its current price period.
@@ -1939,6 +1989,7 @@ async def add_product_component(
     component_data: ProductComponentCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductComponentResponse:
     """
@@ -2038,6 +2089,7 @@ async def update_product_component(
     component_data: ProductComponentUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductComponentResponse:
     """
@@ -2103,6 +2155,7 @@ async def remove_product_component(
     component_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ):
     """
@@ -2792,6 +2845,7 @@ async def create_product_variant(
     data: ProductVariantCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductVariantResponse:
     """Add a size variant to a product."""
@@ -2847,6 +2901,7 @@ async def update_product_variant(
     data: ProductVariantUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductVariantResponse:
     """Update a size variant."""
@@ -2880,6 +2935,7 @@ async def delete_product_variant(
     variant_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> None:
     """Delete a size variant."""

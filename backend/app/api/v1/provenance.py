@@ -40,13 +40,19 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB, require_role
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireMember,
+    TenantDB,
+    require_role,
+    role_in_tenant,
+)
 from app.models.pricing_input_provenance import PROVENANCE_SOURCES
 from app.models.tenant import Tenant
-from app.models.user import User, UserTenant
+from app.models.user import User
 
 from app.schemas.provenance import (
     EntityProvenanceResponse,
@@ -98,22 +104,6 @@ def _entity_type_or_422(entity_type: str) -> str:
     return entity_type
 
 
-async def _role_in_tenant(db: AsyncSession, user_id, tenant_id) -> Optional[str]:
-    """The role this user holds in this tenant, for FR-001's audit field.
-
-    The same helper `pricing_policy.py` uses to fill `set_by_role`, for the
-    same reason: a figure that drives a decision has to carry who set it and
-    under what authority.
-    """
-    result = await db.execute(
-        select(UserTenant.role).where(
-            UserTenant.user_id == user_id, UserTenant.tenant_id == tenant_id
-        )
-    )
-    role = result.scalars().first()
-    return getattr(role, "value", role)
-
-
 async def _require_write_role(
     db: AsyncSession,
     user: User,
@@ -141,7 +131,7 @@ async def _require_write_role(
     entry = registry_entry(entity_type, field_name)
     is_policy = requested_source in POLICY_SOURCES or not entry.learnable
     await require_role(user, tenant, db, "admin" if is_policy else "member")
-    return await _role_in_tenant(db, user.id, tenant.id)
+    return await role_in_tenant(db, user.id, tenant.id)
 
 
 @router.get("/provenance", response_model=EntityProvenanceResponse)
@@ -394,6 +384,7 @@ async def accept_estimate_revision(
     revision_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> EstimateRevisionResponse:
     """Apply a held proposal, whole (FR-042c).
@@ -413,6 +404,7 @@ async def reject_estimate_revision(
     revision_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> EstimateRevisionResponse:
     """Decline a held proposal, leaving the estimate untouched.

@@ -8,7 +8,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.filament_type import FilamentType
 from app.models.material import MaterialType
 from app.models.spool import Spool
@@ -63,6 +64,7 @@ async def create_spool(
     spool_data: SpoolCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> SpoolResponse:
     """
@@ -79,6 +81,23 @@ async def create_spool(
 
     db.add(spool)
     try:
+        await db.flush()
+        # The price and weights typed in for this spool are this person's
+        # record of it, not an assumption (FR-001, task T229).
+        await record_operator_origins(
+            db,
+            tenant,
+            entity_type="spool",
+            entity_id=spool.id,
+            fields=await refuse_observed_or_409(
+                db,
+                tenant,
+                entity_type="spool",
+                entity=None,
+                changes=spool_data.model_dump(exclude_unset=True),
+            ),
+            user=user,
+        )
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -205,6 +224,7 @@ async def list_material_types(
 async def create_material_type(
     material_data: MaterialTypeCreate,
     user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
 ) -> MaterialTypeResponse:
     """
@@ -295,6 +315,7 @@ async def update_spool(
     spool_data: SpoolUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> SpoolResponse:
     """
@@ -324,10 +345,18 @@ async def update_spool(
     if "filament_type_id" in update_data:
         await ensure_filament_type_exists(db, update_data["filament_type_id"])
 
+    # The purchase price is what every material line is priced from, so a
+    # change says who made it, and an observed figure is not typed over (T229).
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="spool", entity=spool, changes=update_data
+    )
     for field, value in update_data.items():
         setattr(spool, field, value)
 
     try:
+        await record_operator_origins(
+            db, tenant, entity_type="spool", entity_id=spool.id, fields=fields, user=user
+        )
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -345,6 +374,7 @@ async def delete_spool(
     spool_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> None:
     """
@@ -382,6 +412,7 @@ async def duplicate_spool(
     spool_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> SpoolResponse:
     """
@@ -442,6 +473,22 @@ async def duplicate_spool(
     )
 
     db.add(new_spool)
+    await db.flush()
+    # Duplicating asserts the new spool cost and weighs what the old one did:
+    # that is this person's statement about the new spool, recorded as theirs
+    # rather than inheriting the source's origin (task T229).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="spool",
+        entity_id=new_spool.id,
+        fields=[
+            field
+            for field in ("purchase_price", "initial_weight", "unusable_remainder_grams")
+            if getattr(new_spool, field, None) is not None
+        ],
+        user=user,
+    )
     await db.commit()
     await db.refresh(new_spool)
 

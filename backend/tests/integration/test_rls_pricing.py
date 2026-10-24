@@ -626,6 +626,38 @@ def test_the_shopify_webhook_scopes_its_own_session() -> None:
         )
 
 
+def test_the_square_webhook_scopes_its_own_session() -> None:
+    """Every Square handler that writes engages RLS for the matched order first.
+
+    Like Shopify, Square sends nothing a session dependency can scope from;
+    the tenant is the matched order's. Since T189 the refund handler records a
+    `RefundActual` that `realised_margin` reads, so the claim is the same as
+    the Shopify one: the scope precedes each handler's writes (T213). The
+    behaviour is asserted in `tests/unit/test_square_webhook_service.py`;
+    this guards the shape so a new writing handler cannot skip it.
+    """
+    import inspect
+
+    from app.services.square_webhook_service import SquareWebhookService
+
+    assert "scope_session_to_tenant(self.db, order.tenant_id)" in inspect.getsource(
+        SquareWebhookService._scope_to_order
+    )
+    for name, first_write in (
+        ("_handle_payment_updated", "order.payment_status = new_status"),
+        ("_handle_payment_failed", 'order.payment_status = "FAILED"'),
+        ("_handle_refund_created", "order.status = OrderStatus.REFUNDED"),
+        ("_handle_refund_updated", "order.status = OrderStatus.REFUNDED"),
+    ):
+        source = inspect.getsource(getattr(SquareWebhookService, name))
+        assert "self._scope_to_order(order)" in source, (
+            f"{name} writes to the order without scoping the session to its tenant"
+        )
+        assert source.index("self._scope_to_order(order)") < source.index(first_write), (
+            f"{name} scopes the session after its first write"
+        )
+
+
 def test_the_scoping_helper_issues_the_statement_rls_reads() -> None:
     """The helper must set the variable, and from the tenant it was given."""
     import inspect
@@ -788,8 +820,11 @@ UNSCOPED_ENTRY_POINT_MODULES: frozenset[str] = frozenset(
 #: Individual routes with no tenant at the moment the session opens.
 UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
     ("POST", f"{API}/payments/webhooks/square"): (
-        "Square posts this; the tenant is only known once the payment is "
-        "matched, which happens inside the handler"
+        "Square sends neither a token nor X-Shop-Hostname; the tenant is only "
+        "known once the payment is matched to an order, and every handler that "
+        "then writes -- the order's status, the RefundActual realised_margin "
+        "reads -- calls scope_session_to_tenant with that order's tenant first "
+        "(T213), which test_the_square_webhook_scopes_its_own_session asserts"
     ),
     ("POST", f"{API}/shopify/webhooks/{{tenant_slug}}"): (
         "Shopify sends neither a token nor X-Shop-Hostname; the handler calls "

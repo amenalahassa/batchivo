@@ -827,3 +827,114 @@ class TestTransactionSafety:
         assert order.status == OrderStatus.REFUNDED
         # Verify commit was called
         mock_db.commit.assert_awaited()
+
+
+# ============================================
+# Row-level security once the order is matched (T213)
+# ============================================
+
+
+class TestTheWebhookScopesItsSessionToTheMatchedOrder:
+    """Every handler that writes must engage RLS before its first write.
+
+    Square sends no token and no `X-Shop-Hostname`, so the tenant is only
+    known once the payment has been matched to an order. From there the
+    handler writes the order's status and, for a completed refund, a
+    `RefundActual` that `realised_margin` reads -- so it has to call
+    `scope_session_to_tenant` with the order's tenant first, in the same
+    transaction (Constitution I, FR-036).
+    """
+
+    @staticmethod
+    def _order_lookup(mock_db, order) -> None:
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = order
+        mock_db.execute.return_value = result
+
+    @staticmethod
+    def _record_calls(mock_db, scope) -> list[str]:
+        calls: list[str] = []
+        scope.side_effect = lambda *a, **k: calls.append("scope")
+        mock_db.commit.side_effect = lambda *a, **k: calls.append("commit")
+        return calls
+
+    async def _run(self, handler, event_object, mock_db, mock_order):
+        mock_order.tenant_id = uuid4()
+        self._order_lookup(mock_db, mock_order)
+        webhook_event = MagicMock(spec=WebhookEvent)
+        with patch(
+            "app.services.square_webhook_service.scope_session_to_tenant",
+            new_callable=AsyncMock,
+        ) as scope:
+            calls = self._record_calls(mock_db, scope)
+            await handler(event_object, webhook_event, {"actions": []})
+        return scope, calls
+
+    @pytest.mark.asyncio
+    async def test_a_completed_refund_is_recorded_on_a_scoped_session(
+        self, webhook_service, mock_db, mock_order
+    ):
+        event_object = create_refund_created_event(status="COMPLETED")["data"]["object"]
+        webhook_service._record_refund_actual = AsyncMock()
+
+        scope, calls = await self._run(
+            webhook_service._handle_refund_created, event_object, mock_db, mock_order
+        )
+
+        scope.assert_awaited_once_with(mock_db, mock_order.tenant_id)
+        assert calls[0] == "scope", "the refund actual was written before RLS engaged"
+        webhook_service._record_refund_actual.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_completed_refund_update_scopes_before_setting_the_status(
+        self, webhook_service, mock_db, mock_order
+    ):
+        event_object = create_refund_updated_event(status="COMPLETED")["data"]["object"]
+
+        scope, calls = await self._run(
+            webhook_service._handle_refund_updated, event_object, mock_db, mock_order
+        )
+
+        scope.assert_awaited_once_with(mock_db, mock_order.tenant_id)
+        assert calls[:2] == ["scope", "commit"]
+        assert mock_order.status == OrderStatus.REFUNDED
+
+    @pytest.mark.asyncio
+    async def test_a_payment_update_scopes_before_writing_the_order(
+        self, webhook_service, mock_db, mock_order
+    ):
+        event_object = create_payment_updated_event(status="COMPLETED")["data"]["object"]
+
+        scope, calls = await self._run(
+            webhook_service._handle_payment_updated, event_object, mock_db, mock_order
+        )
+
+        scope.assert_awaited_once_with(mock_db, mock_order.tenant_id)
+        assert calls[:2] == ["scope", "commit"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_payment_scopes_before_writing_the_order(
+        self, webhook_service, mock_db, mock_order
+    ):
+        event_object = create_payment_failed_event()["data"]["object"]
+
+        scope, calls = await self._run(
+            webhook_service._handle_payment_failed, event_object, mock_db, mock_order
+        )
+
+        scope.assert_awaited_once_with(mock_db, mock_order.tenant_id)
+        assert calls[:2] == ["scope", "commit"]
+        assert mock_order.payment_status == "FAILED"
+
+    @pytest.mark.asyncio
+    async def test_no_order_matched_means_nothing_to_scope(self, webhook_service, mock_db):
+        self._order_lookup(mock_db, None)
+        event_object = create_refund_created_event(status="COMPLETED")["data"]["object"]
+        with patch(
+            "app.services.square_webhook_service.scope_session_to_tenant",
+            new_callable=AsyncMock,
+        ) as scope:
+            await webhook_service._handle_refund_created(
+                event_object, MagicMock(spec=WebhookEvent), {"actions": []}
+            )
+        scope.assert_not_awaited()

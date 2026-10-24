@@ -13,12 +13,14 @@ Customer-facing shipping *quotes* are a separate concern and stay in
 `shipping_service.py`: that asks what to charge, this asks what was paid.
 """
 
+from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import clock
 from app.models.shipping_profile import ShippingProfile
 
 if TYPE_CHECKING:
@@ -32,8 +34,13 @@ async def postage_for_grams(
     db: AsyncSession,
     tenant: "Tenant",
     grams: Optional[Decimal],
+    as_of: Optional[date] = None,
 ) -> Decimal:
     """Postage for one parcel of ``grams``, from the shipping profiles.
+
+    Read from the profiles in force on ``as_of``, today by default: a carrier
+    repricing supersedes a profile rather than editing it (task T233), so a
+    past date still reads the postage that applied then.
 
     Returns zero when the operator has recorded no profile covering the weight,
     or no weight at all. That is a gap rather than a figure, and it is reported
@@ -57,8 +64,9 @@ async def postage_for_grams(
     )
 
     weight = Decimal(str(grams))
+    reference = as_of or clock.today()
     for profile in profiles:
-        if profile.covers(weight):
+        if profile.applies_on(reference) and profile.covers(weight):
             return Decimal(str(profile.postage_cost))
     return ZERO
 

@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.money import pence_to_pounds
+from app.database import scope_session_to_tenant
 from app.models.order import Order, OrderStatus
 from app.services.commerce_order_ownership import commerce_order_id
 from app.models.payment_log import PaymentLog, PaymentLogOperation, PaymentLogStatus
@@ -45,6 +46,18 @@ class SquareWebhookService:
     def __init__(self, db: AsyncSession):
         """Initialize with database session."""
         self.db = db
+
+    async def _scope_to_order(self, order: Order) -> None:
+        """Engage row-level security for the tenant the matched order names (task T213).
+
+        Square sends neither a token nor `X-Shop-Hostname`, so no session
+        dependency can scope this request: the tenant is only known once the
+        payment has been matched to an order. Every handler that goes on to
+        write -- an order's status, a `RefundActual` that `realised_margin`
+        reads -- calls this first, inside the transaction those writes commit
+        in, because `SET LOCAL` ends with the transaction (Constitution I).
+        """
+        await scope_session_to_tenant(self.db, order.tenant_id)
 
     async def verify_signature(
         self,
@@ -341,6 +354,7 @@ class SquareWebhookService:
         order = order_result.scalar_one_or_none()
 
         if order:
+            await self._scope_to_order(order)
             # Update order within transaction
             old_status = order.payment_status
             if payment_id:
@@ -418,6 +432,7 @@ class SquareWebhookService:
         order = order_result.scalar_one_or_none()
 
         if order:
+            await self._scope_to_order(order)
             # Update order with failed status
             order.payment_status = "FAILED"
             order.updated_at = datetime.now(timezone.utc)
@@ -516,6 +531,8 @@ class SquareWebhookService:
         # Find associated order
         order_result = await self.db.execute(select(Order).where(Order.payment_id == payment_id))
         order = order_result.scalar_one_or_none()
+        if order:
+            await self._scope_to_order(order)
 
         if order and status == "COMPLETED":
             # Refund is already complete - update order status
@@ -601,6 +618,7 @@ class SquareWebhookService:
             order = order_result.scalar_one_or_none()
 
             if order:
+                await self._scope_to_order(order)
                 order.status = OrderStatus.REFUNDED
                 order.payment_status = "REFUNDED"
                 order.updated_at = datetime.now(timezone.utc)
