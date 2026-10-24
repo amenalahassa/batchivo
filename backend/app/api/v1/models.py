@@ -466,6 +466,8 @@ async def _cost_profile_response(
     return ModelCostProfileResponse(
         model_id=model.id,
         print_time_minutes=model.print_time_minutes,
+        planned_printer_id=model.planned_printer_id,
+        planned_printer_name=(model.planned_printer.name if model.planned_printer else None),
         prints_per_plate=model.prints_per_plate,
         waste_grams=model.waste_grams,
         expected_yield=model.expected_yield,
@@ -535,6 +537,23 @@ async def update_model_cost_profile(
     model = await _load_model_for_tenant(db, tenant, model_id)
 
     changes = profile_data.model_dump(exclude_none=True)
+    # The planned machine is the one field that may be cleared: null means
+    # "no machine planned", which is a choice, not an omission (FR-011).
+    if "planned_printer_id" in profile_data.model_fields_set:
+        changes["planned_printer_id"] = profile_data.planned_printer_id
+        if profile_data.planned_printer_id is not None:
+            planned = (
+                await db.execute(
+                    select(Printer).where(
+                        Printer.id == profile_data.planned_printer_id,
+                        Printer.tenant_id == tenant.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if planned is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="Printer not found"
+                )
     if not changes:
         return await _cost_profile_response(db, tenant, model)
 
@@ -592,6 +611,7 @@ async def update_model_cost_profile(
     db.add(model)
     await db.commit()
     await db.refresh(model)
+    await db.refresh(model, ["planned_printer"])
     logger.info(f"Updated cost profile for model {model.id} (fields: {', '.join(sorted(changes))})")
 
     return await _cost_profile_response(db, tenant, model)

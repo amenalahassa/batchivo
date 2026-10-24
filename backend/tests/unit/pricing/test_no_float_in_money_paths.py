@@ -444,13 +444,24 @@ class MoneyFloatCallVisitor(ast.NodeVisitor):
 
 
 def _names_in(node: ast.AST) -> list[str]:
-    """Every identifier and attribute name appearing under `node`."""
+    """Every identifier, attribute name and string subscript key under `node`.
+
+    The subscript keys matter as much as the attributes: `float(row["price"])`
+    names money as plainly as `float(row.price)`, and reading only the
+    identifiers let a seed script coerce a list price unseen (T247).
+    """
     found: list[str] = []
     for sub in ast.walk(node):
         if isinstance(sub, ast.Name):
             found.append(sub.id)
         elif isinstance(sub, ast.Attribute):
             found.append(sub.attr)
+        elif (
+            isinstance(sub, ast.Subscript)
+            and isinstance(sub.slice, ast.Constant)
+            and isinstance(sub.slice.value, str)
+        ):
+            found.append(sub.slice.value)
     return found
 
 
@@ -492,6 +503,23 @@ def test_the_route_ban_catches_the_defect_it_was_written_for() -> None:
     assert divisions == ["float(order.subtotal) / 100", "item.price / 100"], (
         "the division ban must catch both money divisions and leave item.count / 100 alone"
     )
+
+
+def test_the_call_ban_reads_string_subscript_keys() -> None:
+    """Money named by a dictionary key is still money (T247).
+
+    `float(prod_data["price"])` passed the ban because only identifiers and
+    attributes were read; a grams key beside it must still pass.
+    """
+    sample = (
+        "def seed(row, stats):\n"
+        '    price = float(row["price"])\n'
+        '    used = float(stats["total_used"])\n'
+        "    index = float(row[0])\n"
+    )
+    calls = MoneyFloatCallVisitor(sample)
+    calls.visit(ast.parse(sample))
+    assert [text for _, text in calls.violations] == ["float(row['price'])"]
 
 
 # ---------------------------------------------------------------------------

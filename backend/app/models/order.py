@@ -187,6 +187,27 @@ class Order(Base, UUIDMixin, TimestampMixin):
         ),
     )
 
+    # Where postage_paid and sales_tax_collected came from (task T241,
+    # FR-041e): 'entered' by a person, 'ingested' from a feed, or 'derived' by
+    # the system from the operator's own tables. NULL on rows that predate it.
+    actuals_source: Mapped[Optional[str]] = mapped_column(
+        String(12),
+        nullable=True,
+        comment="'entered', 'ingested' or 'derived'; how postage and tax arrived",
+    )
+
+    actuals_recorded_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Who entered postage or tax; NULL unless entered by a person",
+    )
+
+    actuals_recorded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When postage or tax was last recorded",
+    )
+
     # Order totals
     subtotal: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),

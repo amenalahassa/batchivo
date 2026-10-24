@@ -578,6 +578,10 @@ class TenantSettingsService:
             updates["name"] = data.name
         if data.description is not None:
             updates["description"] = data.description
+        if data.currency_code is not None:
+            updates["currency_code"] = data.currency_code
+        if data.currency_symbol is not None:
+            updates["currency_symbol"] = data.currency_symbol
 
         if updates:
             updates["updated_at"] = datetime.now(timezone.utc)

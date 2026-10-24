@@ -455,3 +455,37 @@ class TestTheProductScreenShowsItBesideTheMargin:
         assert row["profit_per_machine_hour"] is not None
         assert row["profit_per_machine_hour"] == margin.json()["profit_per_machine_hour"]
         assert isinstance(row["profit_per_machine_hour"], str)
+
+
+class TestTheAssignedMachineCostsTheJob:
+    """A job assigned to a machine is costed on that machine (T243, FR-011)."""
+
+    async def test_a_costly_assigned_machine_lowers_the_figure(
+        self, db_session, test_tenant, world
+    ) -> None:
+        from app.models.printer import Printer
+
+        costly = Printer(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            name="Costly machine",
+            purchase_price=Decimal("9000.00"),
+            expected_lifetime_hours=3000,
+            is_active=True,
+        )
+        db_session.add(costly)
+        await db_session.commit()
+
+        unassigned = await queue_job(db_session, test_tenant, product=world["products"]["quick"])
+        assigned = await queue_job(db_session, test_tenant, product=world["products"]["quick"])
+        assigned.assigned_printer_id = costly.id
+        await db_session.commit()
+
+        ranking = {
+            entry.job.id: entry
+            for entry in await service(db_session, test_tenant).profitability_ranking()
+        }
+        assert (
+            ranking[assigned.id].profit_per_machine_hour
+            < ranking[unassigned.id].profit_per_machine_hour
+        )

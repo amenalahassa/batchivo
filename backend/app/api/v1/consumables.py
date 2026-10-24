@@ -6,6 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
 from app.schemas.consumable import (
@@ -102,6 +103,17 @@ async def create_consumable_type(
     )
 
     db.add(consumable)
+    if consumable.current_cost_per_unit is not None:
+        # The unit cost prices a packaging line, so it says who entered it (T249).
+        await db.flush()
+        await record_operator_origins(
+            db,
+            tenant,
+            entity_type="consumable_type",
+            entity_id=consumable.id,
+            fields=["current_cost_per_unit"],
+            user=user,
+        )
     await db.commit()
     await db.refresh(consumable)
 
@@ -218,11 +230,17 @@ async def update_consumable_type(
 
     # Update fields
     update_data = consumable_data.model_dump(exclude_unset=True)
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="consumable_type", entity=consumable, changes=update_data
+    )
     for field, value in update_data.items():
         if field == "sku" and value:
             value = value.upper()
         setattr(consumable, field, value)
 
+    await record_operator_origins(
+        db, tenant, entity_type="consumable_type", entity_id=consumable.id, fields=fields, user=user
+    )
     await db.commit()
     await db.refresh(consumable)
 
@@ -404,6 +422,17 @@ async def create_purchase(
     # Update consumable stock and cost
     consumable.quantity_on_hand += purchase_data.quantity_purchased
     consumable.current_cost_per_unit = cost_per_unit
+    # A purchase the operator recorded is their figure, not an observation
+    # from a feed (FR-001, T249).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="consumable_type",
+        entity_id=consumable.id,
+        fields=["current_cost_per_unit"],
+        user=user,
+        as_of=purchase_data.purchase_date,
+    )
 
     await db.commit()
     await db.refresh(purchase)

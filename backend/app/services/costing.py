@@ -365,7 +365,8 @@ def _printer_config_for(
         return None
     for config in configs:
         if getattr(config, "printer_id", None) == printer.id:
-            return config
+            found: "ModelPrinterConfig" = config
+            return found
     return None
 
 
@@ -418,6 +419,17 @@ def _labor_hours(model: "Model", prints_per_plate: Decimal) -> dict[str, Decimal
     return {"handling": handling, "finishing": finishing, "packing": packing}
 
 
+def _planned_printer(model: "Model") -> Optional["Printer"]:
+    """The machine the item is planned on, if one is set and loaded.
+
+    Read from the instance state rather than the attribute, so an item built in
+    memory or loaded without the relationship never triggers a query from
+    inside the engine, which issues none.
+    """
+    state = getattr(model, "__dict__", {})
+    return state.get("planned_printer")
+
+
 def _item_lines(
     model: "Model",
     policy: CostPolicy,
@@ -434,6 +446,10 @@ def _item_lines(
     """
     result = _ItemLines()
     model_id = getattr(model, "id", None)
+    # A machine named by the caller (a queue job's assigned printer, the
+    # `printer_id` a screen asks about) wins; otherwise the item's planned
+    # machine; otherwise the policy's default rate (FR-011, T243).
+    printer = printer or _planned_printer(model)
     config = _printer_config_for(model, printer)
 
     # ---------------------------------------------------------------- plate
@@ -1173,7 +1189,8 @@ class CostingService:
             if model is None:
                 continue
             quantity = _as_decimal(getattr(pm, "quantity", None), ONE) or ONE
-            printer = (printer_for_model or {}).get(getattr(model, "id", None))
+            model_id = getattr(model, "id", None)
+            printer = (printer_for_model or {}).get(model_id) if model_id is not None else None
             absorb(
                 CostingService.item_breakdown(
                     model,
@@ -1362,95 +1379,69 @@ class CostingService:
         """
         resolved = _policy_from(policy, labor_rate, overhead_percentage)
 
-        # Check recursion depth limit
-        if _depth > MAX_RECURSION_DEPTH:
-            raise MaxDepthExceededError(_depth, MAX_RECURSION_DEPTH)
+        # The total is the structured breakdown's, never a second sum: this
+        # shape used to add per-model totals already rounded to 0.001 and
+        # rounded again, so the list and the detail disagreed with `/cost`,
+        # the margin and the snapshot by a cent (T239, FR-047, FR-048). The
+        # breakdown also does the cycle and depth checks.
+        breakdown = CostingService.product_breakdown(
+            product,
+            policy=resolved,
+            printer_for_model=printer_for_model,
+            _visited=_visited,
+            _depth=_depth,
+        )
+        total_make_cost = breakdown.total_make_cost
+        incomplete_reasons: list[str] = list(breakdown.incomplete_reasons)
 
-        # Initialize visited set for cycle detection
-        if _visited is None:
-            _visited = set()
-
-        # Check for circular reference
-        if product.id in _visited:
-            raise CircularReferenceError(product.id, _visited)
-
-        # Add current product to visited set
-        _visited = _visited.copy()  # Create copy to not affect sibling branches
-        _visited.add(product.id)
-
-        # 1. Calculate total model cost (sum of all models × quantity × model unit cost)
-        # Phase 3: Also track actual production costs from models
-        models_cost = Decimal("0")
-        models_actual_cost = Decimal("0")
+        # The flat fields split that same total by where each line came from.
+        # Each part is the engine's own unrounded figure, so the parts still
+        # add up to the total exactly.
+        models_cost = ZERO
+        models_actual_cost = ZERO
         models_with_actual_cost = 0
         models_total = 0
         seen_model_ids: set = set()
-        # What the engine could not cost, gathered as the traversal goes. A
-        # bundle's total is only as finished as its least finished part, so a
-        # child's reasons are the parent's reasons too (FR-019).
-        incomplete_reasons: list[str] = []
+        for pm in getattr(product, "product_models", None) or []:
+            model = getattr(pm, "model", None)
+            if model is None:
+                continue
+            quantity = _as_decimal(getattr(pm, "quantity", None), ONE) or ONE
+            item = CostingService.item_breakdown(
+                model,
+                policy=resolved,
+                printer=(printer_for_model or {}).get(model.id),
+            )
+            models_cost += quantity * item.total_make_cost
 
-        if hasattr(product, "product_models"):
-            for pm in product.product_models:
-                if hasattr(pm, "model") and pm.model:
-                    # Calculate model's unit cost (BOM-based theoretical).
-                    # The policy is forwarded: a product cost built from the
-                    # tenant's rate for assembly and the engine's default for
-                    # its models is one figure with two labor rates in it.
-                    model_cost = CostingService.calculate_model_cost(
-                        pm.model,
-                        policy=resolved,
-                        printer=(printer_for_model or {}).get(pm.model.id),
-                    )
-                    models_cost += Decimal(str(pm.quantity)) * model_cost.total_cost
-                    incomplete_reasons.extend(model_cost.incomplete_reasons)
+            # Phase 3: actual production cost, where the model records one
+            actual = _as_decimal(getattr(model, "actual_production_cost", None), None)
+            if model.id not in seen_model_ids:
+                seen_model_ids.add(model.id)
+                models_total += 1
+                if actual is not None:
+                    models_with_actual_cost += 1
+            if actual is not None:
+                models_actual_cost += quantity * actual
 
-                    # Track unique models for actual cost calculation
-                    if pm.model.id not in seen_model_ids:
-                        seen_model_ids.add(pm.model.id)
-                        models_total += 1
+        child_products_cost = ZERO
+        for pc in getattr(product, "child_products", None) or []:
+            child = getattr(pc, "child_product", None)
+            if child is None:
+                continue
+            quantity = _as_decimal(getattr(pc, "quantity", None), ONE) or ONE
+            child_products_cost += (
+                quantity
+                * CostingService.product_breakdown(
+                    child, policy=resolved, printer_for_model=printer_for_model
+                ).total_make_cost
+            )
 
-                        # Phase 3: Add actual production cost if available
-                        if pm.model.actual_production_cost is not None:
-                            models_actual_cost += Decimal(str(pm.quantity)) * Decimal(
-                                str(pm.model.actual_production_cost)
-                            )
-                            models_with_actual_cost += 1
-                    elif pm.model.actual_production_cost is not None:
-                        # Same model appears multiple times - just add the cost
-                        models_actual_cost += Decimal(str(pm.quantity)) * Decimal(
-                            str(pm.model.actual_production_cost)
-                        )
-
-        # 2. Calculate total child product cost (for bundles)
-        # This is recursive - child products may contain other products
-        child_products_cost = Decimal("0")
-        if hasattr(product, "child_products"):
-            for pc in product.child_products:
-                if hasattr(pc, "child_product") and pc.child_product:
-                    # Recursively calculate child product's cost
-                    child_cost = CostingService.calculate_product_cost(
-                        pc.child_product,
-                        policy=resolved,
-                        printer_for_model=printer_for_model,
-                        _visited=_visited,
-                        _depth=_depth + 1,
-                    )
-                    child_products_cost += Decimal(str(pc.quantity)) * child_cost.total_make_cost
-                    incomplete_reasons.extend(child_cost.incomplete_reasons)
-
-        # 3. Packaging cost - use consumable cost if linked, otherwise manual cost
+        # The breakdown's "packaging" and "assembly" lines include the
+        # children's, so this product's own are taken from the one packaging
+        # helper and the remainder -- which is what assembly is.
         packaging_cost, _packaging_origin = _packaging_cost(product, None)
-
-        # 4. Assembly cost (minutes to hours × labor rate)
-        assembly_minutes = (
-            Decimal(str(product.assembly_minutes)) if product.assembly_minutes else Decimal("0")
-        )
-        assembly_hours = assembly_minutes / Decimal("60")
-        assembly_cost = assembly_hours * resolved.print_labor_rate
-
-        # 5. Total make cost (now includes child products cost)
-        total_make_cost = models_cost + child_products_cost + packaging_cost + assembly_cost
+        assembly_cost = total_make_cost - models_cost - child_products_cost - packaging_cost
 
         # 6. Phase 3: Calculate actual total cost and variance if we have actual data
         total_actual_cost = None
@@ -1690,7 +1681,16 @@ def _packaging_cost(
     if consumable is not None:
         unit_cost = _as_decimal(getattr(consumable, "current_cost_per_unit", None), ZERO) or ZERO
         quantity = _as_decimal(getattr(product, "packaging_quantity", None), ONE) or ONE
-        origin = _origin_of(origins, pending, "product", product_id, "packaging_quantity")
+        # The unit cost sets the amount, so its origin is the line's: a
+        # quantity of one measured box tells nothing about what a box costs
+        # (FR-001, T249).
+        origin = _origin_of(
+            origins,
+            pending,
+            "consumable_type",
+            getattr(consumable, "id", None),
+            "current_cost_per_unit",
+        )
         return (unit_cost * quantity, origin)
 
     cost = _as_decimal(getattr(product, "packaging_cost", None), ZERO) or ZERO

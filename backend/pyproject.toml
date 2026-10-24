@@ -122,11 +122,14 @@ module = [
     "app.services.fx_service",
     "app.services.temporal_pricing",
     "app.services.realised_margin",
-    "app.services.tenant_cost_settings",
     # The dated channel economics (task T136) and the realised-versus-planned
     # comparison (task T134).
     "app.services.channel_economics",
     "app.services.margin_alert",
+    # The books-to-sale currency edge and the frozen order-line snapshot
+    # (tasks T231, T232); `tenant_cost_settings` was removed and left here.
+    "app.services.currency_edge",
+    "app.services.sale_snapshot",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

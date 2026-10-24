@@ -13,7 +13,13 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select, desc
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+)
 from app.services.refund_actuals import record_refund
 from app.models.return_request import (
     ReturnItem,
@@ -181,6 +187,7 @@ async def get_return_request(
 async def update_return_request(
     return_id: UUID,
     data: ReturnRequestUpdate,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
@@ -224,6 +231,7 @@ async def update_return_request(
 async def approve_return_request(
     return_id: UUID,
     data: ReturnRequestApprove,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
@@ -291,6 +299,7 @@ async def approve_return_request(
 async def receive_return_items(
     return_id: UUID,
     data: ReturnRequestReceive,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
@@ -351,11 +360,16 @@ async def receive_return_items(
 async def complete_return_request(
     return_id: UUID,
     data: ReturnRequestComplete,
+    _admin: RequireAdmin,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
-    """Complete a return request (issue refund/replacement)."""
+    """Complete a return request (issue refund/replacement).
+
+    Admin only, as `POST /orders/{id}/refund` is: completing writes a
+    `RefundActual`, which lowers the order's realised margin (FR-040, T241).
+    """
     result = await db.execute(
         select(ReturnRequest)
         .where(
@@ -474,6 +488,7 @@ async def complete_return_request(
 async def reject_return_request(
     return_id: UUID,
     data: ReturnRequestReject,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
@@ -536,6 +551,7 @@ async def reject_return_request(
 @router.delete("/{return_id}", status_code=204)
 async def delete_return_request(
     return_id: UUID,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,

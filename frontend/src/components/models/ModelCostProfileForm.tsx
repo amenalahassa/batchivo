@@ -26,6 +26,7 @@
  */
 
 import { useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -60,6 +61,7 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 import { useModelCostProfile, useUpdateModelCostProfile } from '@/hooks/usePricing'
+import { getActivePrinters } from '@/lib/api/printers'
 import type { CostProfileFieldOrigin, ModelCostProfileUpdate } from '@/types/pricing'
 
 /** A blank field means "not entered", which is different from zero. */
@@ -94,6 +96,8 @@ const schema = z.object({
   labor_hours_per_item: optionalDecimal('Enter non-negative hours, or leave it blank'),
   finishing_hours_per_item: optionalDecimal('Enter non-negative hours, or leave it blank'),
   packing_hours_per_item: optionalDecimal('Enter non-negative hours, or leave it blank'),
+  /** '' is "no machine planned": the policy's default machine rate applies. */
+  planned_printer_id: z.string(),
 })
 
 type FormValues = z.infer<typeof schema>
@@ -117,6 +121,12 @@ export function ModelCostProfileForm({
   const { updateCostProfileAsync, isUpdating, error: saveError } =
     useUpdateModelCostProfile(modelId)
 
+  // The machine an item is planned on prices its machine time (FR-011, T243).
+  const { data: printers = [] } = useQuery({
+    queryKey: ['printers', 'active'],
+    queryFn: getActivePrinters,
+  })
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
@@ -129,6 +139,7 @@ export function ModelCostProfileForm({
       labor_hours_per_item: '',
       finishing_hours_per_item: '',
       packing_hours_per_item: '',
+      planned_printer_id: '',
     },
   })
 
@@ -145,6 +156,7 @@ export function ModelCostProfileForm({
         labor_hours_per_item: profile.labor_hours_per_item ?? '',
         finishing_hours_per_item: profile.finishing_hours_per_item ?? '',
         packing_hours_per_item: profile.packing_hours_per_item ?? '',
+        planned_printer_id: profile.planned_printer_id ?? '',
       })
     }
   }, [profile, form])
@@ -181,6 +193,11 @@ export function ModelCostProfileForm({
       'packing_hours_per_item',
     ] as const) {
       if (values[field] !== '') changes[field] = values[field]
+    }
+    // Sent only when changed, and as null to clear: unlike a blank figure, "no
+    // machine planned" is a choice the operator can make.
+    if (form.formState.dirtyFields.planned_printer_id) {
+      changes.planned_printer_id = values.planned_printer_id || null
     }
 
     await updateCostProfileAsync(changes)
@@ -285,6 +302,43 @@ export function ModelCostProfileForm({
                   <FormDescription>
                     Minutes for one whole plate, as the slicer reports it. Without it the machine
                     and overhead lines cannot be costed at all.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="planned_printer_id"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Planned machine</FormLabel>
+                  <FormControl>
+                    <select
+                      className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                      disabled={!canEdit}
+                      {...field}
+                    >
+                      <option value="">No machine planned (default machine rate)</option>
+                      {printers.map((printer) => (
+                        <option key={printer.id} value={printer.id}>
+                          {printer.name}
+                        </option>
+                      ))}
+                      {profile?.planned_printer_id &&
+                        !printers.some((printer) => printer.id === profile.planned_printer_id) && (
+                          <option value={profile.planned_printer_id}>
+                            {profile.planned_printer_name ?? 'Inactive machine'}
+                          </option>
+                        )}
+                    </select>
+                  </FormControl>
+                  <FormDescription>
+                    The printer this item normally runs on. Its own depreciation, maintenance and
+                    power give the machine-time cost; without one, the default rate in your
+                    pricing policy applies. A queued job assigned to another printer is costed on
+                    that printer instead.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

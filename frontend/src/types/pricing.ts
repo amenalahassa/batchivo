@@ -232,6 +232,9 @@ export type PrinterCostPolicyUpdate = Partial<
 export interface ModelCostProfile {
   model_id: string
   print_time_minutes: number | null
+  /** The machine this item is planned on, whose rate costs it (FR-011). */
+  planned_printer_id: string | null
+  planned_printer_name: string | null
   prints_per_plate: number
   waste_grams: Money
   expected_yield: Money
@@ -269,6 +272,7 @@ export type ModelCostProfileUpdate = Partial<
     | 'labor_hours_per_item'
     | 'finishing_hours_per_item'
     | 'packing_hours_per_item'
+    | 'planned_printer_id'
   >
 >
 
@@ -451,6 +455,8 @@ export interface ShippingProfile {
   postage_cost: Money
   carrier: string | null
   effective_from: string
+  /** Set once superseded or withdrawn; the profile stays for orders it costed. */
+  effective_to?: string | null
 }
 
 export interface ShippingProfileCreate {

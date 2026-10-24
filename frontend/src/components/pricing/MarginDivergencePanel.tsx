@@ -38,6 +38,12 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import type { MarginDivergence } from '@/types/pricing'
 
+/** How a frozen rate was obtained: `app/models/fx_rate.py:FX_RATE_SOURCES`. */
+const FX_SOURCE_LABELS: Record<string, string> = {
+  service: 'fetched',
+  manual: 'entered by hand',
+}
+
 export interface MarginDivergencePanelProps {
   /** Narrow to one product's settled lines. */
   productId?: string
@@ -131,6 +137,26 @@ function DivergenceRow({
         <p className="text-xs text-muted-foreground" data-testid="divergence-no-movements">
           No cost line moved — check the revenue on this order.
         </p>
+      )}
+      {/* The rate this sale froze, with its date and origin, and what the
+          snapshot could not record (FR-028g, FR-028h, T252): a realised
+          margin built on a stale or hand-entered rate must not read like any
+          other. */}
+      {divergence.fx_rate != null && (
+        <p className="text-xs text-muted-foreground" data-testid="divergence-fx">
+          Rate frozen at sale: {divergence.fx_rate}
+          {divergence.fx_rate_date ? `, for ${divergence.fx_rate_date}` : ''}
+          {divergence.fx_rate_source
+            ? `, ${FX_SOURCE_LABELS[divergence.fx_rate_source] ?? divergence.fx_rate_source}`
+            : ''}
+        </p>
+      )}
+      {(divergence.snapshot_incomplete ?? []).length > 0 && (
+        <ul className="space-y-0.5 text-xs text-amber-700" data-testid="divergence-incomplete">
+          {(divergence.snapshot_incomplete ?? []).map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
       )}
     </div>
   )

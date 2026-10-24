@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import field_validator, BaseModel, ConfigDict, EmailStr, Field
 
 
 # Re-export UserRole from models for API use
@@ -489,8 +489,22 @@ class TenantResponse(BaseModel):
     description: str | None = Field(None, description="Tenant description")
     is_active: bool = Field(..., description="Whether the tenant is active")
     settings: TenantSettings | dict = Field(default_factory=dict, description="Tenant settings")
+    currency_code: str = Field("GBP", description="The currency the books are kept in (FR-028)")
+    currency_symbol: str = Field("£", description="Its display symbol")
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+#: ISO 4217 currencies whose minor unit is not a hundredth. Money is rounded
+#: once at the edge to two places (`app/core/money.py`), so books kept in one
+#: of these would be rounded to a precision the currency does not have.
+NON_CENTESIMAL_CURRENCIES: frozenset[str] = frozenset(
+    {
+        "BHD", "BIF", "CLP", "DJF", "GNF", "IQD", "ISK", "JOD", "JPY", "KMF", "KRW",
+        "KWD", "LYD", "OMR", "PYG", "RWF", "TND", "UGX", "UYI", "VND", "VUV", "XAF",
+        "XOF", "XPF",
+    }
+)  # fmt: skip
 
 
 class TenantUpdate(BaseModel):
@@ -499,6 +513,27 @@ class TenantUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100, description="Tenant name")
     description: str | None = Field(None, max_length=500, description="Tenant description")
     tenant_type: TenantType | None = Field(None, description="Tenant business type")
+    # Every cost is converted from this currency (T242, FR-028). Changing it
+    # moves no settled order: each froze the rate it was sold at (FR-028j).
+    currency_code: str | None = Field(
+        None,
+        pattern=r"^[A-Za-z]{3}$",
+        description="ISO 4217 code of the currency the books are kept in",
+    )
+    currency_symbol: str | None = Field(None, min_length=1, max_length=5)
+
+    @field_validator("currency_code")
+    @classmethod
+    def _books_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = value.upper()
+        if code in NON_CENTESIMAL_CURRENCIES:
+            raise ValueError(
+                f"{code} does not have two decimal places, which is the only precision "
+                "money is kept at"
+            )
+        return code
 
 
 # =============================================================================

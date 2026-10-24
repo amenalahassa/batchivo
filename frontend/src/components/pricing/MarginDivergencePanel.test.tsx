@@ -202,4 +202,42 @@ describe('MarginDivergencePanel', () => {
       })
     })
   })
+
+  describe('the rate the sale froze (T252, FR-028g)', () => {
+    it('shows the rate with its date and origin', async () => {
+      mockGet.mockResolvedValue(
+        listOf(
+          makeDivergence({
+            fx_rate: '1.7120',
+            fx_rate_date: '2026-10-01',
+            fx_rate_source: 'manual',
+          }),
+        ),
+      )
+      render(<MarginDivergencePanel />)
+
+      expect(await screen.findByTestId('divergence-fx')).toHaveTextContent(
+        'Rate frozen at sale: 1.7120, for 2026-10-01, entered by hand',
+      )
+    })
+
+    it('names what the snapshot could not record', async () => {
+      mockGet.mockResolvedValue(
+        listOf(makeDivergence({ snapshot_incomplete: ['no exchange rate was frozen'] })),
+      )
+      render(<MarginDivergencePanel />)
+
+      expect(await screen.findByTestId('divergence-incomplete')).toHaveTextContent(
+        'no exchange rate was frozen',
+      )
+    })
+
+    it('says nothing about a rate where none was frozen', async () => {
+      mockGet.mockResolvedValue(listOf(makeDivergence()))
+      render(<MarginDivergencePanel />)
+
+      await screen.findByTestId('divergence-points')
+      expect(screen.queryByTestId('divergence-fx')).not.toBeInTheDocument()
+    })
+  })
 })

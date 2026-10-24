@@ -20,6 +20,7 @@ import {
 } from '@/lib/api/sales-channels'
 import { symbolForCurrency } from '@/lib/money'
 import { FeeRuleEditor } from './FeeRuleEditor'
+import { FeePreviewPanel } from './FeePreviewPanel'
 import { ChannelProfitabilityPanel } from './ChannelProfitabilityPanel'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -284,6 +285,9 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
 
       {/* The authoritative fee stack (FR-020, FR-021) */}
       <FeeRuleEditor channelId={channelId} currencySymbol={channelSymbol} />
+
+      {/* Check a rule against an order without creating one (T246). */}
+      <FeePreviewPanel channelId={channelId} currencySymbol={channelSymbol} />
 
       {/* Planned against recorded, over a period (FR-025, FR-041d) */}
       <ChannelProfitabilityPanel channelId={channelId} currencySymbol={channelSymbol} />

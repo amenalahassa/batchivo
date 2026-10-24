@@ -19,6 +19,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import Integer, Numeric
 
+from app.models.consumable import ConsumableType
 from app.models.fee_rule import FeeRule
 from app.models.filament_purchase import FilamentPurchase
 from app.models.model import Model
@@ -60,11 +61,20 @@ COSTING_ENTITIES: dict[str, type] = {
     "sales_channel": SalesChannel,
     "fee_rule": FeeRule,
     "shipping_profile": ShippingProfile,
+    "consumable_type": ConsumableType,
 }
+# `ProductPricing` is deliberately absent: a list price is the operator's
+# decision that margins read, never an input to a cost (T249 checked it).
 
 #: Numeric columns that are not inputs to a cost, each with the reason. A
 #: column here is a deliberate exclusion; a column in neither place is a gap.
 NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
+    "consumable_type": {
+        "quantity_on_hand": "stock on hand, not a cost input",
+        "reorder_point": "a restocking trigger, not money",
+        "reorder_quantity": "a restocking quantity, not money",
+        "typical_lead_days": "supplier lead time, not money",
+    },
     "fee_rule": {
         "sort_order": "evaluation and presentation order, not money",
     },

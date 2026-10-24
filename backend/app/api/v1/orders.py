@@ -15,9 +15,16 @@ from sqlalchemy.orm import selectinload
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.models.sales_channel import SalesChannel
+from app.models.user import User
 from app.core.money import pence_to_pounds, pounds_to_pence
 from app.services.refund_actuals import record_refund
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+)
 from app.services.commerce_order_ownership import (
     dispatch_native_commerce,
     reject_native_commerce_mutation,
@@ -27,6 +34,18 @@ from app.services.sale_snapshot import write_sale_snapshot
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _record_actuals(order: Order, user: User) -> None:
+    """Mark the order's postage and tax as entered by this person (T241).
+
+    They are the realised margin's postage and the P&L's tax liability, so who
+    set them is kept beside them, as a fee actual keeps it (FR-041e). Imports
+    and the storefront record their own origin.
+    """
+    order.actuals_source = "entered"
+    order.actuals_recorded_by_user_id = user.id
+    order.actuals_recorded_at = datetime.now(timezone.utc)
 
 
 # ============================================
@@ -124,6 +143,9 @@ class OrderResponse(BaseModel):
     postage_paid: Optional[Decimal] = None
     sales_tax_collected: Optional[Decimal] = None
     tax_exclusive_derived: bool = False
+    # How postage and tax arrived and who entered them (T241, FR-041e).
+    actuals_source: Optional[str] = None
+    actuals_recorded_by_user_id: Optional[str] = None
     subtotal: Decimal
     total: Decimal
     currency: str
@@ -304,6 +326,10 @@ def _order_response(order: Order) -> OrderResponse:
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
         tax_exclusive_derived=bool(order.tax_exclusive_derived),
+        actuals_source=order.actuals_source,
+        actuals_recorded_by_user_id=(
+            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+        ),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -327,6 +353,7 @@ def _order_response(order: Order) -> OrderResponse:
 async def create_order(
     request: CreateOrderRequest,
     tenant: CurrentTenant,
+    user: CurrentUser,
     _: RequireAdmin,
     db: TenantDB,
 ):
@@ -390,6 +417,7 @@ async def create_order(
         customer_notes=request.customer_notes,
         internal_notes=request.internal_notes,
     )
+    _record_actuals(order, user)
     db.add(order)
     await db.flush()
 
@@ -519,6 +547,12 @@ async def list_orders(
                 postage_paid=order.postage_paid,
                 sales_tax_collected=order.sales_tax_collected,
                 tax_exclusive_derived=bool(order.tax_exclusive_derived),
+                actuals_source=order.actuals_source,
+                actuals_recorded_by_user_id=(
+                    str(order.actuals_recorded_by_user_id)
+                    if order.actuals_recorded_by_user_id
+                    else None
+                ),
                 subtotal=order.subtotal,
                 total=order.total,
                 currency=order.currency,
@@ -614,6 +648,10 @@ async def get_order(
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
         tax_exclusive_derived=bool(order.tax_exclusive_derived),
+        actuals_source=order.actuals_source,
+        actuals_recorded_by_user_id=(
+            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+        ),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -637,6 +675,8 @@ async def get_order(
 async def update_order(
     order_id: UUID,
     request: UpdateOrderRequest,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):
@@ -685,6 +725,8 @@ async def update_order(
 
     if request.sales_tax_collected is not None:
         order.sales_tax_collected = request.sales_tax_collected
+    if request.postage_paid is not None or request.sales_tax_collected is not None:
+        _record_actuals(order, user)
 
     order.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -708,6 +750,10 @@ async def update_order(
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
         tax_exclusive_derived=bool(order.tax_exclusive_derived),
+        actuals_source=order.actuals_source,
+        actuals_recorded_by_user_id=(
+            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+        ),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -731,6 +777,8 @@ async def update_order(
 async def ship_order(
     order_id: UUID,
     request: ShipOrderRequest,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):
@@ -805,6 +853,7 @@ async def ship_order(
     # collected order is zero, and zero is a figure.
     if request.postage_paid is not None:
         order.postage_paid = request.postage_paid
+        _record_actuals(order, user)
     order.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
@@ -916,6 +965,8 @@ async def _sync_shopify_fulfillment(
 @router.post("/{order_id}/deliver")
 async def deliver_order(
     order_id: UUID,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):
@@ -984,6 +1035,8 @@ class FulfillOrderResponse(BaseModel):
 @router.post("/{order_id}/fulfill", response_model=FulfillOrderResponse)
 async def fulfill_order(
     order_id: UUID,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):
@@ -1275,6 +1328,8 @@ async def refund_order(
 async def cancel_order(
     order_id: UUID,
     request: CancelOrderRequest,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):
@@ -1350,6 +1405,8 @@ async def cancel_order(
 async def resend_order_email(
     order_id: UUID,
     request: ResendEmailRequest,
+    user: CurrentUser,
+    _member: RequireMember,
     db: TenantDB,
     tenant: CurrentTenant = None,
 ):

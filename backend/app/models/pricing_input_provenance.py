@@ -65,6 +65,9 @@ PROVENANCE_ENTITY_TYPES = (
     # letting it be presented as observed.
     "fee_rule",
     "shipping_profile",
+    # The packaging consumable's unit cost sets a product's packaging line, so
+    # it says where it came from like any other input (FR-001, T249).
+    "consumable_type",
 )
 
 
@@ -152,7 +155,7 @@ class PricingInputProvenance(Base, UUIDMixin, TimestampMixin):
             "'model', 'model_material', 'model_component', 'model_printer_config', "
             "'product', 'printer', 'spool', 'filament_purchase', "
             "'tenant_pricing_policy', 'sales_channel', "
-            "'fee_rule', 'shipping_profile'"
+            "'fee_rule', 'shipping_profile', 'consumable_type'"
             ")",
             name="check_pricing_input_provenance_entity_type",
         ),

@@ -261,3 +261,109 @@ class TestTheChildProductFigureAgreesToo:
         assert shown == own, (
             f"the parent shows its child at {shown} while the child's own screen reports {own}"
         )
+
+
+# ============================================
+# T239: the engine's own reads agree with the flat ones
+# ============================================
+
+
+@pytest.fixture
+async def fractional_product(
+    db_session: AsyncSession, configured_tenant: Tenant, test_spool
+) -> Product:
+    """A product whose per-model cost carries a fourth decimal.
+
+    The flat traversal rounded each model to 0.001 before summing, so two
+    models at 1.16069 became 2.322 against the engine's 2.32138: a cent apart
+    once both were rounded to the currency (FR-048).
+    """
+    model = Model(
+        id=uuid4(),
+        tenant_id=configured_tenant.id,
+        sku=f"FRAC-MODEL-{uuid4().hex[:6]}",
+        name="Fractional model",
+        is_active=True,
+    )
+    db_session.add(model)
+    await db_session.flush()
+    db_session.add(
+        ModelMaterial(
+            id=uuid4(),
+            model_id=model.id,
+            spool_id=test_spool.id,
+            weight_grams=Decimal("37"),
+            cost_per_gram=Decimal("0.03137"),
+        )
+    )
+    product = Product(
+        id=uuid4(),
+        tenant_id=configured_tenant.id,
+        sku=f"FRAC-PROD-{uuid4().hex[:6]}",
+        name="Fractional product",
+        is_active=True,
+    )
+    db_session.add(product)
+    await db_session.flush()
+    db_session.add(ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=3))
+    await db_session.commit()
+    await db_session.refresh(product)
+    return product
+
+
+async def _cost_from_cost_endpoint(client: AsyncClient, product: Product) -> Decimal:
+    response = await client.get(f"{API}/products/{product.id}/cost")
+    assert response.status_code == 200, response.text
+    return Decimal(str(response.json()["total_make_cost"])).quantize(Decimal("0.01"))
+
+
+async def _cost_from_margin(
+    client: AsyncClient, product: Product, channel: SalesChannel
+) -> Decimal:
+    priced = await client.post(
+        f"{API}/products/{product.id}/pricing",
+        json={
+            "sales_channel_id": str(channel.id),
+            "list_price": str(LIST_PRICE),
+            "is_active": True,
+        },
+    )
+    assert priced.status_code in (200, 201), priced.text
+    response = await client.get(f"{API}/products/{product.id}/pricing/{channel.id}/margin")
+    assert response.status_code == 200, response.text
+    return Decimal(str(response.json()["make_cost"])).quantize(Decimal("0.01"))
+
+
+async def _four_reads(client: AsyncClient, product: Product, channel: SalesChannel) -> None:
+    detail = await _cost_from_detail(client, product)
+    listed = await _cost_from_list(client, product)
+    engine = await _cost_from_cost_endpoint(client, product)
+    margin = await _cost_from_margin(client, product, channel)
+    assert detail == listed == engine == margin, (
+        f"one product, four make-costs: detail {detail}, list {listed}, "
+        f"/cost {engine}, margin {margin}"
+    )
+
+
+class TestEveryReadOfTheMakeCostAgrees:
+    async def test_a_bundle_reads_the_same_everywhere(
+        self, client: AsyncClient, rich_product: Product, channel: SalesChannel
+    ) -> None:
+        await _four_reads(client, rich_product, channel)
+
+    async def test_a_fourth_decimal_does_not_drift_a_cent(
+        self, client: AsyncClient, fractional_product: Product, channel: SalesChannel
+    ) -> None:
+        await _four_reads(client, fractional_product, channel)
+
+    async def test_the_flat_parts_add_up_to_the_total(
+        self, client: AsyncClient, rich_product: Product
+    ) -> None:
+        response = await client.get(f"{API}/products/{rich_product.id}")
+        assert response.status_code == 200, response.text
+        flat = response.json()["cost_breakdown"]
+        parts = sum(
+            Decimal(str(flat[key]))
+            for key in ("models_cost", "child_products_cost", "packaging_cost", "assembly_cost")
+        )
+        assert abs(parts - Decimal(str(flat["total_make_cost"]))) <= Decimal("0.02")

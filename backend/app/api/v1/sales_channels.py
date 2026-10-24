@@ -29,10 +29,14 @@ from sqlalchemy import func, select
 from app.auth.dependencies import (
     CurrentTenant,
     CurrentUser,
+    RequireMember,
     TenantDB,
     MONETARY_ROLES,
     role_in_tenant,
 )
+from app.models.fee_actual import FeeActual
+from app.models.order import Order
+from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.models.sales_channel_economics import ECONOMICS_FIELDS
 from app.schemas.sales_channel import (
@@ -76,6 +80,7 @@ async def create_sales_channel(
     user: CurrentUser,
     tenant: CurrentTenant,
     db: TenantDB,
+    _member: RequireMember,
 ) -> SalesChannelResponse:
     """
     Create a new sales channel.
@@ -254,6 +259,7 @@ async def update_sales_channel(
     user: CurrentUser,
     tenant: CurrentTenant,
     db: TenantDB,
+    _member: RequireMember,
 ) -> SalesChannelResponse:
     """
     Update an existing sales channel.
@@ -355,6 +361,7 @@ async def delete_sales_channel(
     user: CurrentUser,
     tenant: CurrentTenant,
     db: TenantDB,
+    _member: RequireMember,
     permanent: bool = Query(False, description="Permanently delete instead of soft delete"),
 ):
     """
@@ -381,7 +388,41 @@ async def delete_sales_channel(
         )
 
     if permanent:
-        # Hard delete - permanently remove from database
+        # A permanent delete cascades the channel's fee rules, fee actuals,
+        # dated economics and price history, and nulls its orders' channel:
+        # past margins and P&L could no longer be reproduced (Constitution VI,
+        # FR-039). So it is the owner's or admin's, and only for a channel
+        # nothing has been sold, priced or charged on -- otherwise deactivate.
+        role = await role_in_tenant(db, user.id, tenant.id)
+        if role not in MONETARY_ROLES:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Permanently deleting a channel requires the owner or admin role",
+            )
+        history = [
+            label
+            for label, model in (
+                ("orders", Order),
+                ("fee actuals", FeeActual),
+                ("price periods", ProductPricing),
+            )
+            if (
+                await db.execute(
+                    select(func.count())
+                    .select_from(model)
+                    # The channel is already this tenant's, so its id scopes these.
+                    .where(model.sales_channel_id == channel.id)
+                )
+            ).scalar_one()
+        ]
+        if history:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"This channel has {', '.join(history)} recorded against it; deleting it "
+                    "would erase that history. Deactivate it instead."
+                ),
+            )
         await db.delete(channel)
     else:
         # Soft delete - just mark as inactive

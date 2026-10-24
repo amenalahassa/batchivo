@@ -361,7 +361,7 @@ class TestTheStorefrontReadsOnlyCurrentPrices:
             ]
         )
 
-        assert storefront_price(product) == Decimal("65.00")
+        assert storefront_price(product, sales_channel_id=CHANNEL) == Decimal("65.00")
 
     def test_the_channels_own_price_is_preferred(self) -> None:
         product = FakeProduct(
@@ -373,27 +373,32 @@ class TestTheStorefrontReadsOnlyCurrentPrices:
 
         assert storefront_price(product, sales_channel_id=CHANNEL) == Decimal("65.00")
 
-    def test_it_falls_back_to_any_current_listing(self) -> None:
-        """The behaviour the shop pages had, kept — but now temporal."""
+    def test_another_channels_listing_is_never_served(self) -> None:
+        """No fall-back: a marketplace price is not charged on the shop (T253)."""
         product = FakeProduct([row("80.00", valid_from=date(2026, 1, 1), channel=OTHER_CHANNEL)])
 
-        assert storefront_price(product, sales_channel_id=CHANNEL) == Decimal("80.00")
+        assert storefront_price(product, sales_channel_id=CHANNEL) is None
+
+    def test_no_shop_channel_means_unpriced(self) -> None:
+        product = FakeProduct([row("65.00", valid_from=date(2026, 1, 1))])
+
+        assert storefront_price(product, sales_channel_id=None) is None
 
     def test_an_inactive_listing_is_not_served(self) -> None:
         product = FakeProduct([row("65.00", valid_from=date(2026, 1, 1), is_active=False)])
 
-        assert storefront_price(product) is None
+        assert storefront_price(product, sales_channel_id=CHANNEL) is None
 
     def test_an_unpriced_product_is_none_rather_than_zero(self) -> None:
         """The old code substituted zero, which put a free product on a page."""
-        assert storefront_price(FakeProduct([])) is None
+        assert storefront_price(FakeProduct([]), sales_channel_id=CHANNEL) is None
 
     def test_a_product_whose_only_price_has_expired_is_unpriced(self) -> None:
         product = FakeProduct(
             [row("65.00", valid_from=date(2026, 1, 1), valid_to=date(2026, 6, 30))]
         )
 
-        assert storefront_price(product) is None
+        assert storefront_price(product, sales_channel_id=CHANNEL) is None
 
     def test_it_falls_back_to_filtering_history_when_the_view_is_absent(self) -> None:
         """A product loaded without `current_pricing` must not 500 a shop page.
@@ -415,7 +420,7 @@ class TestTheStorefrontReadsOnlyCurrentPrices:
             ]
         )
 
-        assert storefront_price(product) == Decimal("65.00")
+        assert storefront_price(product, sales_channel_id=CHANNEL) == Decimal("65.00")
 
 
 class TestTheRowKnowsItsOwnPeriod:

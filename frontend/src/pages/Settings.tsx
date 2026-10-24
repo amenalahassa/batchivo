@@ -8,6 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout'
 import { EstimateProposalList } from '@/components/pricing/EstimateProposalList'
 import { ExchangeRatePanel } from '@/components/pricing/ExchangeRatePanel'
 import { EtsySettings } from '@/components/settings/EtsySettings'
+import { ShippingProfilesPanel } from '@/components/settings/ShippingProfilesPanel'
 import { GeneralSettings } from '@/components/settings/GeneralSettings'
 import { PricingPolicySettings } from '@/components/settings/PricingPolicySettings'
 import { MarginDivergencePanel } from '@/components/pricing/MarginDivergencePanel'
@@ -86,6 +87,8 @@ export function Settings() {
               state its margin; the operator gives it one here (FR-028h).
             */}
             <ExchangeRatePanel canEdit={canEditPricing} />
+            {/* Postage every margin deducts, by zone and weight (FR-024, T245). */}
+            <ShippingProfilesPanel canEdit={canEditPricing} />
           </TabsContent>
 
           <TabsContent value="payments">

@@ -100,6 +100,8 @@ def _relationship_loaded(instance: object, name: str) -> bool:
         state = sa_inspect(instance)
     except Exception:  # pragma: no cover - a plain object, as used in unit tests
         return hasattr(instance, name)
+    if state is None:  # pragma: no cover - inspect raises rather than returning None
+        return hasattr(instance, name)
     return name not in state.unloaded
 
 

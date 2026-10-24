@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
 from app.database import get_db
 from app.models.user import UserRole
 from app.schemas.tenant_settings import (
@@ -202,14 +202,15 @@ async def update_tenant_settings(
     data: TenantUpdate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> TenantResponse:
     """Update tenant details.
 
-    Requires Admin or Owner role.
-    Can update tenant name and description.
+    Requires Admin or Owner role: the books currency is monetary policy, since
+    every cost is converted from it (FR-007a, FR-028). Can update the name,
+    the description and the books currency with its symbol.
     """
-    _require_admin_role(user, tenant)
 
     service = TenantSettingsService(db)
     return await service.update_tenant(tenant.id, data)

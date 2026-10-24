@@ -122,6 +122,8 @@ class TestTenantSettingsServiceTenant:
         mock_tenant.tenant_type = "three_d_print"
         mock_tenant.is_active = True
         mock_tenant.settings = {}
+        mock_tenant.currency_code = "GBP"
+        mock_tenant.currency_symbol = "£"
         mock_tenant.created_at = "2025-01-01T00:00:00Z"
         mock_tenant.updated_at = "2025-01-01T00:00:00Z"
 

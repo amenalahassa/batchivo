@@ -43,7 +43,10 @@ vi.mock('@/lib/api/fxRates', () => ({
 }))
 
 vi.mock('@/lib/api/feeRules', () => ({
-  feeRulesApi: { getMarginDivergence: vi.fn() },
+  feeRulesApi: {
+    getMarginDivergence: vi.fn(),
+    listShippingProfiles: vi.fn().mockResolvedValue({ profiles: [], total: 0 }),
+  },
 }))
 
 vi.mock('@/lib/api/pricing', () => ({
@@ -105,6 +108,8 @@ const mockTenant = {
   slug: 'test-org',
   description: 'A test organization',
   is_active: true,
+  currency_code: 'GBP',
+  currency_symbol: '£',
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
 }

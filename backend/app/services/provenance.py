@@ -238,6 +238,14 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
             ("incidence_pct", "Share of orders this fee lands on, for planning only"),
         )
     ),
+    # The packaging consumable (T249). A product's packaging line is its unit
+    # cost times the product's quantity; the unit cost is typed in or derived
+    # from a purchase the operator recorded, so it is theirs, never observed.
+    _entry(
+        "consumable_type",
+        "current_cost_per_unit",
+        "Unit cost of a consumable, such as the packaging a product ships in",
+    ),
     # Shipping profiles (Tier 2). Postage is a published carrier price the
     # operator transcribes, so it is `policy`; it is learnable because a
     # recorded label cost is a direct observation of the same figure.

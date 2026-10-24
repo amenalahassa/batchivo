@@ -412,7 +412,7 @@ async def get_products(
         # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
         # `product.pricing` here would serve a superseded price, because since
         # Tier 3 that collection is the full history (task T097, FR-039).
-        price = storefront_price(product, sales_channel_id=channel.id, only_channel=True)
+        price = storefront_price(product, sales_channel_id=channel.id)
 
         # Check if it's a dragon item using dedicated is_dragon field
         is_dragon = getattr(product, "is_dragon", False)
@@ -489,7 +489,7 @@ async def _shop_channel_id(db, tenant_id) -> Optional[UUID]:
     """The tenant's own shop channel, whose price is the only one the shop uses.
 
     ``None`` where the tenant has none: then nothing is priced on the shop, and
-    ``storefront_price(..., only_channel=True)`` reports every product unpriced
+    ``storefront_price`` reports every product unpriced
     rather than borrowing a marketplace's price (task T228).
     """
     return (
@@ -547,7 +547,6 @@ async def get_product(
     price = storefront_price(
         product,
         sales_channel_id=await _shop_channel_id(db, product.tenant_id),
-        only_channel=True,
     )
 
     base_price_pence = int(price * 100) if price is not None else None
@@ -744,7 +743,7 @@ async def get_related_products(
         # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
         # `product.pricing` here would serve a superseded price, because since
         # Tier 3 that collection is the full history (task T097, FR-039).
-        price = storefront_price(product, sales_channel_id=channel.id, only_channel=True)
+        price = storefront_price(product, sales_channel_id=channel.id)
 
         product_images = []
         for img in getattr(product, "images", []):
@@ -956,7 +955,6 @@ async def get_dragons(db: ShopDB):
         price = storefront_price(
             product,
             sales_channel_id=await _shop_channel_id(db, product.tenant_id),
-            only_channel=True,
         )
 
         # Convert images - use API endpoint for reliable delivery
@@ -1110,7 +1108,6 @@ async def add_to_cart(
         product,
         sales_channel_id=await _shop_channel_id(db, product.tenant_id),
         quantity=total_requested,
-        only_channel=True,
     )
     if price is None:
         raise HTTPException(
@@ -1594,6 +1591,9 @@ async def complete_checkout(
     db_order.postage_paid = postage_total
     # The shop's checkout adds no tax to its total: a recorded zero (task T230).
     db_order.sales_tax_collected = Decimal("0")
+    # Both come from the operator's own shipping profiles, not from a person or
+    # a feed (T241, FR-041e).
+    db_order.actuals_source = "derived"
 
     # Freeze what each line earned, as it stands (FR-036, task T157).
     #

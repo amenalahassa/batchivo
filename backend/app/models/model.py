@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from app.models.model_material import ModelMaterial
     from app.models.model_printer_config import ModelPrinterConfig
     from app.models.print_job import PrintJob
+    from app.models.printer import Printer
     from app.models.production_run_plate import ProductionRunPlate
 
 
@@ -213,6 +214,14 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Print time in minutes (for full plate if prints_per_plate > 1)",
     )
 
+    # The machine this item is planned on, whose cost policy gives its machine
+    # rate (FR-011, T243). NULL costs it at the policy's default rate.
+    planned_printer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("printers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="The machine this item is planned on; its rate costs the item (FR-011)",
+    )
+
     prints_per_plate: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -288,6 +297,15 @@ class Model(Base, UUIDMixin, TimestampMixin):
         "ProductModel",
         back_populates="model",
         lazy="select",
+    )
+
+    # Eager, because the engine issues no queries: a planned machine nobody
+    # loaded would read as absent and cost the item at the default rate on one
+    # screen and at its own on another (Constitution III).
+    planned_printer: Mapped[Optional["Printer"]] = relationship(
+        "Printer",
+        foreign_keys=[planned_printer_id],
+        lazy="selectin",
     )
 
     # Printer-specific configurations

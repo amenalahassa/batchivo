@@ -22,6 +22,13 @@ import { ModelCostProfileForm } from './ModelCostProfileForm'
 import { pricingApi } from '@/lib/api/pricing'
 import type { CostProfileFieldOrigin, ModelCostProfile } from '@/types/pricing'
 
+vi.mock('@/lib/api/printers', () => ({
+  getActivePrinters: vi.fn().mockResolvedValue([
+    { id: 'printer-x1', name: 'Bambu X1C' },
+    { id: 'printer-a1', name: 'Bambu A1 Mini' },
+  ]),
+}))
+
 vi.mock('@/lib/api/pricing', () => ({
   pricingApi: {
     getModelCostProfile: vi.fn(),
@@ -59,6 +66,8 @@ function configured(overrides: Partial<ModelCostProfile> = {}): ModelCostProfile
   return {
     model_id: MODEL_ID,
     print_time_minutes: 570,
+    planned_printer_id: null,
+    planned_printer_name: null,
     prints_per_plate: 1,
     waste_grams: '3.00',
     expected_yield: '0.9200',
@@ -81,6 +90,8 @@ function unmeasured(): ModelCostProfile {
   return {
     model_id: MODEL_ID,
     print_time_minutes: null,
+    planned_printer_id: null,
+    planned_printer_name: null,
     prints_per_plate: 1,
     waste_grams: '0.00',
     expected_yield: '1.0000',
@@ -262,5 +273,52 @@ describe('ModelCostProfileForm', () => {
         screen.queryByRole('button', { name: /Save cost profile/ }),
       ).not.toBeInTheDocument()
     })
+  })
+})
+
+describe('ModelCostProfileForm: the planned machine (T243, FR-011)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocked.getModelCostProfile.mockResolvedValue(configured())
+    mocked.updateModelCostProfile.mockResolvedValue(configured())
+  })
+
+  it('plans the item on a machine', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderForm(<ModelCostProfileForm modelId={MODEL_ID} />)
+
+    await screen.findByRole('option', { name: 'Bambu X1C' })
+    await user.selectOptions(screen.getByLabelText('Planned machine'), 'printer-x1')
+    await user.click(screen.getByRole('button', { name: /Save cost profile/ }))
+
+    await waitFor(() => expect(mocked.updateModelCostProfile).toHaveBeenCalled())
+    const [, changes] = mocked.updateModelCostProfile.mock.calls[0]
+    expect(changes.planned_printer_id).toBe('printer-x1')
+  })
+
+  it('clears the plan with null, and leaves it out when untouched', async () => {
+    const user = userEvent.setup({ delay: null })
+    mocked.getModelCostProfile.mockResolvedValue(
+      configured({ planned_printer_id: 'printer-a1', planned_printer_name: 'Bambu A1 Mini' }),
+    )
+    renderForm(<ModelCostProfileForm modelId={MODEL_ID} />)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Planned machine')).toHaveValue('printer-a1'),
+    )
+    await user.click(screen.getByRole('button', { name: /Save cost profile/ }))
+    await waitFor(() => expect(mocked.updateModelCostProfile).toHaveBeenCalledTimes(1))
+    expect(mocked.updateModelCostProfile.mock.calls[0][1]).not.toHaveProperty('planned_printer_id')
+
+    await user.selectOptions(screen.getByLabelText('Planned machine'), '')
+    await user.click(screen.getByRole('button', { name: /Save cost profile/ }))
+    await waitFor(() => expect(mocked.updateModelCostProfile).toHaveBeenCalledTimes(2))
+    expect(mocked.updateModelCostProfile.mock.calls[1][1].planned_printer_id).toBeNull()
+  })
+
+  it('is read-only for a viewer', async () => {
+    renderForm(<ModelCostProfileForm modelId={MODEL_ID} canEdit={false} />)
+    await screen.findByRole('option', { name: 'Bambu X1C' })
+    expect(screen.getByLabelText('Planned machine')).toBeDisabled()
   })
 })

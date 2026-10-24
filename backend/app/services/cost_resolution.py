@@ -13,7 +13,7 @@ read. Endpoints call it; nothing here computes a cost of its own.
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -74,7 +74,7 @@ def cost_load_options() -> list:
     from app.models.product_component import ProductComponent
     from app.models.product_model import ProductModel
 
-    def chain(prefix, *path):
+    def chain(prefix: Optional[Any], *path: Any) -> Any:
         """Extend `prefix` (or start fresh when it is None) along `path`."""
         loader = prefix
         for relationship in path:
@@ -83,7 +83,7 @@ def cost_load_options() -> list:
             )
         return loader
 
-    def cost_inputs(prefix) -> list:
+    def cost_inputs(prefix: Optional[Any]) -> list:
         """What one product level costs from, whatever path reached it."""
         return [
             chain(prefix, Product.product_models, ProductModel.model, Model.materials),
@@ -149,6 +149,9 @@ def _product_entities(
     seen.add(product.id)
 
     entities: set[tuple[str, uuid.UUID]] = {("product", product.id)}
+    consumable = getattr(product, "packaging_consumable", None)
+    if consumable is not None:
+        entities.add(("consumable_type", consumable.id))
 
     for product_model in getattr(product, "product_models", None) or []:
         model = getattr(product_model, "model", None)
@@ -212,8 +215,12 @@ async def product_cost_breakdown(
     product: "Product",
     *,
     policy: Optional[CostPolicy] = None,
+    printer_for_model: Optional[Mapping[uuid.UUID, "Printer"]] = None,
 ) -> CostBreakdown:
     """The structured breakdown for one sellable unit, bundles included.
+
+    ``printer_for_model`` overrides an item's planned machine, as a queue job's
+    assigned printer does (FR-011).
 
     Lets :class:`CircularReferenceError` and :class:`MaxDepthExceededError`
     out unchanged: a cycle in the operator's own data is theirs to fix, and the
@@ -224,5 +231,9 @@ async def product_cost_breakdown(
     origins = await resolve_origins(db, tenant, entities)
     pending = await resolve_pending_revisions(db, tenant, entities)
     return CostingService.product_breakdown(
-        product, policy=resolved, origins=origins, pending=pending
+        product,
+        policy=resolved,
+        printer_for_model=printer_for_model,
+        origins=origins,
+        pending=pending,
     )

@@ -368,7 +368,8 @@ async def seed_products(session, tenant_id, channel_id, categories) -> list:
                 id=uuid4(),
                 product_id=product.id,
                 sales_channel_id=channel_id,
-                list_price=float(prod_data["price"]),
+                # Already a Decimal; money stays exact end to end (Constitution IV).
+                list_price=prod_data["price"],
                 is_active=True,
             )
             session.add(pricing)

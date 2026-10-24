@@ -41,6 +41,13 @@ class ModelCostProfileUpdate(BaseModel):
     print_time_minutes: Optional[int] = Field(
         None, ge=0, description="Machine occupancy for one plate, in minutes (FR-010)"
     )
+    planned_printer_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "The machine this item is planned on, whose rate costs it (FR-011). "
+            "Send null to clear it and fall back to the default rate."
+        ),
+    )
     prints_per_plate: Optional[int] = Field(
         None, ge=1, description="How many parts share one plate; the batching quantity (FR-013)"
     )
@@ -113,6 +120,8 @@ class ModelCostProfileResponse(BaseModel):
 
     model_id: UUID
     print_time_minutes: Optional[int] = None
+    planned_printer_id: Optional[UUID] = None
+    planned_printer_name: Optional[str] = None
     prints_per_plate: int
     waste_grams: Decimal
     expected_yield: Decimal

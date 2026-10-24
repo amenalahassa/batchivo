@@ -575,19 +575,48 @@ class TestTheInputChangesAreMaterial:
 class TestTheSnapshotItselfIsUntouched:
     """Not just the derived margin -- the stored figures do not move either."""
 
+    #: The line's own facts rather than its snapshot. Every other column is
+    #: frozen at sale, so a snapshot column added later is checked without
+    #: anyone remembering to list it (T251: the FX columns and
+    #: `snapshot_incomplete` were missing from the hand-written list).
+    NOT_SNAPSHOT = frozenset(
+        {
+            "id",
+            "tenant_id",
+            "order_id",
+            "product_id",
+            "product_sku",
+            "product_name",
+            "quantity",
+            "unit_price",
+            "total_price",
+            "created_at",
+            "updated_at",
+        }
+    )
+
+    @classmethod
+    def _frozen_columns(cls) -> list[str]:
+        from app.models.order import OrderItem
+
+        return sorted(set(OrderItem.__table__.columns.keys()) - cls.NOT_SNAPSHOT)
+
+    def test_the_frozen_set_includes_the_fx_and_incompleteness_columns(self) -> None:
+        assert {
+            "fx_rate",
+            "fx_rate_date",
+            "fx_rate_source",
+            "fx_quote_currency",
+            "snapshot_incomplete",
+        } <= set(self._frozen_columns())
+
     async def _frozen_state(self, db_session, world) -> dict:
         state = {}
         for order_id in world.order_ids:
             order = await _reload_order(db_session, order_id)
             for item in order.items:
                 state[item.id] = {
-                    "make_cost_at_sale": item.make_cost_at_sale,
-                    "list_price_at_sale": item.list_price_at_sale,
-                    "fees_json": deepcopy(item.fees_json),
-                    "fx_rate": item.fx_rate,
-                    "margin_basis_at_sale": item.margin_basis_at_sale,
-                    "pricing_rev": item.pricing_rev,
-                    "cost_breakdown_json": deepcopy(item.cost_breakdown_json),
+                    column: deepcopy(getattr(item, column)) for column in self._frozen_columns()
                 }
         return state
 

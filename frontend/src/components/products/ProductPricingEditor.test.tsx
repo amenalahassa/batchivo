@@ -53,6 +53,17 @@ vi.mock('@/components/pricing/PriceFinderDialog', () => ({
   },
 }))
 
+// The breakdown fetches on its own; what matters here is that a row opens it
+// for its own channel (T244).
+const breakdownProps: { productId: string; channelId: string }[] = []
+
+vi.mock('@/components/pricing/ProductMarginBreakdown', () => ({
+  ProductMarginBreakdown: (props: { productId: string; channelId: string }) => {
+    breakdownProps.push(props)
+    return <div data-testid="margin-breakdown-open">{props.channelId}</div>
+  },
+}))
+
 vi.mock('@/hooks/useCurrency', () => ({
   useCurrency: () => ({
     // The whole hook's shape, not only the formatter: the price finder is
@@ -731,5 +742,21 @@ describe('profit per machine-hour beside the margin (T234, FR-043)', () => {
     expect(await screen.findByTestId('profit-per-machine-hour-untimed')).toHaveTextContent(
       'untimed',
     )
+  })
+})
+
+describe('margin breakdown (T244)', () => {
+  it('opens the full margin for the channel of its own row', async () => {
+    renderEditor([priceRow()])
+    const button = await screen.findByRole('button', {
+      name: 'Margin breakdown for Golden Marketplace',
+    })
+    await userEvent.click(button)
+
+    expect(await screen.findByTestId('margin-breakdown-open')).toBeInTheDocument()
+    expect(breakdownProps.at(-1)).toEqual({
+      productId: expect.any(String),
+      channelId: priceRow().sales_channel_id,
+    })
   })
 })

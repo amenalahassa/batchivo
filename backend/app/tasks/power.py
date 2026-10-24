@@ -149,10 +149,11 @@ async def ingest_power_readings(
 # a worker every hour to find nothing, which reads in the log as a working
 # integration and is not one.
 #
-# So the task takes its readings as its argument. What is still missing is the
-# producer -- a smart-plug protocol nobody has specified -- and it is missing
-# visibly: no schedule claims to be collecting power, and `measured_watts`
-# stays whatever the operator entered until something calls this.
+# So the task takes its readings as its argument. Its producer is
+# `POST /printers/{printer_id}/power-readings` (task T159), which a plug or a
+# person posts readings to; there is still no schedule, because nothing here
+# polls a plug, and `measured_watts` moves only through the proposal that
+# endpoint raises.
 # ---------------------------------------------------------------------------
 
 

@@ -85,9 +85,10 @@ class CategoryReconciliation:
     @property
     def difference_pct_of_fee(self) -> Optional[Decimal]:
         """The difference as a share of the planned fee (SC-009)."""
-        if self.actual_total is None or self.planned == ZERO:
+        difference = self.difference
+        if difference is None or self.planned == ZERO:
             return None
-        return (self.difference / self.planned * Decimal("100")).quantize(Decimal("0.0001"))
+        return (difference / self.planned * Decimal("100")).quantize(Decimal("0.0001"))
 
 
 @dataclass(frozen=True)

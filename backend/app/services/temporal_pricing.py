@@ -205,43 +205,33 @@ def current_price(
 def storefront_price(
     product: "Product",
     *,
-    sales_channel_id: Optional[uuid.UUID] = None,
+    sales_channel_id: Optional[uuid.UUID],
     quantity: int = 1,
-    only_channel: bool = False,
 ) -> Optional[Decimal]:
-    """The price a shop page should show, with the channel fallback.
+    """The shop channel's own current price for this product, or ``None``.
 
-    The storefront prefers the shop channel's own price and falls back to any
-    other current listing, which is the behaviour the five shop read sites each
-    implemented separately before this existed. Gathering it here is the point:
-    the temporal filter is applied once, so no shop page can serve last
-    quarter's price by forgetting it.
+    Every shop read site goes through here, so the temporal filter is applied
+    once and no shop page can serve last quarter's price by forgetting it.
 
-    Returns ``None`` when the product carries no current price at all. The shop
-    must then treat it as unpriced -- the previous code substituted zero, which
-    put a free product on a public page.
-
-    ``only_channel`` drops the fallback: the storefront shows and charges the
-    shop channel's own price or none (task T228). Falling back there charged a
-    marketplace's price on the shop.
+    ``None`` means unpriced on the shop: the product carries no current price
+    on the shop channel, or there is no shop channel at all. The shop must then
+    treat it as not for sale -- the previous code substituted zero, which put a
+    free product on a public page. There is no fall-back to another channel's
+    listing (task T228, removed in T253): falling back charged a marketplace's
+    price on the shop.
     """
-    live = [row for row in current_rows(product) if row.is_active and quantity >= row.min_quantity]
-    if not live:
+    if sales_channel_id is None:
         return None
-
-    if only_channel and sales_channel_id is None:
-        # No shop channel at all: nothing is priced on the shop.
+    on_channel = [
+        row
+        for row in current_rows(product)
+        if row.is_active
+        and quantity >= row.min_quantity
+        and row.sales_channel_id == sales_channel_id
+    ]
+    if not on_channel:
         return None
-
-    if sales_channel_id is not None:
-        on_channel = [row for row in live if row.sales_channel_id == sales_channel_id]
-        if on_channel:
-            row = max(on_channel, key=lambda r: r.min_quantity)
-            return None if row.list_price is None else Decimal(str(row.list_price))
-        if only_channel:
-            return None
-
-    row = max(live, key=lambda r: r.min_quantity)
+    row = max(on_channel, key=lambda r: r.min_quantity)
     return None if row.list_price is None else Decimal(str(row.list_price))
 
 

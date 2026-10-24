@@ -31,8 +31,10 @@ pytestmark = pytest.mark.asyncio
 API = "/api/v1"
 ANY = "00000000-0000-0000-0000-000000000001"
 
-#: Every write route that touches a figure in scope and that FR-007b/c put
-#: with the member. A viewer must be refused each one.
+#: Write routes that FR-007b/c put with the member, each called with a viewer
+#: to prove the refusal end to end. Coverage of *every* pricing write route is
+#: derived from the routers in tests/unit/pricing/test_pricing_write_guards_derived.py
+#: (T250); this list is the behavioural sample, not the population.
 MEMBER_WRITES: list[tuple[str, str]] = [
     ("POST", "/spools"),
     ("PUT", f"/spools/{ANY}"),
@@ -319,7 +321,8 @@ class TestModelPrinterConfigWrites:
         assert refreshed.prints_per_plate == 4
 
 
-def test_the_member_write_list_names_a_router_per_area() -> None:
+async def test_the_member_write_list_names_a_router_per_area() -> None:
+    # async only because the module marks every test asyncio; it awaits nothing.
     # Guard against the list silently shrinking: every area T227 names keeps
     # at least one route here.
     areas = {path.split("/")[1] for _, path in MEMBER_WRITES}

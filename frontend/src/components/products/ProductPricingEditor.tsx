@@ -39,6 +39,7 @@ import {
   TrendingDown,
   Edit,
   History,
+  Receipt,
 } from 'lucide-react'
 
 import {
@@ -101,6 +102,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
 import { PriceFinderDialog } from '@/components/pricing/PriceFinderDialog'
+import { ProductMarginBreakdown } from '@/components/pricing/ProductMarginBreakdown'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
 
@@ -159,6 +161,8 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   const [editingPricing, setEditingPricing] = useState<ProductPricing | null>(null)
   //: The channel whose price history is open, or null for closed.
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null)
+  // The channel whose full margin is open: fees, postage, reserves (T244).
+  const [marginChannelId, setMarginChannelId] = useState<string | null>(null)
   //: The row whose price finder is open, or null for closed.
   const [finderPricing, setFinderPricing] = useState<ProductPricing | null>(null)
   const queryClient = useQueryClient()
@@ -672,6 +676,14 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       <Button
                         variant="ghost"
                         size="sm"
+                        aria-label={`Margin breakdown for ${pricingItem.channel_name || 'this channel'}`}
+                        onClick={() => setMarginChannelId(pricingItem.sales_channel_id)}
+                      >
+                        <Receipt className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         aria-label={`Price history for ${pricingItem.channel_name || 'this channel'}`}
                         onClick={() => setHistoryChannelId(pricingItem.sales_channel_id)}
                       >
@@ -742,6 +754,29 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
           on purpose: a past price valued against today's cost is the
           restatement FR-038 exists to prevent, and showing one here would be
           the most natural place for that mistake to reappear. */}
+      {/* T244: the margin with everything behind it -- each fee with its basis,
+          clamp and incidence, postage against shipping charged, reserves, and
+          how much of the make-cost is evidence (FR-018, FR-024, FR-029). */}
+      <Dialog
+        open={marginChannelId !== null}
+        onOpenChange={(open) => !open && setMarginChannelId(null)}
+      >
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Margin breakdown</DialogTitle>
+            <DialogDescription>
+              What one unit earns on{' '}
+              {pricing.find((row) => row.sales_channel_id === marginChannelId)?.channel_name ??
+                'this channel'}{' '}
+              at the price in effect today.
+            </DialogDescription>
+          </DialogHeader>
+          {marginChannelId && (
+            <ProductMarginBreakdown productId={productId} channelId={marginChannelId} />
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={historyChannelId !== null}
         onOpenChange={(open) => !open && setHistoryChannelId(null)}

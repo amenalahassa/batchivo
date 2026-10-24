@@ -250,6 +250,7 @@ class PrintQueueService:
                     query.order_by(PrintJob.priority.desc(), PrintJob.created_at.asc()).options(
                         selectinload(PrintJob.model),
                         selectinload(PrintJob.product),
+                        selectinload(PrintJob.assigned_printer),
                     )
                 )
             )
@@ -320,8 +321,14 @@ class PrintQueueService:
                 continue
 
             try:
+                # A job assigned to a machine is costed on that machine, not on
+                # the one its items were planned on (FR-011, T243).
                 breakdown = await product_cost_breakdown(
-                    self.db, self.tenant, product, policy=policy
+                    self.db,
+                    self.tenant,
+                    product,
+                    policy=policy,
+                    printer_for_model=_assigned_printer_for(product, job.assigned_printer),
                 )
             except (CircularReferenceError, MaxDepthExceededError) as exc:
                 ranked.append(JobProfitability(job=job, queue_position=index, reason=str(exc)))
@@ -926,3 +933,21 @@ class PrintQueueService:
 
         for i, job in enumerate(jobs, start=1):
             job.queue_position = i
+
+
+def _assigned_printer_for(product, printer: Optional[Printer]) -> Optional[dict]:
+    """Every model in the product, bundles included, mapped to the job's printer."""
+    if printer is None:
+        return None
+    mapping: dict = {}
+    pending = [product]
+    while pending:
+        current = pending.pop()
+        for pm in getattr(current, "product_models", None) or []:
+            if getattr(pm, "model_id", None) is not None:
+                mapping[pm.model_id] = printer
+        for pc in getattr(current, "child_products", None) or []:
+            child = getattr(pc, "child_product", None)
+            if child is not None:
+                pending.append(child)
+    return mapping
