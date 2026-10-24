@@ -215,6 +215,7 @@ class TestTheOrderReadCrossesTheWireExactly:
             quantity=2,
             unit_price=Decimal("12.25"),
             total_price=Decimal("24.50"),
+            fx_rate=Decimal("0.54321000"),
         )
 
     @classmethod

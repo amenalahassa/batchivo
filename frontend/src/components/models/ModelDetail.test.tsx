@@ -17,7 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { vi, beforeEach, describe, expect, it } from 'vitest'
 
 //: Every model-side screen that shows or edits a cost figure.
 const MODEL_SCREENS = ['ModelDetail.tsx', 'ComponentsEditor.tsx', 'BOMEditor.tsx']
@@ -25,6 +25,16 @@ const MODEL_SCREENS = ['ModelDetail.tsx', 'ComponentsEditor.tsx', 'BOMEditor.tsx
 function sourceOf(name: string): string {
   return readFileSync(join(__dirname, name), 'utf8')
 }
+
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
 
 describe('the model screens derive no price of their own', () => {
   it('has no markup multiplier left on the detail page', () => {

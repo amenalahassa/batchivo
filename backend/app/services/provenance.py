@@ -198,6 +198,7 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
             ("print_labor_rate", "Hourly rate for print handling"),
             ("finishing_labor_rate", "Hourly rate for finishing"),
             ("default_machine_rate_per_hour", "Machine rate when no printer is assigned"),
+            ("overhead_percentage", "Overhead percentage for the percentage method"),
             ("overhead_monthly_pool", "Monthly overhead pool"),
             ("expected_monthly_machine_hours", "Expected monthly machine capacity"),
             ("electricity_rate_per_kwh", "Tenant electricity rate"),

@@ -31,6 +31,19 @@ export interface OrderItem {
    */
   unit_price: Money
   total_price: Money
+  /**
+   * The rate frozen at sale from the order's currency to the books' (FR-028f),
+   * with the day it was for and where it came from (FR-028g, FR-028h). Null
+   * where no rate was available: the line's margin waits on one (T223).
+   */
+  fx_rate?: Money | null
+  fx_rate_date?: string | null
+  fx_rate_source?: string | null
+  fx_quote_currency?: string | null
+  /** True when the frozen rate is from a day before the sale. */
+  fx_rate_is_stale?: boolean | null
+  /** What the sale's snapshot could not record, in words (T232). */
+  snapshot_incomplete?: string[]
 }
 
 /**
@@ -55,6 +68,14 @@ export interface Order {
   subtotal: Money
   total: Money
   currency: string
+  /**
+   * What the seller paid to post it, and the tax collected. Null is
+   * *unrecorded* -- a Square order carries no postage -- never zero (T230).
+   */
+  postage_paid?: Money | null
+  sales_tax_collected?: Money | null
+  /** True when the exclusive amounts were derived from tax-inclusive ones. */
+  tax_exclusive_derived?: boolean
   payment_provider: string
   payment_id: string | null
   payment_status: string

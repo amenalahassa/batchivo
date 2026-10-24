@@ -715,3 +715,21 @@ describe('who may apply a solved price (FR-007a)', () => {
     expect((await openFinder())?.onApply).toBeUndefined()
   })
 })
+
+describe('profit per machine-hour beside the margin (T234, FR-043)', () => {
+  it('shows what each price pays per hour of the machine', async () => {
+    renderEditor([priceRow({ id: 'timed', profit_per_machine_hour: '9.17' })])
+
+    expect(await screen.findByTestId('profit-per-machine-hour-timed')).toHaveTextContent(
+      'CA$9.17/machine-hr',
+    )
+  })
+
+  it('says untimed, never zero, where nobody has timed the print', async () => {
+    renderEditor([priceRow({ id: 'untimed', profit_per_machine_hour: null })])
+
+    expect(await screen.findByTestId('profit-per-machine-hour-untimed')).toHaveTextContent(
+      'untimed',
+    )
+  })
+})

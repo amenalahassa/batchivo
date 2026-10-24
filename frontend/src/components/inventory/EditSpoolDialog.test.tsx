@@ -80,6 +80,16 @@ function renderDialog(node: ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>)
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('EditSpoolDialog purchase price', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -126,5 +136,18 @@ describe('EditSpoolDialog purchase price', () => {
 
     await waitFor(() => expect(spools.update).toHaveBeenCalled())
     expect(spools.update.mock.calls[0][1].purchase_price).toBeUndefined()
+  })
+})
+
+describe('EditSpoolDialog for a viewer', () => {
+  it('shows the stored price but will not save a change', async () => {
+    auth.role = 'viewer'
+    renderDialog(<EditSpoolDialog open onOpenChange={() => {}} spoolId="spool-uuid" />)
+
+    const price = await screen.findByLabelText('Price')
+    await waitFor(() => expect(price).toHaveValue(8.3))
+    expect(price).toBeDisabled()
+    expect(screen.getByTestId('read-only-notice')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /update spool/i })).toBeDisabled()
   })
 })

@@ -26,7 +26,12 @@ const getChannelPnLMock = vi.fn()
 vi.mock('@/lib/api/feeRules', () => ({
   feeRulesApi: {
     getChannelPnL: (...args: unknown[]) => getChannelPnLMock(...args),
+    recordFeeActual: vi.fn(),
   },
+}))
+
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { email: 'operator@example.com', role: 'admin' }, logout: vi.fn() }),
 }))
 
 const CHANNEL_ID = 'channel-1'
@@ -117,3 +122,14 @@ describe('ChannelProfitabilityPanel', () => {
     expect(screen.queryByText(/640\.00/)).not.toBeInTheDocument()
   })
 })
+
+describe('the panel offers the fee entry form (T224)', () => {
+  it('shows the form beside the period it reports', async () => {
+    getChannelPnLMock.mockResolvedValue(pnl({ notes: ['3 orders have no postage recorded'] }))
+    render(<ChannelProfitabilityPanel channelId={CHANNEL_ID} />)
+
+    expect(await screen.findByTestId('fee-actual-form')).toBeInTheDocument()
+    expect(await screen.findByTestId('pnl-notes')).toHaveTextContent('no postage recorded')
+  })
+})
+

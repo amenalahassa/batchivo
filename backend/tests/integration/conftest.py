@@ -125,6 +125,14 @@ async def settled(db_session, test_tenant, test_filament_type):
     await db_session.flush()
     db_session.add(ProductModel(id=uuid4(), product_id=product.id, model_id=model.id, quantity=1))
 
+    # The operator keeps their books in the currency the channel sells in, so
+
+    # costs and prices meet without a conversion (task T231).
+
+    test_tenant.currency_code = "CAD"
+
+    db_session.add(test_tenant)
+
     channel = SalesChannel(
         id=uuid4(),
         tenant_id=test_tenant.id,

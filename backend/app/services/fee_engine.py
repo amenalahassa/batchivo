@@ -165,6 +165,11 @@ class FeeStack:
     #: and then never saw again is a cost they stop believing in.
     periodic: list[FeeCharge] = field(default_factory=list)
 
+    #: Why this stack is not the whole story -- a channel whose rules have all
+    #: lapsed on the date asked for (task T236). An empty stack from lapsed
+    #: rules is unknown fees, not zero fees, and every reader reports it.
+    incomplete_reasons: list[str] = field(default_factory=list)
+
     @property
     def total_exact(self) -> Decimal:
         """The unrounded total, which the margin chain uses."""
@@ -477,7 +482,28 @@ def compute(
         else:
             charges.append(charge)
 
-    return FeeStack(charges=charges, periodic=periodic)
+    return FeeStack(
+        charges=charges,
+        periodic=periodic,
+        incomplete_reasons=lapsed_rules_reasons(source, reference),
+    )
+
+
+def lapsed_rules_reasons(rules: Sequence["FeeRule"], as_of: date) -> list[str]:
+    """Why a date no rule covers is not a date with no fees (task T236).
+
+    A channel with no rules at all is configured as fee-free; one whose rules
+    all fall outside ``as_of`` -- lapsed, or not yet begun -- has a gap in its
+    history, and pricing that gap at zero fees is the defect the spec's
+    "gapped effective dates" edge case names.
+    """
+    if not rules or rules_in_effect(rules, as_of):
+        return []
+    return [
+        f"no fee rule on this channel is in force on {as_of} -- its rules have lapsed "
+        f"or not yet begun -- so the fees are unknown rather than zero; supersede the "
+        f"last rule or date a new one to cover it"
+    ]
 
 
 def months_in(start: date, end: date) -> Decimal:

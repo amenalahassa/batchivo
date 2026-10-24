@@ -1,12 +1,14 @@
 """Print Queue API endpoints."""
 
+from datetime import date
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_tenant, get_tenant_db, RequireAdmin
+from app.auth.dependencies import get_current_tenant, get_tenant_db, CurrentUser, RequireAdmin
+from app.core import clock
 from app.models.print_job import JobPriority, JobStatus
 from app.models.tenant import Tenant
 from app.schemas.print_queue import (
@@ -17,6 +19,8 @@ from app.schemas.print_queue import (
     PrintJobResponse,
     PrintJobStatusUpdate,
     PrintJobUpdate,
+    JobProfitabilityResponse,
+    ProfitabilityRankingResponse,
     QueueOverview,
 )
 from app.services.print_queue_service import PrintQueueService
@@ -93,6 +97,46 @@ async def get_queue_overview(
     statistics including estimated time to completion.
     """
     return await service.get_queue_overview()
+
+
+@router.get("/profitability", response_model=ProfitabilityRankingResponse)
+async def get_profitability_ranking(
+    user: CurrentUser,
+    status_filter: Optional[JobStatus] = Query(
+        JobStatus.PENDING, alias="status", description="Jobs in this status; pending by default"
+    ),
+    sales_channel_id: Optional[UUID] = Query(None, description="Price each job on this channel"),
+    as_of: Optional[date] = Query(None, description="Price and cost as at this date"),
+    service: PrintQueueService = Depends(get_queue_service),
+) -> ProfitabilityRankingResponse:
+    """The queue ordered by profit per machine-hour (task T234, FR-043, US7).
+
+    Read-only and open to every role: it reorders nothing. The operator's
+    priority still comes first; within it, what pays per machine-hour replaces
+    arrival order. A job with no figure sorts last with its reason.
+    """
+    reference = as_of or clock.today()
+    ranking = await service.profitability_ranking(
+        status=status_filter, sales_channel_id=sales_channel_id, reference=reference
+    )
+    return ProfitabilityRankingResponse(
+        as_of=reference,
+        entries=[
+            JobProfitabilityResponse(
+                job_id=entry.job.id,
+                status=entry.job.status,
+                priority=entry.job.priority,
+                queue_position=entry.queue_position,
+                model_name=getattr(entry.job.model, "name", None),
+                product_name=getattr(entry.job.product, "name", None),
+                profit_per_machine_hour=entry.profit_per_machine_hour,
+                margin_pct=entry.margin_pct,
+                machine_hours=entry.machine_hours,
+                reason=entry.reason,
+            )
+            for entry in ranking
+        ],
+    )
 
 
 @router.get("/{job_id}", response_model=PrintJobResponse)

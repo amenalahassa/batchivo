@@ -45,6 +45,7 @@ function policy(overrides: Partial<PricingPolicy> = {}): PricingPolicy {
     min_outcomes_before_auto_update: 5,
     estimate_divergence_threshold_pct: '25',
     origin: 'policy_row',
+    source: 'policy',
     effective_from: '2026-03-01',
     effective_to: null,
     set_by_role: 'admin',
@@ -187,6 +188,61 @@ describe('PricingPolicySettings', () => {
       expect(screen.getByTestId('pricing-policy-settings')).toBeInTheDocument()
     })
     expect(screen.queryByLabelText('Monthly overhead')).not.toBeInTheDocument()
+  })
+
+  it('offers the overhead percentage under the percentage method and sends it as typed', async () => {
+    const user = userEvent.setup({ delay: null })
+    mocked.getPricingPolicy.mockResolvedValue(
+      policy({ overhead_method: 'percentage', overhead_percentage: '10' }),
+    )
+    renderPolicy(<PricingPolicySettings />)
+
+    const percentage = await screen.findByLabelText('Overhead percentage')
+    expect(percentage).toHaveValue('10')
+    await user.clear(percentage)
+    await user.type(percentage, '12.5')
+    await user.click(screen.getByRole('button', { name: /Save pricing policy/ }))
+
+    await waitFor(() => {
+      expect(mocked.updatePricingPolicy).toHaveBeenCalled()
+    })
+    expect(mocked.updatePricingPolicy.mock.calls[0][0].overhead_percentage).toBe('12.5')
+  })
+
+  it('does not re-send an overhead percentage nobody changed', async () => {
+    const user = userEvent.setup({ delay: null })
+    mocked.getPricingPolicy.mockResolvedValue(
+      policy({ overhead_method: 'percentage', overhead_percentage: '10' }),
+    )
+    renderPolicy(<PricingPolicySettings />)
+
+    const rate = await screen.findByLabelText('Print handling rate (per hour)')
+    await user.clear(rate)
+    await user.type(rate, '30')
+    await user.click(screen.getByRole('button', { name: /Save pricing policy/ }))
+
+    await waitFor(() => {
+      expect(mocked.updatePricingPolicy).toHaveBeenCalled()
+    })
+    expect(mocked.updatePricingPolicy.mock.calls[0][0]).not.toHaveProperty('overhead_percentage')
+  })
+
+  it('says when nobody has set the policy yet', async () => {
+    mocked.getPricingPolicy.mockResolvedValue(policy({ source: 'assumed', set_by_role: null }))
+    renderPolicy(<PricingPolicySettings />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('assumed-policy-notice')).toBeInTheDocument()
+    })
+  })
+
+  it('does not call a policy an operator set an assumption', async () => {
+    renderPolicy(<PricingPolicySettings />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('pricing-policy-settings')).toBeInTheDocument()
+    })
+    expect(screen.queryByTestId('assumed-policy-notice')).not.toBeInTheDocument()
   })
 
   it('lets a viewer read the policy but not change it', async () => {

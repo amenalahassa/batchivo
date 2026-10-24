@@ -365,7 +365,17 @@ export function ProductDetail({ productId }: ProductDetailProps) {
             label="Margin"
             value={formatPercent(bestPricing.margin_percentage)}
             subValue={
-              <MarginBasisLabel basis="customer_total" short className="font-normal" />
+              <span className="flex flex-col gap-0.5">
+                <MarginBasisLabel basis="customer_total" short className="font-normal" />
+                {/* FR-043: what the price pays per hour of the machine, beside
+                    the percentage. Untimed rather than zero where nobody has
+                    timed the print. */}
+                <span data-testid="best-profit-per-machine-hour">
+                  {bestPricing.profit_per_machine_hour == null
+                    ? 'Print untimed: no per-hour figure'
+                    : `${formatMoney(bestPricing.profit_per_machine_hour, currencySymbol)} per machine-hour`}
+                </span>
+              </span>
             }
           />
         </div>

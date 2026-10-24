@@ -78,6 +78,7 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
+from app.services.currency_edge import CostConversion, books_to_channel
 from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
 from app.services.cost_resolution import cost_load_options, product_cost_breakdown
@@ -192,14 +193,8 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
     for pricing in product.current_pricing:
         channel = pricing.sales_channel
         profit_data = (
-            await _planned_profit(
-                db,
-                tenant,
-                product,
-                channel,
-                Decimal(str(pricing.list_price)),
-                cost_breakdown.total_make_cost,
-                policy=policy,
+            await _row_profit(
+                db, tenant, product, channel, Decimal(str(pricing.list_price)), policy
             )
             if channel
             else None
@@ -225,6 +220,7 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
                 "net_revenue": profit_data["net_revenue"],
                 "profit": profit_data["profit"],
                 "margin_percentage": profit_data["margin_percentage"],
+                "profit_per_machine_hour": profit_data["profit_per_machine_hour"],
                 "created_at": pricing.created_at,
                 "updated_at": pricing.updated_at,
             }
@@ -802,11 +798,12 @@ async def get_product_margin(
     )
     stack = fee_engine.compute(channel, context, reference, rules=rules)
 
-    postage = await _postage_for(db, tenant, product)
+    conversion = await _costs_in_channel_currency(db, tenant, channel, reference)
+    postage = conversion.apply(await _postage_for(db, tenant, product))
 
     result = CostingService.margin(
         context=context,
-        make_cost=breakdown.total_make_cost,
+        make_cost=conversion.apply(breakdown.total_make_cost),
         channel=channel,
         fees=stack,
         policy=policy,
@@ -816,7 +813,7 @@ async def get_product_margin(
         machine_hours=breakdown.machine_hours,
         observed_share=breakdown.observed_share,
         assumed_share=breakdown.assumed_share,
-        incomplete_reasons=breakdown.incomplete_reasons,
+        incomplete_reasons=[*breakdown.incomplete_reasons, *conversion.reasons],
     )
 
     return ProductMarginResponse(
@@ -860,6 +857,24 @@ async def get_product_margin(
     )
 
 
+async def _costs_in_channel_currency(
+    db: AsyncSession, tenant: Tenant, channel: SalesChannel, reference: date
+) -> CostConversion:
+    """How book-currency costs become the channel's currency, or a ``409``.
+
+    Task T231: a cost kept in one currency is never subtracted from a price in
+    another. Where no rate between them is recorded the answer is a question
+    for the operator -- enter a rate -- never parity and never a figure.
+    """
+    conversion = await books_to_channel(db, tenant, channel, reference)
+    if not conversion.known:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "no_exchange_rate", "message": conversion.reasons[0]},
+        )
+    return conversion
+
+
 async def _postage_for(
     db: AsyncSession,
     tenant: Tenant,
@@ -884,8 +899,12 @@ async def _planned_profit(
     make_cost: Decimal,
     *,
     policy: Optional[CostPolicy] = None,
+    machine_hours: Optional[Decimal] = None,
 ) -> dict:
     """The fee, net revenue, profit and margin one price row carries.
+
+    And profit per machine-hour beside the margin (task T234, FR-043): null,
+    never zero, where nobody has timed the print.
 
     Through the fee engine and `CostingService.margin` -- the same path the
     margin endpoint uses. It was previously a blended percentage read from the
@@ -914,15 +933,27 @@ async def _planned_profit(
 
     context, treatment = fee_engine.exclusive_context(item_subtotal=list_price)
     reference = clock.today()
+    # A price row on a channel selling in another currency, with no rate on
+    # record, has no profit to state (task T231) -- not a profit at parity.
+    conversion = await books_to_channel(db, tenant, channel, reference)
+    if not conversion.known:
+        return {
+            "platform_fee": None,
+            "net_revenue": None,
+            "profit": None,
+            "margin_percentage": None,
+            "profit_per_machine_hour": None,
+        }
     result = CostingService.margin(
         context=context,
-        make_cost=make_cost,
+        make_cost=conversion.apply(make_cost),
         channel=channel,
         fees=fee_engine.compute(channel, context, reference, rules=rules),
         policy=policy if policy is not None else await resolve_cost_policy(db, tenant),
         economics=await resolve_channel_economics(db, channel, reference),
         tax=treatment,
-        postage_paid=await _postage_for(db, tenant, product),
+        postage_paid=conversion.apply(await _postage_for(db, tenant, product)),
+        machine_hours=machine_hours,
     )
 
     return {
@@ -930,7 +961,36 @@ async def _planned_profit(
         "net_revenue": result.net_revenue,
         "profit": result.profit,
         "margin_percentage": result.margin_pct,
+        "profit_per_machine_hour": result.profit_per_machine_hour,
     }
+
+
+async def _row_profit(
+    db: AsyncSession,
+    tenant: Tenant,
+    product: Product,
+    channel: SalesChannel,
+    list_price: Decimal,
+    policy: CostPolicy,
+) -> dict:
+    """One price row's figures, from the engine's structured breakdown.
+
+    The make cost and machine time come from `product_cost_breakdown`, the
+    breakdown the margin endpoint, the solver, the ladder and the queue ranking
+    all read. The row used the flat `calculate_product_cost` traversal, a
+    second derivation that disagreed with the margin screen by a cent (T234).
+    """
+    breakdown = await product_cost_breakdown(db, tenant, product, policy=policy)
+    return await _planned_profit(
+        db,
+        tenant,
+        product,
+        channel,
+        list_price,
+        breakdown.total_make_cost,
+        policy=policy,
+        machine_hours=breakdown.machine_hours,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1071,9 +1131,36 @@ async def _pricing_context(
         .all()
     )
 
-    postage = await _postage_for(db, tenant, product)
+    # The solver and the ladder are handed costs already in the channel's
+    # currency, so a solved price is a price there (task T231).
+    conversion = await _costs_in_channel_currency(db, tenant, channel, reference)
+    postage = conversion.apply(await _postage_for(db, tenant, product))
     economics = await resolve_channel_economics(db, channel, reference)
+    if conversion.rate != 1:
+        breakdown = breakdown.model_copy(
+            update={
+                "total_make_cost": conversion.apply(breakdown.total_make_cost),
+                "incomplete_reasons": [*breakdown.incomplete_reasons, *conversion.reasons],
+            }
+        )
     return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage, economics)
+
+
+def _reasons_for(ctx: "_PricingContext", reference: date) -> list[str]:
+    """What a solved price or a ladder rests on that is not certain.
+
+    The cost breakdown's own gaps, the exchange rate's, and a channel whose fee
+    rules have all lapsed on the date asked about (task T236) -- a price solved
+    over zero fees that are really unknown would look cheaper than it is.
+    """
+    return list(
+        dict.fromkeys(
+            [
+                *ctx.breakdown.incomplete_reasons,
+                *fee_engine.lapsed_rules_reasons(ctx.rules, reference),
+            ]
+        )
+    )
 
 
 def _rendered_inputs(inputs: dict) -> dict[str, str]:
@@ -1183,6 +1270,7 @@ async def solve_product_price(
         profit_at_price=result.profit_at_price,
         make_cost=ctx.breakdown.total_make_cost,
         postage_paid=ctx.postage,
+        incomplete_reasons=_reasons_for(ctx, reference),
         fees=fees,
         inputs=_rendered_inputs(result.inputs),
         passes=result.passes,
@@ -1273,6 +1361,7 @@ async def get_product_price_ladder(
         margin_basis_label=MARGIN_BASIS_LABELS[basis],
         make_cost=ctx.breakdown.total_make_cost,
         postage_paid=ctx.postage,
+        incomplete_reasons=_reasons_for(ctx, reference),
         machine_hours=ctx.breakdown.machine_hours,
         rungs=[PriceLadderRungResponse.model_validate(rung) for rung in rungs],
     )
@@ -1607,6 +1696,7 @@ def _pricing_response(
         net_revenue=profit_data["net_revenue"] if profit_data else None,
         profit=profit_data["profit"] if profit_data else None,
         margin_percentage=profit_data["margin_percentage"] if profit_data else None,
+        profit_per_machine_hour=(profit_data["profit_per_machine_hour"] if profit_data else None),
         created_at=pricing.created_at,
         updated_at=pricing.updated_at,
     )
@@ -1688,17 +1778,13 @@ async def add_product_pricing(
     await db.refresh(pricing)
 
     # Calculate profit
-    cost_breakdown = CostingService.calculate_product_cost(
-        product,
-        policy=await resolve_cost_policy(db, tenant),
-    )
-    profit_data = await _planned_profit(
+    profit_data = await _row_profit(
         db,
         tenant,
         product,
         channel,
         Decimal(str(pricing.list_price)),
-        cost_breakdown.total_make_cost,
+        await resolve_cost_policy(db, tenant),
     )
 
     return _pricing_response(pricing, channel, profit_data)
@@ -1868,17 +1954,13 @@ async def update_product_pricing(
 
     profit_data = None
     if product is not None:
-        cost_breakdown = CostingService.calculate_product_cost(
-            product,
-            policy=await resolve_cost_policy(db, tenant),
-        )
-        profit_data = await _planned_profit(
+        profit_data = await _row_profit(
             db,
             tenant,
             product,
             channel,
             Decimal(str(pricing.list_price)),
-            cost_breakdown.total_make_cost,
+            await resolve_cost_policy(db, tenant),
         )
 
     return _pricing_response(pricing, channel, profit_data)

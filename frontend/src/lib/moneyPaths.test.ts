@@ -61,12 +61,15 @@ function walk(dir: string): string[] {
 
 const label = (path: string) => relative(SRC, path).split(sep).join('/')
 
-/** Every component, and every module that declares what crosses the wire. */
-const SURFACES = [
-  ...walk(join(SRC, 'components')),
-  ...walk(join(SRC, 'lib', 'api')),
-  ...walk(join(SRC, 'types')),
-].sort()
+/**
+ * Every source module under `src` (T226): components, pages, hooks, utils and
+ * the whole of `lib`, not three nominated directories. Test files and stories
+ * are left out by `walk`; generated route trees are not hand-written code.
+ */
+const UNSWEPT = new Set(['routeTree.gen.ts'])
+const SURFACES = walk(SRC)
+  .filter((path) => !UNSWEPT.has(label(path)))
+  .sort()
 
 /** The modules whose declarations are the wire format. */
 const DECLARATIONS = SURFACES.filter(
@@ -114,6 +117,9 @@ const NOT_MONEY_SUFFIXES = new Set([
   'ratio',
   'grams',
   'count',
+  // `tax_unrecorded_orders`, `make_cost_unrecorded_lines`: how many, not how much.
+  'orders',
+  'lines',
   'days',
   'hours',
   'minutes',
@@ -170,8 +176,10 @@ function namesMoney(name: string): boolean {
 /** Source lines with comments blanked, so prose about a defect is not the defect. */
 function code(path: string): string[] {
   return readFileSync(path, 'utf8')
-    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, ' '))
-    .split('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\r\n]/g, ' '))
+    // `\r?\n`: a Windows checkout (core.autocrlf) leaves a `\r` that `.` will
+    // not match, so a `//` comment survived and its prose read as code.
+    .split(/\r?\n/)
     .map((line) => line.replace(/(^|[^:'"`])\/\/.*$/, '$1'))
 }
 
@@ -228,6 +236,13 @@ describe('the population is derived, and is the whole app', () => {
     expect(SURFACES.length).toBeGreaterThan(150)
     expect(DECLARATIONS.length).toBeGreaterThan(25)
   })
+
+  it.each(['pages', 'hooks', 'lib', 'components', 'types'])(
+    'reaches into %s, not only the three directories it used to (T226)',
+    (dir) => {
+      expect(SURFACES.some((path) => label(path).startsWith(`${dir}/`))).toBe(true)
+    },
+  )
 
   it.each([
     // The thirteen this file used to name, and the screens T209/T210 found.

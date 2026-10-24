@@ -475,4 +475,5 @@ async def preview_fee_rules(
             Decimal("0.01")
         ),
         tax_exclusive_derived=treatment.derived_from_inclusive,
+        incomplete_reasons=stack.incomplete_reasons,
     )

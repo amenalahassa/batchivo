@@ -14,9 +14,12 @@ an immutable snapshot of the figures a cost needs. That is also what keeps the
 engine free to run inside a recursive bill-of-materials walk without issuing a
 query per node.
 
-Until the Tier 1 migration seeds a policy row per tenant, and for a tenant
-created before it, :func:`resolve_cost_policy` falls back to the legacy
-settings reader so no cost is ever computed from a figure nobody configured.
+Every tenant has a policy row: the Tier 1 migration seeded one per tenant, a
+later migration seeded any created since, and tenant creation seeds one
+(:func:`seed_policy_row`, task T219). A seeded row records nobody as having
+set it, and the costing engine labels its figures ``assumed`` rather than as a
+decision. :func:`legacy_cost_policy` remains for a read that finds no row --
+which should not happen -- so a cost is still never computed from nothing.
 """
 
 import logging
@@ -34,7 +37,6 @@ from app.models.tenant_pricing_policy import (
     OVERHEAD_METHODS,
     TenantPricingPolicy,
 )
-from app.services.tenant_cost_settings import tenant_overhead_percentage
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -54,6 +56,7 @@ POLICY_FIELDS: tuple[str, ...] = (
     "overhead_monthly_pool",
     "expected_monthly_machine_hours",
     "electricity_rate_per_kwh",
+    "overhead_percentage",
     "margin_basis",
     "default_target_margin_pct",
     "rounding_rule",
@@ -86,9 +89,8 @@ class CostPolicy:
     expected_monthly_machine_hours: Optional[Decimal] = None
     default_machine_rate_per_hour: Optional[Decimal] = None
     electricity_rate_per_kwh: Optional[Decimal] = None
-    #: Overhead percentage for the percentage method. It is not a column on
-    #: `tenant_pricing_policy`: the percentage method is the legacy path, and
-    #: its figure still lives where the settings UI writes it.
+    #: Overhead percentage for the percentage method, 0-100. A dated lever on
+    #: the policy row like the rest (task T222); a model's own percentage wins.
     overhead_percentage: Decimal = Decimal("0")
     margin_basis: str = "customer_total"
     default_target_margin_pct: Optional[Decimal] = None
@@ -103,6 +105,18 @@ class CostPolicy:
     #: for a tenant the migration has not reached. Surfaced so a breakdown can
     #: say which, rather than presenting a fallback as a decision.
     origin: str = "policy_row"
+    #: Whether an operator set these figures. A row seeded at tenant creation
+    #: or by migration records nobody, and its figures are ``assumed``: a
+    #: CA$20.00 labour rate nobody chose is not a policy decision (task T219,
+    #: Constitution VI). A row written through the policy screen is.
+    decided: bool = False
+    #: The role that authorised the row, where somebody did (FR-007a).
+    set_by_role: Optional[str] = None
+
+    @property
+    def source(self) -> str:
+        """The provenance a figure taken from this policy carries."""
+        return "policy" if self.decided else "assumed"
 
     @property
     def overhead_rate_per_machine_hour(self) -> Optional[Decimal]:
@@ -123,7 +137,7 @@ class CostPolicy:
         return Decimal(str(pool)) / Decimal(str(hours))
 
     def with_overhead_percentage(self, percentage: Decimal) -> "CostPolicy":
-        """Return a copy carrying the tenant's legacy overhead percentage."""
+        """Return a copy carrying a caller's overhead percentage instead."""
         return replace(self, overhead_percentage=percentage)
 
 
@@ -193,11 +207,7 @@ async def current_policy_row(db: AsyncSession, tenant: "Tenant") -> Optional[Ten
     return result.scalars().first()
 
 
-def cost_policy_from_row(
-    row: TenantPricingPolicy,
-    *,
-    overhead_percentage: Decimal = Decimal("0"),
-) -> CostPolicy:
+def cost_policy_from_row(row: TenantPricingPolicy) -> CostPolicy:
     """Freeze a policy row into the snapshot the engine takes."""
     return CostPolicy(
         print_labor_rate=Decimal(str(row.print_labor_rate)),
@@ -223,7 +233,7 @@ def cost_policy_from_row(
             if row.electricity_rate_per_kwh is not None
             else None
         ),
-        overhead_percentage=overhead_percentage,
+        overhead_percentage=Decimal(str(row.overhead_percentage or 0)),
         margin_basis=row.margin_basis,
         default_target_margin_pct=(
             Decimal(str(row.default_target_margin_pct))
@@ -238,6 +248,8 @@ def cost_policy_from_row(
         estimate_divergence_threshold_pct=Decimal(str(row.estimate_divergence_threshold_pct)),
         effective_from=row.effective_from,
         origin="policy_row",
+        decided=row.set_by_user_id is not None,
+        set_by_role=row.set_by_role,
     )
 
 
@@ -249,17 +261,15 @@ POLICYLESS_LABOR_RATE = Decimal("20.00")
 
 
 def legacy_cost_policy(tenant: "Tenant") -> CostPolicy:
-    """The policy a tenant with no policy row still has.
+    """The figures a tenant starts from before anybody sets a policy.
 
-    The Tier 1 migration gave every tenant a policy row from the rate they had
-    configured, so this is reached only by a tenant created since and never
-    through the policy screen. Such a tenant has configured no rate anywhere --
-    the settings blob's `default_labor_rate` went with task T123 -- so this
-    carries :data:`POLICYLESS_LABOR_RATE`, the figure the settings screen used
-    to present as its default. Not a configured value being shadowed by a
-    default (Constitution IV): there is no configured value yet.
+    These seed the tenant's first policy row (:func:`seed_policy_row`), and are
+    what a read that found no row at all would fall back to. They carry
+    :data:`POLICYLESS_LABOR_RATE`, the figure the settings screen used to
+    present as its default, and are labelled ``assumed`` by the engine: nobody
+    configured them (Constitution IV, task T219).
 
-    It carries no machine rate and no overhead pool, which is why such a
+    They carry no machine rate and no overhead pool, which is why such a
     tenant's machine line is reported missing rather than guessed.
     """
     rate = POLICYLESS_LABOR_RATE
@@ -267,7 +277,6 @@ def legacy_cost_policy(tenant: "Tenant") -> CostPolicy:
         print_labor_rate=rate,
         finishing_labor_rate=rate,
         overhead_method="percentage",
-        overhead_percentage=tenant_overhead_percentage(tenant),
         origin="legacy_settings",
     )
 
@@ -277,16 +286,11 @@ async def resolve_cost_policy(
     tenant: "Tenant",
     as_of: Optional[date] = None,
 ) -> CostPolicy:
-    """The policy snapshot the cost engine should use for this tenant.
-
-    The legacy overhead percentage is carried across from the settings blob
-    either way: the percentage absorption method is retained as an option
-    (FR-014) and its figure has not moved into the policy table.
-    """
+    """The policy snapshot the cost engine should use for this tenant."""
     row = await resolve_policy_row(db, tenant, as_of)
     if row is None:
         return legacy_cost_policy(tenant)
-    return cost_policy_from_row(row, overhead_percentage=tenant_overhead_percentage(tenant))
+    return cost_policy_from_row(row)
 
 
 def _validate(values: dict[str, Any]) -> None:
@@ -309,7 +313,7 @@ def _validate(values: dict[str, Any]) -> None:
                 "above zero; a capacity of zero is a misconfiguration, not a divisor"
             )
 
-    for field in ("print_labor_rate", "finishing_labor_rate"):
+    for field in ("print_labor_rate", "finishing_labor_rate", "overhead_percentage"):
         value = values.get(field)
         if value is not None and Decimal(str(value)) < 0:
             raise PolicyMisconfigured(f"{field} cannot be negative")
@@ -355,6 +359,7 @@ async def write_policy(
             "overhead_monthly_pool": None,
             "expected_monthly_machine_hours": None,
             "electricity_rate_per_kwh": None,
+            "overhead_percentage": legacy.overhead_percentage,
             "margin_basis": "customer_total",
             "default_target_margin_pct": None,
             "rounding_rule": None,
@@ -401,10 +406,10 @@ async def ensure_policy_row(
     *,
     effective_from: Optional[date] = None,
 ) -> TenantPricingPolicy:
-    """The tenant's current policy row, seeding one from legacy settings if absent.
+    """The tenant's current policy row, seeding one if the tenant has none.
 
-    Used by the policy endpoints so a tenant created before Tier 1 gets a row
-    the first time anybody writes one, rather than a 404 on their own settings.
+    The seeded row records nobody as its author, so its figures read as
+    ``assumed`` until an administrator writes the policy (task T219).
     """
     current = await current_policy_row(db, tenant)
     if current is not None:
@@ -415,3 +420,12 @@ async def ensure_policy_row(
         {},
         effective_from=effective_from or _today(),
     )
+
+
+async def seed_policy_row(db: AsyncSession, tenant: "Tenant") -> TenantPricingPolicy:
+    """Give a newly created tenant its first, assumed, dated policy row.
+
+    Called by every path that creates a tenant (task T219), so no tenant is
+    costed from a policy that exists nowhere. Opens on the tenant's first day.
+    """
+    return await ensure_policy_row(db, tenant, effective_from=_today())

@@ -245,6 +245,24 @@ class TestTheAlertNamesTheLinesThatMoved:
         assert found.gaps
 
 
+class TestOneMarginDerivation:
+    """Task T221: the planned and realised margins are one function's output."""
+
+    async def test_with_no_actuals_planned_and_realised_agree_to_the_cent(
+        self, db_session, test_tenant, settled
+    ) -> None:
+        await db_session.execute(delete(ProductionRun))
+        await db_session.execute(delete(FeeActual))
+        await db_session.commit()
+        item = await reload_item(db_session, settled["order"])
+
+        found = await margin_alert.divergence_for_item(db_session, test_tenant, item)
+
+        assert found.planned_profit == found.realised_profit
+        assert found.planned_margin_pct == found.realised_margin_pct
+        assert found.divergence_points == Decimal("0.00")
+
+
 # ---------------------------------------------------------------------------
 # The control
 # ---------------------------------------------------------------------------

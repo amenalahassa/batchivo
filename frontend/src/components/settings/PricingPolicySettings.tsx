@@ -66,6 +66,7 @@ const schema = z
     overhead_monthly_pool: nonNegative('Enter a non-negative amount, or blank'),
     expected_monthly_machine_hours: nonNegative('Enter a non-negative number, or blank'),
     electricity_rate_per_kwh: nonNegative('Enter a non-negative rate, or blank'),
+    overhead_percentage: nonNegative('Enter a non-negative percentage'),
     margin_basis: z.enum(['customer_total', 'item_price', 'net_revenue']),
   })
   .refine(
@@ -107,6 +108,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
       overhead_monthly_pool: '',
       expected_monthly_machine_hours: '',
       electricity_rate_per_kwh: '',
+      overhead_percentage: '',
       margin_basis: 'customer_total',
     },
   })
@@ -121,6 +123,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
         overhead_monthly_pool: policy.overhead_monthly_pool ?? '',
         expected_monthly_machine_hours: policy.expected_monthly_machine_hours ?? '',
         electricity_rate_per_kwh: policy.electricity_rate_per_kwh ?? '',
+        overhead_percentage: policy.overhead_percentage,
         margin_basis: policy.margin_basis,
       })
     }
@@ -150,6 +153,14 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
     }
     if (values.electricity_rate_per_kwh !== '') {
       changes.electricity_rate_per_kwh = values.electricity_rate_per_kwh
+    }
+    // Sent only when it moved: an unchanged figure re-sent would still be a
+    // change of period, recorded as a decision nobody made.
+    if (
+      values.overhead_percentage !== '' &&
+      values.overhead_percentage !== policy?.overhead_percentage
+    ) {
+      changes.overhead_percentage = values.overhead_percentage
     }
     updatePolicy(changes)
   }
@@ -196,6 +207,17 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
             <AlertDescription>
               Your policy has not been saved yet, so these come from your old settings. Save
               them to make them yours — nothing below changes until you do.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {policy?.origin === 'policy_row' && policy.source === 'assumed' && (
+          <Alert data-testid="assumed-policy-notice">
+            <Info className="h-4 w-4" />
+            <AlertTitle>Nobody has set these figures yet</AlertTitle>
+            <AlertDescription>
+              They are the defaults your workspace started with, and every cost built from
+              them is labelled as an assumption until you save your own.
             </AlertDescription>
           </Alert>
         )}
@@ -302,6 +324,26 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
                 </FormItem>
               )}
             />
+
+            {method === 'percentage' && (
+              <FormField
+                control={form.control}
+                name="overhead_percentage"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Overhead percentage</FormLabel>
+                    <FormControl>
+                      <Input inputMode="decimal" placeholder="15" disabled={!canEdit} {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Added on top of material and labor for every item that carries no
+                      percentage of its own.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
             {method === 'per_machine_hour' && (
               <>

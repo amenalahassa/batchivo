@@ -40,6 +40,8 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditMonetaryPolicy, canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 const PLATFORM_TYPES: PlatformType[] = [
   'fair',
@@ -97,6 +99,12 @@ interface SalesChannelFormProps {
 }
 
 export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
+  // The channel's levers are monetary policy (T216): an admin's. Its name
+  // and details are a member's. A viewer meets every control disabled (T238).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+  const canEditLevers = canEditMonetaryPolicy(user)
+
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -165,6 +173,7 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
   return (
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+        <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-6 border-0 p-0">
         {/* Basic Information */}
         <Card>
           <CardHeader>
@@ -218,6 +227,11 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
         </Card>
 
         {/* What the channel costs to be on, aside from its fees */}
+        <fieldset
+          disabled={!canEditLevers}
+          className="m-0 min-w-0 space-y-6 border-0 p-0"
+          data-testid="channel-levers"
+        >
         <Card>
           <CardHeader>
             <CardTitle>Channel Cost</CardTitle>
@@ -446,6 +460,12 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
             />
           </CardContent>
         </Card>
+        </fieldset>
+        {canEdit && !canEditLevers && (
+          <p className="text-sm text-muted-foreground" data-testid="levers-read-only-notice">
+            The channel&rsquo;s cost and economics are monetary policy, set by an admin or owner.
+          </p>
+        )}
 
         {/* Status - only show in edit mode */}
         {mode === 'edit' && (
@@ -472,6 +492,12 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
           </Card>
         )}
 
+        </fieldset>
+        {!canEdit && (
+          <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+            Changing a channel needs a member, admin or owner role.
+          </p>
+        )}
         {/* Actions */}
         <div className="flex items-center justify-end gap-4">
           <Button
@@ -486,7 +512,7 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
           >
             Cancel
           </Button>
-          <Button type="submit" disabled={isPending}>
+          <Button type="submit" disabled={isPending || !canEdit}>
             {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {mode === 'create' ? 'Create Channel' : 'Save Changes'}
           </Button>

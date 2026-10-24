@@ -493,3 +493,24 @@ describe('PriceLadder', () => {
     expect(screen.queryByTestId('ladder-table')).not.toBeInTheDocument()
   })
 })
+
+describe('a date no fee rule covers (T236)', () => {
+  const lapsed = 'no fee rule on this channel covers 2026-10-24'
+
+  it('is reported on the solver rather than priced at zero fees', () => {
+    render(
+      <PriceSolverPanel result={solved({ incomplete_reasons: [lapsed] })} onSolve={vi.fn()} />,
+    )
+    expect(screen.getByTestId('solver-incomplete')).toHaveTextContent(lapsed)
+  })
+
+  it('is reported on the ladder', () => {
+    render(<PriceLadder ladder={ladderData({ incomplete_reasons: [lapsed] })} />)
+    expect(screen.getByTestId('ladder-incomplete')).toHaveTextContent(lapsed)
+  })
+
+  it('says nothing when every date is covered', () => {
+    render(<PriceSolverPanel result={solved({ incomplete_reasons: [] })} onSolve={vi.fn()} />)
+    expect(screen.queryByTestId('solver-incomplete')).not.toBeInTheDocument()
+  })
+})

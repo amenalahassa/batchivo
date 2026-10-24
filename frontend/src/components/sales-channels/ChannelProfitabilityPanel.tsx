@@ -25,7 +25,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ChannelReconciliation } from '@/components/pricing/ChannelReconciliation'
+import { useAuth } from '@/contexts/AuthContext'
 import { useChannelPnL } from '@/hooks/useFeeRules'
+import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
+import { FeeActualForm } from './FeeActualForm'
 
 interface ChannelProfitabilityPanelProps {
   channelId: string
@@ -53,6 +56,7 @@ export function ChannelProfitabilityPanel({
 }: ChannelProfitabilityPanelProps) {
   const [period, setPeriod] = useState(currentMonthToDate)
   const inverted = period.start > period.end
+  const { user } = useAuth()
 
   const { pnl, isLoading, error } = useChannelPnL({
     channelId,
@@ -117,8 +121,27 @@ export function ChannelProfitabilityPanel({
             these figures are shown. {error.message}
           </p>
         ) : pnl ? (
-          <ChannelReconciliation pnl={pnl} currencySymbol={currencySymbol} />
+          <>
+            <ChannelReconciliation pnl={pnl} currencySymbol={currencySymbol} />
+            {pnl.notes && pnl.notes.length > 0 && (
+              <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground" data-testid="pnl-notes">
+                {pnl.notes.map((note) => (
+                  <li key={note}>{note}</li>
+                ))}
+              </ul>
+            )}
+          </>
         ) : null}
+
+        {!inverted && (
+          <FeeActualForm
+            channelId={channelId}
+            periodStart={period.start}
+            periodEnd={period.end}
+            currencySymbol={currencySymbol}
+            canEdit={canEditMonetaryPolicy(user)}
+          />
+        )}
       </CardContent>
     </Card>
   )

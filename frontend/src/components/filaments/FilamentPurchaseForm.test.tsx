@@ -74,6 +74,16 @@ function renderForm(node: ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>)
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('SpoolAllocationTable', () => {
   it('shows each spool’s share of the shipping', () => {
     render(<SpoolAllocationTable spools={[spool()]} />)
@@ -330,5 +340,24 @@ describe('FilamentPurchaseForm', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to load this purchase')).toBeInTheDocument()
     })
+  })
+})
+
+describe('FilamentPurchaseForm for a viewer', () => {
+  it('reads a purchase but cannot record one', async () => {
+    auth.role = 'viewer'
+    renderForm(<FilamentPurchaseForm />)
+
+    expect(await screen.findByTestId('read-only-notice')).toBeInTheDocument()
+    expect(screen.getByLabelText('Inbound shipping')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /record purchase/i })).toBeDisabled()
+  })
+
+  it('lets a member record one', async () => {
+    auth.role = 'member'
+    renderForm(<FilamentPurchaseForm />)
+
+    expect(await screen.findByLabelText('Inbound shipping')).toBeEnabled()
+    expect(screen.queryByTestId('read-only-notice')).not.toBeInTheDocument()
   })
 })

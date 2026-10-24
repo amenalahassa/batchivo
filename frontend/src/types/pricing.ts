@@ -151,6 +151,11 @@ export interface PricingPolicy {
   effective_from: string | null
   effective_to: string | null
   set_by_role: string | null
+  /**
+   * 'policy' once an operator has set this policy; 'assumed' for the row seeded
+   * when the tenant was created, which nobody chose.
+   */
+  source: 'policy' | 'assumed'
 }
 
 /** A change to one or more policy levers. Unlisted levers are carried forward. */
@@ -164,6 +169,7 @@ export type PricingPolicyUpdate = Partial<
     | 'overhead_monthly_pool'
     | 'expected_monthly_machine_hours'
     | 'electricity_rate_per_kwh'
+    | 'overhead_percentage'
     | 'margin_basis'
     | 'default_target_margin_pct'
     | 'rounding_rule'
@@ -394,7 +400,13 @@ export interface FeeRuleCreate {
   applies_to?: string | null
 }
 
-export type FeeRuleUpdate = Partial<FeeRuleCreate>
+export type FeeRuleUpdate = Partial<FeeRuleCreate> & {
+  /**
+   * A change to what a rule charges supersedes it from this day, today if
+   * absent; the current row closes the day before (FR-022, T233).
+   */
+  effective_from?: string
+}
 
 export interface FeeRuleListResponse {
   rules: FeeRule[]
@@ -415,6 +427,8 @@ export interface FeePreviewRequest {
 }
 
 export interface FeePreviewResponse {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
   charges: FeeCharge[]
   total: Money
   /** Per-listing and per-month rules, absorbed over a period instead (FR-025). */
@@ -516,6 +530,9 @@ export interface FeeActualCreate {
   period_start?: string
   period_end?: string
   order_id?: string
+  /** Order scope only: the statement period this charge appeared in. */
+  statement_period_start?: string
+  statement_period_end?: string
 }
 
 export interface FeeActual {
@@ -527,6 +544,8 @@ export interface FeeActual {
   period_start: string | null
   period_end: string | null
   order_id: string | null
+  statement_period_start?: string | null
+  statement_period_end?: string | null
   /** `entered` by a human, never presented as observed (FR-041e). */
   source: string
 }
@@ -580,10 +599,22 @@ export interface ChannelPnL {
   unabsorbed_total: Money
 
   make_cost_total: Money
+  /** Lines that froze no make-cost (or no rate to convert it), left out. */
+  make_cost_unrecorded_lines?: number
+  /** Orders with no postage recorded, carried at none rather than guessed. */
+  postage_unrecorded_orders?: number
+  /** Orders whose source did not record the tax it collected. */
+  tax_unrecorded_orders?: number
+  /** Orders sold before snapshots, whose planned fees come from the rules. */
+  planned_fees_from_rules?: number
   profit: Money
   margin_pct: Percent | null
   margin_basis: MarginBasis
   margin_basis_label: string
+  margin_bases_in_period?: MarginBasis[]
+  margin_basis_spans_change?: boolean
+  /** What the figures leave out or derive, in words. */
+  notes?: string[]
 }
 
 /** Channel economics as the sales-channel form edits them. */
@@ -651,6 +682,8 @@ export interface PriceAdjustment {
  * channel: applying it is a separate write on the price (US4 scenario 5).
  */
 export interface PriceSolveResult {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
   product_id: string
   sales_channel_id: string
   as_of: string
@@ -704,6 +737,8 @@ export interface PriceLadderRung {
  * recommended price while resting on nothing (FR-007).
  */
 export interface PriceLadder {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
   product_id: string
   sales_channel_id: string
   as_of: string
@@ -855,10 +890,17 @@ export interface MarginDivergence {
   threshold_points: Money
   diverges: boolean
   shortfall: boolean
-  planned_profit: Money
-  realised_profit: Money
+  /** Null where no exchange rate was frozen: a profit across currencies is not one. */
+  planned_profit: Money | null
+  realised_profit: Money | null
   /** Which lines moved, heaviest first -- what US7 scenario 3 asks for. */
   movements: LineMovement[]
+  /** The rate frozen at sale, its date and origin (FR-028g, FR-028h). */
+  fx_rate?: Money | null
+  fx_rate_date?: string | null
+  fx_rate_source?: string | null
+  /** What the sale's snapshot could not record (T232). */
+  snapshot_incomplete?: string[] | null
 }
 
 export interface MarginDivergenceList {
@@ -956,3 +998,70 @@ export interface ScenarioRunRequest {
   margin_floor_pct: Money
   sales_channel_id?: string
 }
+
+// ---------------------------------------------------------------------------
+// Exchange rates entered by hand (T223, FR-028h)
+// ---------------------------------------------------------------------------
+
+/** A settled line that froze no exchange rate, and the pair it waits on. */
+export interface FxWaitingLine {
+  order_id: string
+  order_number: string
+  order_item_id: string
+  product_name: string
+  sold_on: string | null
+  base_currency: string
+  quote_currency: string
+}
+
+export interface FxWaitingLines {
+  lines: FxWaitingLine[]
+  total: number
+}
+
+/** One `base_currency` is `rate` of `quote_currency`, on `rate_date`. */
+export interface ManualFxRateCreate {
+  base_currency: string
+  quote_currency: string
+  rate: Money
+  rate_date?: string
+}
+
+export interface ManualFxRate {
+  base_currency: string
+  quote_currency: string
+  rate: Money
+  rate_date: string
+  source: string
+  /** Lines that had frozen no rate and now carry this one. */
+  lines_filled: number
+}
+
+// ---------------------------------------------------------------------------
+// The queue by profit per machine-hour (T234, FR-043, US7)
+// ---------------------------------------------------------------------------
+
+export type PrintJobStatus = 'pending' | 'queued' | 'printing' | 'completed' | 'failed' | 'cancelled'
+export type PrintJobPriority = 'low' | 'normal' | 'high' | 'urgent'
+
+/** One queued job and what it earns for the machine time it takes. */
+export interface JobProfitability {
+  job_id: string
+  status: PrintJobStatus
+  priority: PrintJobPriority
+  queue_position: number
+  model_name: string | null
+  product_name: string | null
+  /** Null, never zero, where no figure can be had; `reason` says why. */
+  profit_per_machine_hour: Money | null
+  margin_pct: Percent | null
+  machine_hours: Money | null
+  reason: string | null
+}
+
+/** The queue ordered by what pays per machine-hour, priority still first. */
+export interface ProfitabilityRanking {
+  as_of: string
+  entries: JobProfitability[]
+}
+

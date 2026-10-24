@@ -84,6 +84,11 @@ export interface ProductPricing {
   net_revenue?: string
   profit?: string
   margin_percentage?: string
+  /**
+   * Profit per hour of machine time, shown beside the margin (FR-043). Null,
+   * never zero, where nobody has timed the print.
+   */
+  profit_per_machine_hour?: string | null
   created_at: string
   updated_at: string
 }

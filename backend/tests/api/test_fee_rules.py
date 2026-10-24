@@ -726,3 +726,39 @@ class TestDeletingARule:
         assert rule.applies_to is not None
         # The order it priced still reads it.
         assert await _preview(client, channel, "2024-06-15") == "6.50"
+
+
+# ============================================================================
+# Task T236: a lapsed rule set is reported on every reader
+# ============================================================================
+
+
+class TestALapsedRuleSetIsReported:
+    async def test_the_preview_names_the_gap(
+        self, client: AsyncClient, channel: SalesChannel
+    ) -> None:
+        await client.post(_url(channel), json=_body(applies_to="2026-03-31"))
+
+        body = (
+            await client.post(
+                _url(channel, "/preview"),
+                json={"item_subtotal": "64.99", "as_of": "2026-06-01"},
+            )
+        ).json()
+
+        assert body["charges"] == []
+        assert any("no fee rule" in reason for reason in body["incomplete_reasons"])
+
+    async def test_a_covered_date_has_no_gap(
+        self, client: AsyncClient, channel: SalesChannel
+    ) -> None:
+        await client.post(_url(channel), json=_body())
+
+        body = (
+            await client.post(
+                _url(channel, "/preview"),
+                json={"item_subtotal": "64.99", "as_of": "2026-06-01"},
+            )
+        ).json()
+
+        assert body["incomplete_reasons"] == []

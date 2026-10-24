@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -185,3 +185,29 @@ class PrinterQueueResponse(BaseModel):
     estimated_time_to_completion_hours: Decimal = Decimal("0")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class JobProfitabilityResponse(BaseModel):
+    """One queued job and what it earns for the machine time it takes (FR-043).
+
+    ``profit_per_machine_hour`` is null, never zero, where no figure can be had;
+    ``reason`` says why.
+    """
+
+    job_id: UUID
+    status: JobStatus
+    priority: JobPriority
+    queue_position: int
+    model_name: Optional[str] = None
+    product_name: Optional[str] = None
+    profit_per_machine_hour: Optional[Decimal] = None
+    margin_pct: Optional[Decimal] = None
+    machine_hours: Optional[Decimal] = None
+    reason: Optional[str] = None
+
+
+class ProfitabilityRankingResponse(BaseModel):
+    """The queue ordered by what pays per machine-hour, priority still first."""
+
+    as_of: date
+    entries: list[JobProfitabilityResponse]

@@ -47,7 +47,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +59,7 @@ from app.models.product import Product
 from app.models.sales_channel import SalesChannel
 from app.models.tenant import Tenant
 from app.services import fee_engine, fx_service
+from app.services.currency_edge import books_currency as tenant_books_currency
 from app.services.cost_resolution import product_cost_breakdown
 from app.services.costing import (
     PRICING_ENGINE_REV,
@@ -120,6 +121,51 @@ def allocate_across_lines(
         heaviest = max(range(count), key=lambda index: weights[index])
         shares[heaviest] += remainder
     return shares
+
+
+def snapshot_amount(value: Any, default: Decimal = ZERO) -> Decimal:
+    """An amount read back out of a snapshot, exactly.
+
+    Through ``str``: a JSON number arrives as a float, and passing it to
+    ``Decimal`` directly would carry the float's error into the sum.
+    """
+    if value is None:
+        return default
+    try:
+        return Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
+        return default
+
+
+def frozen_fee_total(item: "OrderItem") -> Decimal:
+    """The fees this line froze at the moment of sale, summed exactly.
+
+    The one reader of ``fees_json`` totals (task T221); the planned and the
+    realised margin each carried their own copy.
+    """
+    return sum((snapshot_amount(charge.get("amount")) for charge in (item.fees_json or [])), ZERO)
+
+
+#: How a missing-rate gap begins, so a rate entered later can clear exactly it.
+NO_RATE_PREFIX = "no exchange rate was available"
+
+
+def freeze_rate(
+    item: OrderItem, resolved: Optional["fx_service.ResolvedRate"], books_currency: str
+) -> None:
+    """Freeze a rate onto a line with its date and origin (FR-028g, FR-028h).
+
+    Only a line with no rate frozen yet: a frozen rate is never revised
+    (FR-028j), so a call on such a line changes nothing.
+    """
+    if item.fx_rate is not None:
+        return
+    item.fx_quote_currency = books_currency
+    if resolved is None:
+        return
+    item.fx_rate = resolved.rate
+    item.fx_rate_date = resolved.as_of
+    item.fx_rate_source = resolved.source
 
 
 def _charge_as_json(charge: "fee_engine.FeeCharge", amount: Decimal) -> dict:
@@ -207,25 +253,33 @@ async def write_sale_snapshot(
     # `resolve_rate` rather than `require_rate`: a sale is never blocked by
     # rate availability (FR-028i), so an unknown rate is recorded as unknown
     # and reported, not raised.
-    frozen_rate: Optional[Decimal] = None
-    books_currency = getattr(channel, "currency_code", None) or order.currency
-    if order.currency and books_currency:
-        resolved = await fx_service.resolve_rate(
-            db, order.currency, books_currency, as_of=reference
-        )
-        if resolved is not None:
-            frozen_rate = resolved.rate
-            if resolved.is_stale:
-                result.incomplete.append(
-                    f"the exchange rate frozen onto this order is the last known one, "
-                    f"from {resolved.as_of}: {resolved.reason}"
-                )
-        else:
-            result.incomplete.append(
-                f"no exchange rate was available for {order.currency}/{books_currency}, "
-                f"so none was frozen onto this order -- it is recorded as unknown "
-                f"rather than as parity"
+    #
+    # From the order's currency to the *books* -- the currency every cost on
+    # the line is kept in -- not to the channel's (task T231). It is the rate
+    # that lets a make-cost be set against what the customer paid.
+    resolved: Optional[fx_service.ResolvedRate] = None
+    order_wide: list[str] = []
+    books_currency = tenant_books_currency(tenant)
+    sold_in = (order.currency or "").strip().upper() or books_currency
+    resolved = await fx_service.resolve_rate(db, sold_in, books_currency, as_of=reference)
+    if resolved is not None:
+        if resolved.is_stale:
+            order_wide.append(
+                f"the exchange rate frozen onto this order is the last known one, "
+                f"from {resolved.as_of}: {resolved.reason}"
             )
+    else:
+        order_wide.append(
+            f"{NO_RATE_PREFIX} for {sold_in}/{books_currency}, "
+            f"so none was frozen onto this order -- it is recorded as unknown "
+            f"rather than as parity"
+        )
+    if order.sales_tax_collected is None:
+        order_wide.append(
+            "the source of this order did not record the sales tax it collected, so "
+            "the fees are computed as if none was (task T230)"
+        )
+    result.incomplete.extend(order_wide)
 
     # --- the order's fee stack, computed once ------------------------------
     allocations: dict[int, list[dict]] = {index: [] for index in range(len(items))}
@@ -235,9 +289,13 @@ async def write_sale_snapshot(
             item_subtotal=order_subtotal,
             shipping_revenue=Decimal(str(order.shipping_cost or ZERO)),
             quantity=sum(int(item.quantity or 0) for item in items) or 1,
+            # Unrecorded tax is reported below rather than taken as zero.
             sales_tax_collected=Decimal(str(order.sales_tax_collected or ZERO)),
         )
         stack = fee_engine.compute(channel, context, reference, rules=rules)
+        # Rules that have all lapsed on the sale's date (task T236).
+        order_wide.extend(stack.incomplete_reasons)
+        result.incomplete.extend(stack.incomplete_reasons)
 
         weights = [Decimal(str(item.total_price or ZERO)) for item in items]
         for charge in stack.charges:
@@ -250,6 +308,8 @@ async def write_sale_snapshot(
         if item.has_snapshot:
             continue
 
+        line_gaps: list[str] = list(order_wide)
+        before = len(result.incomplete)
         breakdown_json: Optional[dict] = None
         make_cost: Optional[Decimal] = None
 
@@ -306,7 +366,11 @@ async def write_sale_snapshot(
         item.make_cost_at_sale = make_cost
         item.list_price_at_sale = list_price
         item.fees_json = allocations[index] or None
-        item.fx_rate = frozen_rate
+        freeze_rate(item, resolved, books_currency)
+        # This line's own gaps beside the order-wide ones, kept with the line
+        # so a reader later can see them (task T232) rather than a log.
+        line_gaps.extend(result.incomplete[before:])
+        item.snapshot_incomplete = list(dict.fromkeys(line_gaps)) or None
         item.margin_basis_at_sale = basis
         item.pricing_rev = PRICING_ENGINE_REV
         db.add(item)

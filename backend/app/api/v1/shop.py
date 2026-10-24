@@ -90,7 +90,7 @@ class ShopProductVariant(BaseModel):
     size: str
     display_order: int
     sku: str
-    price_pence: int  # Absolute price for this variant in pence
+    price_pence: Optional[int] = None  # Absolute price in pence; null when unpriced
     price_adjustment_pence: int  # Delta from base price (for reference)
     fulfilment_type: str  # "stock" | "print_to_order"
     units_in_stock: int
@@ -105,7 +105,10 @@ class ShopProduct(BaseModel):
     sku: str
     name: str
     description: Optional[str] = None
-    price: Decimal  # Base price in pence
+    # Base price in pence; null where the product is not priced on this shop,
+    # which is never shown or sold as zero (task T228).
+    price: Optional[Decimal] = None
+    is_priced: bool = True
     currency: str = "GBP"
     images: list[ShopProductImage] = []
     categories: list[ShopProductCategory] = []
@@ -409,9 +412,7 @@ async def get_products(
         # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
         # `product.pricing` here would serve a superseded price, because since
         # Tier 3 that collection is the full history (task T097, FR-039).
-        price = storefront_price(
-            product, sales_channel_id=channel.id if channel else None
-        ) or Decimal("0")
+        price = storefront_price(product, sales_channel_id=channel.id, only_channel=True)
 
         # Check if it's a dragon item using dedicated is_dragon field
         is_dragon = getattr(product, "is_dragon", False)
@@ -454,7 +455,8 @@ async def get_products(
             sku=product.sku or "",
             name=product.name,
             description=product.description,
-            price=price * 100,  # Convert to pence
+            price=price * 100 if price is not None else None,  # Convert to pence
+            is_priced=price is not None,
             images=product_images,
             categories=product_categories_list,
             designer=designer_info,
@@ -481,6 +483,24 @@ async def get_products(
         limit=limit,
         has_more=(page * limit) < total,
     )
+
+
+async def _shop_channel_id(db, tenant_id) -> Optional[UUID]:
+    """The tenant's own shop channel, whose price is the only one the shop uses.
+
+    ``None`` where the tenant has none: then nothing is priced on the shop, and
+    ``storefront_price(..., only_channel=True)`` reports every product unpriced
+    rather than borrowing a marketplace's price (task T228).
+    """
+    return (
+        await db.execute(
+            select(SalesChannel.id).where(
+                SalesChannel.tenant_id == tenant_id,
+                SalesChannel.platform_type == "online_shop",
+                SalesChannel.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
 
 
 @router.get("/products/{product_id}")
@@ -522,10 +542,15 @@ async def get_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # `storefront_price` reads the CURRENT rows only (task T097, FR-039).
-    price = storefront_price(product) or Decimal("0")
+    # `storefront_price` reads the CURRENT rows only (task T097, FR-039), and
+    # only this shop's own (task T228): never a marketplace's, never zero.
+    price = storefront_price(
+        product,
+        sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+        only_channel=True,
+    )
 
-    base_price_pence = int(price * 100)
+    base_price_pence = int(price * 100) if price is not None else None
     is_dragon = getattr(product, "is_dragon", False)
 
     # Convert images - use API endpoint for reliable delivery
@@ -568,7 +593,11 @@ async def get_product(
             size=v.size,
             display_order=v.display_order,
             sku=v.sku,
-            price_pence=base_price_pence + v.price_adjustment_pence,
+            price_pence=(
+                base_price_pence + v.price_adjustment_pence
+                if base_price_pence is not None
+                else None
+            ),
             price_adjustment_pence=v.price_adjustment_pence,
             fulfilment_type=v.fulfilment_type,
             units_in_stock=v.units_in_stock,
@@ -588,6 +617,7 @@ async def get_product(
             name=product.name,
             description=display_description,
             price=base_price_pence,
+            is_priced=base_price_pence is not None,
             images=product_images,
             categories=product_categories_list,
             designer=designer_info,
@@ -714,9 +744,7 @@ async def get_related_products(
         # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
         # `product.pricing` here would serve a superseded price, because since
         # Tier 3 that collection is the full history (task T097, FR-039).
-        price = storefront_price(
-            product, sales_channel_id=channel.id if channel else None
-        ) or Decimal("0")
+        price = storefront_price(product, sales_channel_id=channel.id, only_channel=True)
 
         product_images = []
         for img in getattr(product, "images", []):
@@ -748,7 +776,8 @@ async def get_related_products(
                 sku=product.sku or "",
                 name=product.name,
                 description=product.description,
-                price=price * 100,
+                price=price * 100 if price is not None else None,
+                is_priced=price is not None,
                 images=product_images,
                 categories=product_categories_list,
                 designer=designer_info,
@@ -923,8 +952,12 @@ async def get_dragons(db: ShopDB):
 
     shop_products = []
     for product in products:
-        # Current rows only (task T097, FR-039).
-        price = storefront_price(product) or Decimal("0")
+        # Current rows only (task T097, FR-039), this shop's only (task T228).
+        price = storefront_price(
+            product,
+            sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+            only_channel=True,
+        )
 
         # Convert images - use API endpoint for reliable delivery
         product_images = []
@@ -967,7 +1000,8 @@ async def get_dragons(db: ShopDB):
                 sku=product.sku or "",
                 name=product.name,
                 description=display_description,
-                price=price * 100,
+                price=price * 100 if price is not None else None,
+                is_priced=price is not None,
                 images=product_images,
                 categories=product_categories_list,
                 designer=designer_info,
@@ -1035,20 +1069,21 @@ async def add_to_cart(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    # What the line will hold once this is added: the stock check and the
+    # quantity tier both answer for the whole line (task T228, FR-027).
+    current_cart = await cart_service.get_cart(session_id)
+    existing_quantity = 0
+    for item in current_cart.items:
+        if item.product_id == request.product_id:
+            existing_quantity = item.quantity
+            break
+    total_requested = existing_quantity + request.quantity
+
     # Check stock availability (including reservations) for non print-to-order items
     is_print_to_order = getattr(product, "print_to_order", False)
     if not is_print_to_order:
         stock_info = await reservation_service.get_available_stock(request.product_id, db)
 
-        # Get current cart to check if we already have this item
-        current_cart = await cart_service.get_cart(session_id)
-        existing_quantity = 0
-        for item in current_cart.items:
-            if item.product_id == request.product_id:
-                existing_quantity = item.quantity
-                break
-
-        total_requested = existing_quantity + request.quantity
         if total_requested > stock_info.available_stock:
             if stock_info.available_stock <= 0:
                 raise HTTPException(
@@ -1068,8 +1103,23 @@ async def add_to_cart(
                     },
                 )
 
-    # Current rows only (task T097, FR-039).
-    price = storefront_price(product) or Decimal("0")
+    # Current rows only (task T097, FR-039), at this shop's own price for the
+    # quantity the line will hold (task T228, FR-027). An unpriced product is
+    # refused: the zero substituted here was the price the customer was charged.
+    price = storefront_price(
+        product,
+        sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+        quantity=total_requested,
+        only_channel=True,
+    )
+    if price is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "not_priced",
+                "message": f"{product.name} is not priced on this shop",
+            },
+        )
     price_pence = price * 100
 
     # Add to cart via service
@@ -1542,6 +1592,8 @@ async def complete_checkout(
                     product.units_in_stock = max(0, product.units_in_stock - item.quantity)
 
     db_order.postage_paid = postage_total
+    # The shop's checkout adds no tax to its total: a recorded zero (task T230).
+    db_order.sales_tax_collected = Decimal("0")
 
     # Freeze what each line earned, as it stands (FR-036, task T157).
     #

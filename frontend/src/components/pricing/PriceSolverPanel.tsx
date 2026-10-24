@@ -207,6 +207,21 @@ export function PriceSolverPanel({
           </Alert>
         ) : null}
 
+        {/* T236: a date no fee rule covers is reported, never priced at zero fees. */}
+        {result?.incomplete_reasons && result.incomplete_reasons.length > 0 ? (
+          <Alert data-testid="solver-incomplete">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>This answer is incomplete</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc space-y-0.5 pl-4">
+                {result.incomplete_reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
         {result !== undefined && result.achievable ? (
           <div className="space-y-4" data-testid="solve-result">
             <Separator />

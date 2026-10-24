@@ -49,6 +49,8 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 const materialFormSchema = z.object({
   spool_id: z.string().uuid('Must select a spool'),
@@ -64,6 +66,10 @@ interface BOMEditorProps {
 }
 
 export function BOMEditor({ modelId, materials }: BOMEditorProps) {
+  // A viewer sees the bill of materials with its controls disabled (T238).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const queryClient = useQueryClient()
 
@@ -163,7 +169,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
         <h3 className="text-lg font-medium">Bill of Materials</h3>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" disabled={!canEdit}>
               <Plus className="mr-2 h-4 w-4" />
               Add Material
             </Button>
@@ -301,7 +307,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                 </div>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending}>
+                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending || !canEdit}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>

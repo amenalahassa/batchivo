@@ -48,6 +48,12 @@ class PricingPolicyUpdate(BaseModel):
     electricity_rate_per_kwh: Optional[Decimal] = Field(
         None, ge=0, description="Rate used by any printer carrying none of its own"
     )
+    overhead_percentage: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        le=1000,
+        description="Overhead as a percentage of material and labor, for the percentage method",
+    )
     margin_basis: Optional[MarginBasis] = Field(
         None, description="Which amount a margin percentage is taken over (FR-031)"
     )
@@ -118,7 +124,8 @@ class PricingPolicyResponse(BaseModel):
     )
     overhead_percentage: Decimal = Field(
         ...,
-        description="The legacy percentage figure, used when overhead_method is 'percentage'",
+        description="Overhead as a percentage of material and labor, when overhead_method "
+        "is 'percentage'",
     )
     electricity_rate_per_kwh: Optional[Decimal] = None
     margin_basis: MarginBasis
@@ -140,5 +147,12 @@ class PricingPolicyResponse(BaseModel):
         None, description="Last day it applied; null means it is current"
     )
     set_by_role: Optional[str] = Field(None, description="The role that authorised it (FR-007a)")
+    source: Literal["policy", "assumed"] = Field(
+        "assumed",
+        description=(
+            "'policy' once an operator has set this policy; 'assumed' for the row "
+            "seeded when the tenant was created, which nobody chose (task T219)"
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)

@@ -41,6 +41,7 @@ from app.schemas.margin_alert import (
     MarginDivergenceListResponse,
     MarginDivergenceResponse,
 )
+from app.services.currency_edge import cost_in_sale_currency
 from app.services import channel_pnl, fee_engine, margin_alert
 from app.services.channel_economics import ChannelEconomics, economics_over
 from app.services.channel_pnl import ReconciliationConflict
@@ -409,6 +410,8 @@ async def get_channel_pnl(
     tax_liability = ZERO
     make_cost_total = ZERO
     make_cost_unrecorded_lines = 0
+    tax_unrecorded_orders = 0
+    postage_unrecorded_orders = 0
     planned_amounts: list[tuple[str, Decimal]] = []
     planned_from_rules = 0
     bases_sold_on: set[str] = set()
@@ -418,8 +421,13 @@ async def get_channel_pnl(
         placed = _placed_on(order)
         subtotal = Decimal(str(order.subtotal or ZERO))
         shipping = Decimal(str(order.shipping_cost or ZERO))
-        tax = Decimal(str(getattr(order, "sales_tax_collected", ZERO) or ZERO))
-        postage += Decimal(str(getattr(order, "postage_paid", ZERO) or ZERO))
+        # An unrecorded figure is counted and named, not read as zero (T230).
+        if order.sales_tax_collected is None:
+            tax_unrecorded_orders += 1
+        if order.postage_paid is None:
+            postage_unrecorded_orders += 1
+        tax = Decimal(str(order.sales_tax_collected or ZERO))
+        postage += Decimal(str(order.postage_paid or ZERO))
 
         context, _ = fee_engine.exclusive_context(
             item_subtotal=subtotal,
@@ -450,10 +458,18 @@ async def get_channel_pnl(
             planned_from_rules += 1
 
         for item in order.items or []:
-            if item.has_snapshot:
-                make_cost_total += Decimal(str(item.make_cost_at_sale)) * Decimal(
-                    item.quantity or 0
+            # Frozen in the books currency, converted at the rate the sale
+            # froze (task T231); a line that froze none cannot be added to
+            # revenue in the channel's currency, and is counted as unrecorded.
+            converted = (
+                cost_in_sale_currency(
+                    item, Decimal(str(item.make_cost_at_sale)) * Decimal(item.quantity or 0)
                 )
+                if item.has_snapshot
+                else None
+            )
+            if converted is not None:
+                make_cost_total += converted
             else:
                 make_cost_unrecorded_lines += 1
             if item.margin_basis_at_sale:
@@ -549,6 +565,16 @@ async def get_channel_pnl(
             f"period's make-cost leaves them out rather than recomputing them from today's "
             f"inputs"
         )
+    if postage_unrecorded_orders:
+        notes.append(
+            f"{postage_unrecorded_orders} orders have no postage recorded, so the period "
+            f"carries none for them; record it on each order once the label is bought"
+        )
+    if tax_unrecorded_orders:
+        notes.append(
+            f"{tax_unrecorded_orders} orders came from a source that did not record the "
+            f"sales tax it collected, so the tax figures leave them out"
+        )
     if spans_change:
         notes.append(
             f"orders in this period sold under more than one margin basis "
@@ -603,6 +629,8 @@ async def get_channel_pnl(
         unabsorbed_total=unabsorbed.quantize(CENT),
         make_cost_total=make_cost_total.quantize(CENT),
         make_cost_unrecorded_lines=make_cost_unrecorded_lines,
+        postage_unrecorded_orders=postage_unrecorded_orders,
+        tax_unrecorded_orders=tax_unrecorded_orders,
         profit=margin.profit.quantize(CENT),
         margin_pct=margin.margin_pct,
         margin_basis=margin.basis,
@@ -681,6 +709,10 @@ async def get_margin_divergence(
                 fees_source=row.fees_source,
                 substitutions=row.substitutions,
                 gaps=row.gaps,
+                fx_rate=row.fx_rate,
+                fx_rate_date=row.fx_rate_date,
+                fx_rate_source=row.fx_rate_source,
+                snapshot_incomplete=row.snapshot_incomplete,
             )
             for row in found
         ],

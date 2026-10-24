@@ -112,6 +112,19 @@ def _extract_order_data(payload: dict) -> dict:
     total = Decimal(str(payload.get("total_price") or "0"))
     currency = payload.get("currency") or "GBP"
 
+    # Tax (task T230, FR-028a/c/e). Shopify reports what it collected in
+    # `total_tax`, and `taxes_included` says whether the prices above already
+    # contain it. Where they do, the tax comes out here so revenue is stored
+    # tax-exclusive like every other source's, and the order is marked so the
+    # derivation stays visible. Absent `total_tax`, the tax is unrecorded.
+    raw_tax = payload.get("total_tax")
+    sales_tax = Decimal(str(raw_tax)) if raw_tax not in (None, "") else None
+    taxes_included = bool(payload.get("taxes_included"))
+    shipping_tax = shipping_tax_of(shipping_lines)
+    if taxes_included and sales_tax:
+        subtotal -= sales_tax - shipping_tax
+        shipping_cost -= shipping_tax
+
     # Discount
     discount_codes = payload.get("discount_codes") or []
     discount_code = discount_codes[0].get("code") if discount_codes else None
@@ -144,12 +157,36 @@ def _extract_order_data(payload: dict) -> dict:
         "subtotal": subtotal,
         "total": total,
         "currency": currency,
+        "sales_tax_collected": sales_tax,
+        "tax_exclusive_derived": bool(taxes_included and sales_tax),
+        # Shopify does not know what the label cost; recorded when it is bought.
+        "postage_paid": None,
         "discount_code": discount_code,
         "discount_amount": discount_amount,
         "payment_provider": payment_gateway,
         "customer_notes": customer_notes,
         "status": _map_shopify_status(financial_status, fulfillment_status),
     }
+
+
+def shipping_tax_of(shipping_lines: list) -> Decimal:
+    """The tax Shopify charged on shipping, summed across its shipping lines."""
+    return sum(
+        (
+            Decimal(str(tax.get("price") or "0"))
+            for line in shipping_lines
+            for tax in (line.get("tax_lines") or [])
+        ),
+        Decimal("0"),
+    )
+
+
+def line_tax_of(item: dict) -> Decimal:
+    """The tax Shopify charged on one line item, across its tax lines."""
+    return sum(
+        (Decimal(str(tax.get("price") or "0")) for tax in (item.get("tax_lines") or [])),
+        Decimal("0"),
+    )
 
 
 async def _get_or_create_shopify_channel(db: AsyncSession, tenant, slug: str) -> Optional[str]:
@@ -315,13 +352,19 @@ async def shopify_webhook(
     for item in line_items:
         unit_price = Decimal(str(item.get("price") or "0"))
         qty = int(item.get("quantity") or 1)
+        total_price = unit_price * qty
+        if data.get("tax_exclusive_derived"):
+            # The line's own tax comes out of the line, so the totals the
+            # margin and the fee allocation weigh are tax-exclusive (FR-028a).
+            total_price -= line_tax_of(item)
+            unit_price = total_price / qty
         order_item = OrderItem(
             tenant_id=tenant.id,
             product_sku=item.get("sku") or item.get("variant_title") or "UNKNOWN",
             product_name=item.get("title") or "Unknown Product",
             quantity=qty,
             unit_price=unit_price,
-            total_price=unit_price * qty,
+            total_price=total_price,
         )
         order.items.append(order_item)
 

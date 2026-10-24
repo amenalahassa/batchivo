@@ -646,6 +646,15 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                         short
                         className="text-[10px] font-normal"
                       />
+                      {/* FR-043: profit per machine-hour beside the margin. */}
+                      <span
+                        className="text-[10px] text-muted-foreground tabular-nums whitespace-nowrap"
+                        data-testid={`profit-per-machine-hour-${pricingItem.id}`}
+                      >
+                        {pricingItem.profit_per_machine_hour == null
+                          ? 'untimed'
+                          : `${formatMoney(pricingItem.profit_per_machine_hour, currency.symbol)}/machine-hr`}
+                      </span>
                     </div>
                   </TableCell>
                   <TableCell className="text-center">

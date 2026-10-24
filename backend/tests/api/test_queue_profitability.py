@@ -78,6 +78,11 @@ async def world(db_session, test_tenant, test_filament_type):
     db_session.add(spool)
     await db_session.flush()
 
+    # The operator keeps their books in the currency the channel sells in, so
+    # costs and prices meet without a conversion (task T231).
+    test_tenant.currency_code = "CAD"
+    db_session.add(test_tenant)
+
     channel = SalesChannel(
         id=uuid4(),
         tenant_id=test_tenant.id,
@@ -359,3 +364,94 @@ class TestWhatTheRankingRefusesToDecide:
         ranking = await service(db_session, test_tenant).profitability_ranking()
 
         assert [entry.job.id for entry in ranking] == [mine.id]
+
+
+# ============================================================================
+# Task T234: the ranking is served, read-only, to every role
+# ============================================================================
+
+RANKING_URL = "/api/v1/print-queue/profitability"
+
+
+class TestTheRankingIsServed:
+    async def test_it_comes_back_best_paying_first_with_its_figures(
+        self, client, db_session, test_tenant, world
+    ) -> None:
+        slow = await queue_job(db_session, test_tenant, product=world["products"]["slow"])
+        quick = await queue_job(db_session, test_tenant, product=world["products"]["quick"])
+        slow_id, quick_id = str(slow.id), str(quick.id)
+
+        response = await client.get(RANKING_URL)
+
+        assert response.status_code == 200, response.text
+        entries = response.json()["entries"]
+        assert [entry["job_id"] for entry in entries] == [quick_id, slow_id]
+        assert isinstance(entries[0]["profit_per_machine_hour"], str)
+        assert entries[0]["machine_hours"] == "2.5"
+
+    async def test_a_job_with_no_figure_says_why(self, client, db_session, test_tenant) -> None:
+        model = Model(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            sku=f"RAW-{uuid4().hex[:6]}",
+            name="Printed directly",
+            is_active=True,
+        )
+        db_session.add(model)
+        await db_session.commit()
+        db_session.add(
+            PrintJob(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                model_id=model.id,
+                quantity=1,
+                priority=JobPriority.NORMAL,
+                status=JobStatus.PENDING,
+            )
+        )
+        await db_session.commit()
+
+        [entry] = (await client.get(RANKING_URL)).json()["entries"]
+
+        assert entry["profit_per_machine_hour"] is None
+        assert entry["reason"]
+
+    async def test_a_viewer_may_read_it(self, client, as_role) -> None:
+        from app.models.user import UserRole
+
+        async with as_role(UserRole.VIEWER):
+            response = await client.get(RANKING_URL)
+
+        assert response.status_code == 200
+
+    async def test_unauthenticated_is_a_401(self, unauthenticated_client) -> None:
+        assert (await unauthenticated_client.get(RANKING_URL)).status_code == 401
+
+    async def test_it_writes_nothing(self, client, db_session, test_tenant, world) -> None:
+        job = await queue_job(db_session, test_tenant, product=world["products"]["quick"])
+        before = (job.priority, job.status, job.queue_position)
+
+        await client.get(RANKING_URL)
+
+        await db_session.refresh(job)
+        assert (job.priority, job.status, job.queue_position) == before
+
+
+class TestTheProductScreenShowsItBesideTheMargin:
+    """The product detail's price rows carry the figure the margin endpoint does."""
+
+    async def test_a_price_row_carries_profit_per_machine_hour(self, client, world) -> None:
+        product = world["products"]["quick"]
+        channel = world["channel"]
+
+        detail = await client.get(f"/api/v1/products/{product.id}")
+        assert detail.status_code == 200, detail.text
+        [row] = detail.json()["pricing"]
+
+        margin = await client.get(f"/api/v1/products/{product.id}/pricing/{channel.id}/margin")
+        assert margin.status_code == 200, margin.text
+
+        # One derivation: the price row and the margin screen agree.
+        assert row["profit_per_machine_hour"] is not None
+        assert row["profit_per_machine_hour"] == margin.json()["profit_per_machine_hour"]
+        assert isinstance(row["profit_per_machine_hour"], str)

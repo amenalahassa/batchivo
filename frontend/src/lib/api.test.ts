@@ -35,7 +35,7 @@ vi.mock('./auth', () => ({
   clearAuthTokens: vi.fn(),
 }))
 
-const mockAxios = vi.mocked(axios)
+const mockAxios = vi.mocked(axios, true)
 
 describe('apiClient', () => {
   beforeEach(() => {

@@ -1927,3 +1927,148 @@ class TestStorefrontSaleSnapshot:
         ).scalar_one()
 
         assert order.postage_paid == Decimal("0.00")
+
+
+# ============================================
+# Task T228: the shop's own price, for the quantity bought, or none
+# ============================================
+
+
+async def _price(db_session, product, channel, amount: str, min_quantity: int = 1) -> None:
+    db_session.add(
+        ProductPricing(
+            id=uuid4(),
+            product_id=product.id,
+            sales_channel_id=channel.id,
+            list_price=Decimal(amount),
+            min_quantity=min_quantity,
+        )
+    )
+    await db_session.commit()
+    # The client shares this session: reload the product's price collections so
+    # the route does not read the ones cached before this row existed.
+    await db_session.refresh(product, ["pricing", "current_pricing"])
+
+
+async def _unpriced_product(db_session, test_tenant) -> Product:
+    product = Product(
+        id=uuid4(),
+        tenant_id=test_tenant.id,
+        sku=f"UNPRICED-{uuid4().hex[:6]}",
+        name="Not Yet Priced",
+        is_active=True,
+        shop_visible=True,
+        units_in_stock=10,
+    )
+    db_session.add(product)
+    await db_session.commit()
+    return product
+
+
+async def _marketplace(db_session, test_tenant) -> SalesChannel:
+    channel = SalesChannel(
+        id=uuid4(),
+        tenant_id=test_tenant.id,
+        name="A Marketplace",
+        platform_type="etsy",
+        is_active=True,
+    )
+    db_session.add(channel)
+    await db_session.commit()
+    return channel
+
+
+class TestTheShopSellsAtItsOwnPrice:
+    async def test_an_unpriced_product_cannot_be_added(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(product.id), "quantity": 1},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "not_priced"
+
+    async def test_a_marketplace_price_is_never_charged_on_the_shop(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        await _price(db_session, product, await _marketplace(db_session, test_tenant), "9.99")
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(product.id), "quantity": 1},
+        )
+
+        assert response.status_code == 409
+
+    async def test_the_quantity_tier_applies_to_the_whole_line(
+        self, client: AsyncClient, db_session, shop_product, sales_channel
+    ) -> None:
+        await _price(db_session, shop_product, sales_channel, "15.00", min_quantity=3)
+        session_id = str(uuid4())
+
+        await client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(shop_product.id), "quantity": 1},
+        )
+        response = await client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(shop_product.id), "quantity": 2},
+        )
+
+        [line] = response.json()["data"]["items"]
+        assert line["quantity"] == 3
+        assert Decimal(line["unit_price"]) == Decimal("1500")
+
+    async def test_below_the_tier_the_base_price_applies(
+        self, client: AsyncClient, db_session, shop_product, sales_channel
+    ) -> None:
+        await _price(db_session, shop_product, sales_channel, "15.00", min_quantity=3)
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(shop_product.id), "quantity": 2},
+        )
+
+        [line] = response.json()["data"]["items"]
+        assert Decimal(line["unit_price"]) == Decimal("1999")
+
+    async def test_the_product_page_shows_an_unpriced_product_as_unpriced(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        await _price(db_session, product, await _marketplace(db_session, test_tenant), "9.99")
+
+        data = (await client.get(f"/api/v1/shop/products/{product.id}")).json()["data"]
+
+        assert data["price"] is None
+        assert data["is_priced"] is False
+
+    async def test_the_listing_shows_an_unpriced_product_as_unpriced(
+        self, shop_client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+
+        listed = (await shop_client.get("/api/v1/shop/products")).json()["data"]
+
+        [row] = [row for row in listed if row["id"] == str(product.id)]
+        assert row["price"] is None
+        assert row["is_priced"] is False
+
+    async def test_the_dragons_page_shows_an_unpriced_dragon_as_unpriced(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        product.is_dragon = True
+        db_session.add(product)
+        await db_session.commit()
+
+        listed = (await client.get("/api/v1/shop/dragons")).json()["data"]
+
+        [row] = [row for row in listed if row["id"] == str(product.id)]
+        assert row["price"] is None
+        assert row["is_priced"] is False

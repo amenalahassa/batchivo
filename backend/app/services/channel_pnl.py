@@ -26,7 +26,7 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Iterable, Optional, Sequence
 
-from app.services.costing import MARGIN_BASIS_LABELS, basis_amount_for
+from app.services.costing import MARGIN_BASIS_LABELS, margin_of
 
 if TYPE_CHECKING:
     from app.models.fee_actual import FeeActual
@@ -291,27 +291,28 @@ def period_margin(
     onto a month that sold nothing would report a loss that the absorption
     rule deliberately leaves visible as unabsorbed instead (FR-025).
 
-    The denominator comes from `costing.basis_amount_for`, the same call the
-    per-item margin and the realised-margin alert make, with the period's own
-    totals in place of one sale's. Undefined rather than zero where the basis
+    The profit and denominator come from `costing.margin_of`, the same call
+    the per-item margin and the realised-margin alert make, with the period's
+    own totals in place of one sale's. Undefined rather than zero where the basis
     amount is nothing: zero reads as break-even.
     """
     charged = sum((cost.total for cost in absorbed_costs if not cost.is_unabsorbed), ZERO)
     # The make-cost is what the settled lines froze at sale (FR-036), so the
     # period's margin is a realised one (FR-045) rather than revenue less fees.
-    profit = revenue_tax_exclusive - planned_fee_total - postage_paid - charged - make_cost_total
-
-    basis_amount = basis_amount_for(
-        basis,
+    # The one margin derivation (task T221), with the period's totals in place
+    # of one sale's; the absorbed costs reduce profit and never the basis.
+    figures = margin_of(
         item_price=revenue_tax_exclusive - shipping_revenue,
-        customer_total=revenue_tax_exclusive,
-        fee_total_exact=planned_fee_total,
+        shipping_revenue=shipping_revenue,
+        fees=planned_fee_total,
+        make_cost=make_cost_total,
+        postage_paid=postage_paid,
+        basis=basis,
+        other_costs=charged,
     )
-    margin_pct = (
-        (profit / basis_amount * Decimal("100")).quantize(Decimal("0.0001"))
-        if basis_amount > ZERO
-        else None
-    )
+    profit = figures.profit
+    basis_amount = figures.basis_amount
+    margin_pct = figures.margin_pct
     return PeriodMargin(
         profit=profit,
         basis=basis,

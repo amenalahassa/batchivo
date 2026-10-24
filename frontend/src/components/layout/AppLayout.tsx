@@ -37,6 +37,7 @@ import {
   Activity,
   TrendingUp,
   type LucideIcon,
+  ListOrdered,
 } from 'lucide-react'
 import { Link, useRouter } from '@tanstack/react-router'
 import { type ReactNode } from 'react'
@@ -72,6 +73,7 @@ const ICON_COMPONENTS: Record<string, LucideIcon> = {
   'help-circle': HelpCircle,
   'activity': Activity,
   'trending-up': TrendingUp, // Catalogue-wide price-shock scenarios
+  'list-ordered': ListOrdered, // The queue by profit per machine-hour
 }
 
 // Get icon component by name, with fallback
@@ -121,6 +123,7 @@ export function AppLayout({ children }: AppLayoutProps) {
     { path: '/designers', label: 'Designers', icon: 'brush' },
     { path: '/categories', label: 'Categories', icon: 'folder-open' },
     { path: '/production-runs', label: 'Runs', icon: 'play' },
+    { path: '/queue', label: 'Queue', icon: 'list-ordered' },
     { path: '/dashboard/printers', label: 'Fleet', icon: 'activity' },
     { path: '/printers', label: 'Printers', icon: 'printer' },
     { path: '/consumables', label: 'Consumables', icon: 'wrench' },

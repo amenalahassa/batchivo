@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Annotated
 from uuid import uuid4
 
@@ -144,6 +145,11 @@ async def _create_order_record(
         payment_provider=payment_provider,
         payment_id=payment_id,
         payment_status=payment_status,
+        # The shop's checkout adds no tax to its total, so none was collected
+        # -- a recorded zero. What posting it costs is not known until the
+        # label is bought, so it is unrecorded rather than zero (task T230).
+        sales_tax_collected=Decimal("0"),
+        postage_paid=None,
     )
     db.add(db_order)
     await db.flush()
@@ -428,6 +434,9 @@ async def process_payment(
             payment_provider="square_sandbox" if payment_environment == "sandbox" else "square",
             payment_id=result.payment_id,
             payment_status=result.status,
+            # As above: no tax on the shop's total, postage not yet known (T230).
+            sales_tax_collected=Decimal("0"),
+            postage_paid=None,
         )
         db.add(db_order)
         await db.flush()  # Get the order ID

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.pricing_policy import seed_policy_row
 from app.core.rate_limit import limiter, AUTH_RATE_LIMIT, FORGOT_PASSWORD_RATE_LIMIT
 from app.services.email_service import get_email_service
 
@@ -79,6 +80,9 @@ async def register(
     # Link user to tenant with OWNER role
     user_tenant = UserTenant(user_id=new_user.id, tenant_id=new_tenant.id, role=UserRole.OWNER)
     db.add(user_tenant)
+    # Every tenant is costed from a dated policy row; this one is assumed
+    # until the owner sets a rate (task T219).
+    await seed_policy_row(db, new_tenant)
     await db.commit()
 
     # Create tokens

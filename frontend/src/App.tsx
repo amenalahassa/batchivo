@@ -36,6 +36,7 @@ import { ProductionRunCreatePage } from '@/pages/ProductionRunCreatePage'
 import { Consumables } from '@/pages/Consumables'
 import { SalesChannels } from '@/pages/SalesChannels'
 import { Scenarios } from '@/pages/Scenarios'
+import { QueueProfitability } from '@/pages/QueueProfitability'
 import { SalesChannelDetailPage } from '@/pages/SalesChannelDetailPage'
 import { SalesChannelCreatePage } from '@/pages/SalesChannelCreatePage'
 import { SalesChannelEditPage } from '@/pages/SalesChannelEditPage'
@@ -442,6 +443,19 @@ const scenariosRoute = new Route({
   ),
 })
 
+// The queue by profit per machine-hour (T234, FR-043).
+const queueProfitabilityRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/queue',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <QueueProfitability />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
 const salesChannelCreateRoute = new Route({
   getParentRoute: () => rootRoute,
   path: '/sales-channels/new',
@@ -730,6 +744,7 @@ const routeTree = rootRoute.addChildren([
   salesChannelEditRoute,     // /sales-channels/$channelId/edit before /sales-channels/$channelId
   salesChannelDetailRoute,   // Dynamic route last
   scenariosRoute,            // Catalogue-wide price-shock scenarios
+  queueProfitabilityRoute,   // The queue by profit per machine-hour
   categoriesRoute,           // Categories list
   designersRoute,            // Designers list
   printerDashboardRoute,     // Printer fleet monitoring dashboard

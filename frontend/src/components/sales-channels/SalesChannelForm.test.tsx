@@ -89,6 +89,16 @@ function savedWith(mock: typeof createMock) {
   return mock.mock.calls[0][mock === updateMock ? 1 : 0] as Record<string, unknown>
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('SalesChannelForm', () => {
   describe('loading an existing channel', () => {
     it('shows each economics figure the channel actually carries', async () => {
@@ -387,5 +397,35 @@ describe('SalesChannelForm', () => {
         unmount()
       }
     })
+  })
+})
+
+describe('SalesChannelForm by role', () => {
+  it('shows a viewer every control disabled, saying why', async () => {
+    auth.role = 'viewer'
+    render(<SalesChannelForm channel={channel()} mode="edit" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Etsy UK'))
+    expect(screen.getByLabelText('Name')).toBeDisabled()
+    expect(screen.getByTestId('read-only-notice')).toBeInTheDocument()
+  })
+
+  it('lets a member rename the channel but not move its levers', async () => {
+    auth.role = 'member'
+    render(<SalesChannelForm channel={channel()} mode="edit" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Etsy UK'))
+    expect(screen.getByLabelText('Name')).toBeEnabled()
+    expect(screen.getByLabelText('Monthly Cost (£)')).toBeDisabled()
+    expect(screen.getByTestId('channel-levers')).toBeDisabled()
+    expect(screen.getByTestId('levers-read-only-notice')).toBeInTheDocument()
+  })
+
+  it('lets an admin move the levers', async () => {
+    render(<SalesChannelForm channel={channel()} mode="edit" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Etsy UK'))
+    expect(screen.getByLabelText('Monthly Cost (£)')).toBeEnabled()
+    expect(screen.queryByTestId('levers-read-only-notice')).not.toBeInTheDocument()
   })
 })

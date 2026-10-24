@@ -194,6 +194,16 @@ class _Origin:
 _DEFAULT_ORIGIN = _Origin(source="assumed", as_of=None)
 
 
+def _policy_origin(policy: CostPolicy) -> _Origin:
+    """The origin of a figure taken from the tenant's pricing policy.
+
+    ``policy`` with the row's date when an operator set it, ``assumed`` when
+    the row was seeded and nobody has (task T219). Hardcoding ``policy`` here
+    presented a default rate nobody chose as a decision.
+    """
+    return _Origin(source=policy.source, as_of=policy.effective_from)
+
+
 @dataclass
 class _RawLine:
     """One cost line before presentation rounding."""
@@ -563,7 +573,7 @@ def _item_lines(
         machine_rate = policy.default_machine_rate_per_hour
         if machine_rate is not None and printer is None:
             # FR-011: an item planned on no printer falls back to the policy rate.
-            machine_origins.append(_Origin(source="policy", as_of=policy.effective_from))
+            machine_origins.append(_policy_origin(policy))
 
     if machine_rate is None and result.print_hours_per_item is not None:
         result.incomplete_reasons.append(
@@ -595,7 +605,7 @@ def _item_lines(
     rate_origin = (
         _origin_of(origins, pending, "model", model_id, "labor_rate_override")
         if override is not None
-        else _Origin(source="policy", as_of=policy.effective_from)
+        else _policy_origin(policy)
     )
 
     for key, hours_key, rate, field_name in (
@@ -654,9 +664,7 @@ def _item_lines(
                 "(FR-014, FR-019)"
             )
         elif result.print_hours_per_item is not None:
-            overhead_at = _weakest(
-                [_Origin(source="policy", as_of=policy.effective_from), time_origin, plate_origin]
-            )
+            overhead_at = _weakest([_policy_origin(policy), time_origin, plate_origin])
             result.lines.append(
                 _RawLine(
                     "overhead",
@@ -682,7 +690,7 @@ def _item_lines(
             overhead_at = (
                 _origin_of(origins, pending, "model", model_id, "overhead_percentage")
                 if model_pct is not None
-                else _Origin(source="policy", as_of=policy.effective_from)
+                else _policy_origin(policy)
             )
             result.lines.append(
                 _RawLine(
@@ -997,6 +1005,61 @@ def basis_amount_for(
     if basis == "net_revenue":
         return customer_total - fee_total_exact
     return customer_total
+
+
+@dataclass(frozen=True)
+class MarginFigures:
+    """A profit and the percentage it is over its basis, unrounded."""
+
+    profit: Decimal
+    basis_amount: Decimal
+    #: Undefined, not zero, where the basis amount is nothing: zero reads as
+    #: break-even and a division would read as a crash.
+    margin_pct: Optional[Decimal]
+
+
+def margin_of(
+    *,
+    item_price: Decimal,
+    shipping_revenue: Decimal,
+    fees: Decimal,
+    make_cost: Decimal,
+    postage_paid: Decimal,
+    basis: str,
+    refund: Decimal = ZERO,
+    other_costs: Decimal = ZERO,
+) -> MarginFigures:
+    """The one derivation of a profit and a margin percentage (task T221).
+
+    Every margin in the system comes through here: a quote
+    (:meth:`CostingService.margin`), a settled line's planned margin
+    (``margin_alert.planned_margin_pct``), its realised margin
+    (``realised_margin``) and a channel period (``channel_pnl.period_margin``).
+    Four copies of ``revenue - fees - cost - postage`` and two of the basis
+    choice were four chances for two screens to disagree about one figure.
+
+    ``refund`` is money given back. It comes off revenue on every basis --
+    the item-price basis included -- so a refunded line never reports a
+    healthy percentage of money it no longer has. ``other_costs`` reduce the
+    profit and never the basis: the reserves a quote holds back (FR-026), or
+    the absorbed periodic costs a period carries (FR-025).
+
+    Nothing is rounded; the caller rounds once, at its edge.
+    """
+    customer_total = item_price + shipping_revenue - refund
+    profit = customer_total - fees - make_cost - postage_paid - other_costs
+    basis_amount = basis_amount_for(
+        basis,
+        item_price=item_price - refund,
+        customer_total=customer_total,
+        fee_total_exact=fees,
+    )
+    margin_pct = (
+        (profit / basis_amount * Decimal("100")).quantize(Decimal("0.0001"))
+        if basis_amount > ZERO
+        else None
+    )
+    return MarginFigures(profit=profit, basis_amount=basis_amount, margin_pct=margin_pct)
 
 
 class CostingService:
@@ -1523,27 +1586,22 @@ class CostingService:
             )
         deduction_total_exact = sum((d.amount_exact for d in deductions), ZERO)
 
-        # --- 3. What the sale cost -----------------------------------------
+        # --- 3 and 4. What the sale cost, and the percentage over the basis -
+        # The reserves reduce profit, not the basis the percentage is over.
         net_revenue_exact = customer_total - fee_total_exact - deduction_total_exact
-        profit_exact = net_revenue_exact - cost - postage
-
-        # --- 4. The basis, and the percentage over it ----------------------
         basis = resolve_margin_basis(policy, override=margin_basis)
-        basis_amount = basis_amount_for(
-            basis,
+        figures = margin_of(
             item_price=item_price,
-            customer_total=customer_total,
-            fee_total_exact=fee_total_exact,
+            shipping_revenue=shipping,
+            fees=fee_total_exact,
+            make_cost=cost,
+            postage_paid=postage,
+            basis=basis,
+            other_costs=deduction_total_exact,
         )
-        if basis_amount > ZERO:
-            margin_pct: Optional[Decimal] = (profit_exact / basis_amount * Decimal("100")).quantize(
-                Decimal("0.0001")
-            )
-        else:
-            # Net revenue after fees, with fees consuming the whole amount.
-            # Undefined is the honest answer; zero would read as break-even
-            # and a division would read as a crash.
-            margin_pct = None
+        profit_exact = figures.profit
+        basis_amount = figures.basis_amount
+        margin_pct = figures.margin_pct
 
         # --- 5. What the machine time earned (FR-043) ----------------------
         # Divided out of the unrounded profit and rounded once, like every
@@ -1588,7 +1646,7 @@ class CostingService:
             revenue_tax_exclusive=exclusive_total.quantize(CENT),
             observed_share=observed_share,
             assumed_share=assumed_share,
-            incomplete_reasons=list(incomplete_reasons),
+            incomplete_reasons=list(dict.fromkeys([*incomplete_reasons, *fees.incomplete_reasons])),
         )
 
     @staticmethod

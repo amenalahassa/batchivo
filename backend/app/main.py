@@ -211,6 +211,7 @@ from app.api.v1 import (
     discounts,
     exports,
     fee_rules,
+    fx_rates,
     provenance,
     scenarios,
     forecasting,
@@ -312,6 +313,11 @@ app.include_router(
     reconciliation.router,
     prefix=f"{settings.api_v1_prefix}/reconciliation",
     tags=["reconciliation"],
+)
+app.include_router(
+    fx_rates.router,
+    prefix=f"{settings.api_v1_prefix}/fx-rates",
+    tags=["fx-rates"],
 )
 # Provenance and estimate proposals sit at the API root rather than under an
 # entity: `GET /provenance?entity_type=` answers for any of eleven entity

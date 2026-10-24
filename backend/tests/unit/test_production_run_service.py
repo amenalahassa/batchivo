@@ -600,3 +600,72 @@ class TestTelemetryDispatchOnCompletion:
         completed = await service.complete_production_run(run.id)
 
         assert completed.status == "completed"
+
+
+class TestTheBackfillUsesTheOneArithmetic:
+    """Task T237: the backfill script records actuals through the service."""
+
+    @pytest.mark.asyncio
+    async def test_a_completed_run_without_actuals_gets_them(
+        self, db_session, test_tenant, test_spool, test_model
+    ):
+        from app.models.model_material import ModelMaterial
+
+        db_session.add(
+            ModelMaterial(
+                id=uuid4(),
+                model_id=test_model.id,
+                spool_id=test_spool.id,
+                weight_grams=Decimal("50"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+        await db_session.commit()
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-BACKFILL"),
+                started_at=datetime.now(),
+                status="completed",
+            ),
+            items=[
+                ProductionRunItemCreate(
+                    model_id=test_model.id, quantity=10, successful_quantity=9, failed_quantity=1
+                )
+            ],
+            materials=[
+                ProductionRunMaterialCreate(
+                    spool_id=test_spool.id,
+                    estimated_model_weight_grams=Decimal("100.0"),
+                    estimated_flushed_grams=Decimal("10.0"),
+                    spool_weight_before_grams=Decimal("200.0"),
+                    spool_weight_after_grams=Decimal("85.0"),
+                    cost_per_gram=Decimal("0.025"),
+                )
+            ],
+        )
+        run = await service.get_production_run(run.id)
+
+        recorded = await service.backfill_run_actuals(run)
+
+        assert recorded is True
+        # 115 g at 0.025 over the 9 x 50 g that survived, rounded once.
+        assert run.successful_weight_grams == Decimal("450")
+        assert run.cost_per_gram_actual == (Decimal("2.875") / Decimal("450")).quantize(
+            Decimal("0.000001")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_material_cost_is_skipped(self, db_session, test_tenant):
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-BACKFILL-EMPTY"),
+                started_at=datetime.now(),
+                status="completed",
+            )
+        )
+        run = await service.get_production_run(run.id)
+
+        assert await service.backfill_run_actuals(run) is False
+        assert run.cost_per_gram_actual is None

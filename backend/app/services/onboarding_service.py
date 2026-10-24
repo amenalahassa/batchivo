@@ -8,6 +8,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.pricing_policy import seed_policy_row
 from app.auth.password import get_password_hash
 from app.core.security import create_access_token, create_refresh_token
 from app.models.email_verification import (
@@ -203,6 +204,10 @@ class OnboardingService:
         # Initialize default modules for tenant based on tenant_type
         module_service = TenantModuleService(db=self.db)
         await module_service.initialize_tenant_modules(tenant.id)
+
+        # A dated, assumed policy row, so nothing is costed from a policy that
+        # exists nowhere (task T219).
+        await seed_policy_row(self.db, tenant)
 
         # Create user
         user = User(

@@ -456,3 +456,58 @@ class TestPeriodicCharges:
 
         assert charge.amount_exact == Decimal("25")
         assert charge.clamp_applied == "max"
+
+
+# ============================================================================
+# Task T236: a date no rule covers is unknown fees, not zero fees
+# ============================================================================
+
+
+class TestADateNoRuleCovers:
+    def test_lapsed_rules_are_reported_not_priced_at_zero(self) -> None:
+        rule = make_fee_rule(
+            "transaction",
+            "item_plus_shipping",
+            rate_pct=Decimal("6.5"),
+            applies_from=date(2026, 1, 1),
+            applies_to=date(2026, 3, 31),
+        )
+
+        stack = fee_engine.compute(make_channel(fee_rules=[rule]), CONTEXT, date(2026, 6, 1))
+
+        assert stack.charges == []
+        assert stack.incomplete_reasons
+        assert "2026-06-01" in stack.incomplete_reasons[0]
+
+    def test_rules_not_yet_begun_are_reported_too(self) -> None:
+        rule = make_fee_rule(
+            "transaction",
+            "item_plus_shipping",
+            rate_pct=Decimal("6.5"),
+            applies_from=date(2026, 9, 1),
+        )
+
+        stack = fee_engine.compute(make_channel(fee_rules=[rule]), CONTEXT, date(2026, 6, 1))
+
+        assert stack.incomplete_reasons
+
+    def test_a_date_a_rule_covers_reports_nothing(self) -> None:
+        rule = make_fee_rule(
+            "transaction",
+            "item_plus_shipping",
+            rate_pct=Decimal("6.5"),
+            applies_from=date(2026, 1, 1),
+        )
+
+        stack = fee_engine.compute(make_channel(fee_rules=[rule]), CONTEXT, date(2026, 6, 1))
+
+        assert stack.charges
+        assert stack.incomplete_reasons == []
+
+    def test_a_channel_with_no_rules_is_fee_free_not_incomplete(self) -> None:
+        assert (
+            fee_engine.compute(
+                make_channel(fee_rules=[]), CONTEXT, date(2026, 6, 1)
+            ).incomplete_reasons
+            == []
+        )

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useCurrency } from '@/hooks/useCurrency'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { spoolsApi, materialTypesApi } from '@/lib/api/spools'
 import type { SpoolUpdate } from '@/types/spool'
@@ -39,6 +40,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2 } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 interface EditSpoolDialogProps {
   open: boolean
@@ -47,6 +50,10 @@ interface EditSpoolDialogProps {
 }
 
 export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const queryClient = useQueryClient()
 
   // Fetch the specific spool to edit
@@ -72,7 +79,8 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
   const [formData, setFormData] = useState<Partial<SpoolUpdate>>({})
 
   // UI state for purchase info
-  const [currency, setCurrency] = useState('GBP')
+  // Entered in the tenant's books currency; there is no per-spool one (T231).
+  const { currency } = useCurrency()
 
   // Weight input mode - when true, user enters gross weight (what they read from scales)
   const [useGrossWeight, setUseGrossWeight] = useState(false)
@@ -100,8 +108,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
         notes: spool.notes || '',
         is_active: spool.is_active,
       })
-      // Set currency based on context if available (default GBP)
-      setCurrency('GBP')
       // Reset weight input mode and display value
       setUseGrossWeight(false)
       setDisplayedWeight(spool.current_weight.toString())
@@ -249,6 +255,7 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
+            <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
             {/* Required Fields */}
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -481,19 +488,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
               </div>
 
               <div className="grid grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="currency">Currency</Label>
-                  <Select value={currency} onValueChange={setCurrency}>
-                    <SelectTrigger id="currency">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="GBP">£ GBP</SelectItem>
-                      <SelectItem value="USD">$ USD</SelectItem>
-                      <SelectItem value="EUR">€ EUR</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="purchase_price">Price</Label>
@@ -511,7 +505,7 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
                     }
                   />
                   <p className="text-xs text-muted-foreground">
-                    {currency} per spool
+                    {currency.code} per spool
                   </p>
                 </div>
 
@@ -591,6 +585,18 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
               </div>
             )}
 
+            </fieldset>
+
+            {!canEdit && (
+
+              <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+                Changing this needs a member, admin or owner role.
+
+              </p>
+
+            )}
+
             <DialogFooter>
               <Button
                 type="button"
@@ -600,7 +606,7 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={updateMutation.isPending}>
+              <Button type="submit" disabled={updateMutation.isPending || !canEdit}>
                 {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Update Spool
               </Button>

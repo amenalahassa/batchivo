@@ -35,6 +35,13 @@ vi.mock('@/lib/api/orders', () => ({
 // The pricing tab mounts MarginDivergencePanel, which reads this client. An
 // unmocked call reaches real axios and fails as a network error, which looks
 // like a broken tab rather than a missing mock.
+vi.mock('@/lib/api/fxRates', () => ({
+  fxRatesApi: {
+    waiting: vi.fn().mockResolvedValue({ lines: [], total: 0 }),
+    recordManual: vi.fn(),
+  },
+}))
+
 vi.mock('@/lib/api/feeRules', () => ({
   feeRulesApi: { getMarginDivergence: vi.fn() },
 }))
@@ -86,6 +93,7 @@ const mockPolicy: PricingPolicy = {
   min_outcomes_before_auto_update: 5,
   estimate_divergence_threshold_pct: '25',
   origin: 'policy_row',
+  source: 'policy',
   effective_from: '2026-03-01',
   effective_to: null,
   set_by_role: 'admin',
@@ -145,7 +153,7 @@ describe('Settings Page', () => {
     vi.clearAllMocks()
     currentRole = 'admin'
     vi.mocked(pricingApi.getPricingPolicy).mockResolvedValue(mockPolicy)
-    vi.mocked(listEstimateRevisions).mockResolvedValue({ revisions: [], total: 0 })
+    vi.mocked(listEstimateRevisions).mockResolvedValue({ revisions: [], total: 0, pending_count: 0 })
     vi.mocked(feeRulesApi.getMarginDivergence).mockResolvedValue({
       divergences: [],
       total: 0,

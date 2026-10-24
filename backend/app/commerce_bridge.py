@@ -1099,6 +1099,10 @@ async def receive(request: Request):
                 subtotal=Decimal(event.subtotal_pence) / 100,
                 total=Decimal(event.total_pence) / 100,
                 discount_amount=Decimal(event.discount_pence) / 100,
+                # WooCommerce's event carries neither the tax it charged nor
+                # what the label cost: both unrecorded, never zero (task T230).
+                sales_tax_collected=None,
+                postage_paid=None,
                 currency="GBP",
                 payment_provider="square-sandbox" if RUNTIME.isolated else "square",
                 payment_id=event.payment_id,

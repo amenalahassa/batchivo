@@ -46,7 +46,6 @@ MONEY_MODULES = [
     "fx_service.py",
     "temporal_pricing.py",
     "realised_margin.py",
-    "tenant_cost_settings.py",
     # A reserve and a rounding threshold are money figures too (task T136).
     "channel_economics.py",
     # The realised-versus-planned comparison (task T134).
@@ -518,11 +517,30 @@ def test_the_route_ban_catches_the_defect_it_was_written_for() -> None:
 # `79.989999999999994884` -- in a module no list named. That is the whole
 # argument for inverting this.
 
+#: Task T226: the population is the whole source tree, not four directories.
+#: Four left `app/utils/csv_handler.py` free to parse a labour rate as a float,
+#: and `app/core`, `app/tasks`, the commerce modules and `scripts/` unchecked.
+BACKEND_DIR = APP_DIR.parent
+SCRIPTS_DIR = BACKEND_DIR / "scripts"
+
+#: The roots swept, recursively.
+SWEPT_ROOTS: dict[str, Path] = {"app": APP_DIR, "scripts": SCRIPTS_DIR}
+
+#: The one exclusion, by directory. Metric gauges and span attributes are typed
+#: float by their client libraries and carry no money; the figure has been
+#: computed exactly before it reaches them.
+UNSWEPT_DIRECTORIES: tuple[Path, ...] = (APP_DIR / "observability",)
+
+#: Directories the old lists covered, and the ones the widening added, each of
+#: which must still contribute modules -- so a glob that stops matching fails.
 SWEPT_DIRECTORIES: dict[str, Path] = {
     "app/services": SERVICES_DIR,
     "app/schemas": SCHEMAS_DIR,
     "app/api/v1": ROUTES_DIR,
     "app/models": MODELS_DIR,
+    "app/core": APP_DIR / "core",
+    "app/utils": APP_DIR / "utils",
+    "scripts": SCRIPTS_DIR,
 }
 
 #: Money-named `float(...)` calls that are correct, by module path.
@@ -561,10 +579,6 @@ MONEY_FLOAT_CALL_EXCEPTIONS: dict[str, tuple[str, ...]] = {
         # Writing back to a column that is still a float.
         "float(str(value))",
     ),
-    "app/api/v1/production_runs.py": (
-        # The same Prometheus gauge, from the route.
-        "float(production_run.actual_total_cost or 0)",
-    ),
 }
 
 #: Money-named `float` *annotations* that are correct, by module path.
@@ -575,13 +589,15 @@ MONEY_FLOAT_FIELD_EXCEPTIONS: dict[str, tuple[str, ...]] = {}
 
 
 def _swept_modules() -> list[tuple[str, Path]]:
-    """Every module in the four directories money passes through."""
+    """Every module in the application and its scripts, bar the one exclusion."""
     found: list[tuple[str, Path]] = []
-    for label, directory in SWEPT_DIRECTORIES.items():
-        for path in sorted(directory.glob("*.py")):
-            if path.name == "__init__.py":
+    for root in SWEPT_ROOTS.values():
+        for path in sorted(root.rglob("*.py")):
+            if path.name == "__init__.py" or "__pycache__" in path.parts:
                 continue
-            found.append((f"{label}/{path.name}", path))
+            if any(excluded in path.parents for excluded in UNSWEPT_DIRECTORIES):
+                continue
+            found.append((path.relative_to(BACKEND_DIR).as_posix(), path))
     return found
 
 
@@ -684,10 +700,33 @@ class TestTheSweepCoversWhatItClaimsTo:
         for label, directory in SWEPT_DIRECTORIES.items():
             assert directory.is_dir(), f"{label} is not a directory; the sweep covers nothing"
             count = sum(1 for _key, path in _swept_modules() if path.parent == directory)
-            assert count > 10, (
+            assert count >= 1, (
                 f"the sweep found only {count} modules in {label}; the glob has "
                 f"stopped matching and most of the directory is unchecked"
             )
+
+    def test_it_covers_the_whole_tree_but_observability(self) -> None:
+        """Task T226: every application module and script, bar one directory."""
+        swept = {path for _key, path in _swept_modules()}
+        everything = {
+            path
+            for root in SWEPT_ROOTS.values()
+            for path in root.rglob("*.py")
+            if path.name != "__init__.py" and "__pycache__" not in path.parts
+        }
+        missing = sorted(
+            str(path.relative_to(BACKEND_DIR))
+            for path in everything - swept
+            if not any(excluded in path.parents for excluded in UNSWEPT_DIRECTORIES)
+        )
+        assert missing == [], f"modules the sweep skips: {missing}"
+        assert not any(
+            excluded in path.parents for path in swept for excluded in UNSWEPT_DIRECTORIES
+        ), "the excluded directory is being swept"
+        # 275 on the day the sweep was widened (task T226), against 77 before.
+        assert len(swept) > 250, (
+            f"the sweep covers {len(swept)} modules; the application has far more"
+        )
 
     def test_the_sweep_is_wider_than_the_lists_it_replaces(self) -> None:
         """The whole point: the population, not a nominated subset."""

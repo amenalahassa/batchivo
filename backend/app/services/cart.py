@@ -166,6 +166,10 @@ class CartService:
 
         if existing_item:
             existing_item.quantity += quantity
+            # The caller priced the whole line at the quantity it now holds, so a
+            # quantity tier the line has reached applies to every unit in it
+            # (task T228, FR-027) rather than only to those added last.
+            existing_item.unit_price = unit_price
             existing_item.total_price = existing_item.unit_price * existing_item.quantity
         else:
             cart_item = CartItem(

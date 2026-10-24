@@ -27,6 +27,7 @@ from app.schemas.print_queue import (
     QueueOverview,
 )
 from app.core import clock
+from app.services.currency_edge import books_to_channel
 from app.services.commerce_job_ownership import (
     protect_commerce_job_identity,
     verify_commerce_job_work,
@@ -327,6 +328,15 @@ class PrintQueueService:
                 continue
 
             channel = pricing.sales_channel
+            # Costs in the books currency, the price in the channel's: put in
+            # one before ranking (task T231), and a job with no rate between
+            # them is unranked rather than ranked at parity.
+            conversion = await books_to_channel(self.db, self.tenant, channel, as_of)
+            if not conversion.known:
+                ranked.append(
+                    JobProfitability(job=job, queue_position=index, reason=conversion.reasons[0])
+                )
+                continue
             context, treatment = fee_engine.exclusive_context(
                 item_subtotal=Decimal(str(pricing.list_price)), quantity=1
             )
@@ -335,7 +345,7 @@ class PrintQueueService:
             # a product read on a pricing screen cannot disagree.
             margin = CostingService.margin(
                 context=context,
-                make_cost=breakdown.total_make_cost,
+                make_cost=conversion.apply(breakdown.total_make_cost),
                 channel=channel,
                 fees=fee_engine.compute(
                     channel, context, as_of, rules=list(channel.fee_rules or [])

@@ -207,6 +207,7 @@ def storefront_price(
     *,
     sales_channel_id: Optional[uuid.UUID] = None,
     quantity: int = 1,
+    only_channel: bool = False,
 ) -> Optional[Decimal]:
     """The price a shop page should show, with the channel fallback.
 
@@ -219,9 +220,17 @@ def storefront_price(
     Returns ``None`` when the product carries no current price at all. The shop
     must then treat it as unpriced -- the previous code substituted zero, which
     put a free product on a public page.
+
+    ``only_channel`` drops the fallback: the storefront shows and charges the
+    shop channel's own price or none (task T228). Falling back there charged a
+    marketplace's price on the shop.
     """
     live = [row for row in current_rows(product) if row.is_active and quantity >= row.min_quantity]
     if not live:
+        return None
+
+    if only_channel and sales_channel_id is None:
+        # No shop channel at all: nothing is priced on the shop.
         return None
 
     if sales_channel_id is not None:
@@ -229,6 +238,8 @@ def storefront_price(
         if on_channel:
             row = max(on_channel, key=lambda r: r.min_quantity)
             return None if row.list_price is None else Decimal(str(row.list_price))
+        if only_channel:
+            return None
 
     row = max(live, key=lambda r: r.min_quantity)
     return None if row.list_price is None else Decimal(str(row.list_price))

@@ -50,7 +50,13 @@ from app.models.fee_actual import FeeActual
 from app.models.order import Order, OrderItem
 from app.models.production_run import ProductionRun
 from app.services.refund_actuals import refunded_total
-from app.services.sale_snapshot import allocate_across_lines
+from app.services.costing import margin_of
+from app.services.currency_edge import cost_in_sale_currency
+from app.services.sale_snapshot import (
+    allocate_across_lines,
+    frozen_fee_total,
+    snapshot_amount as _decimal,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.models.tenant import Tenant
@@ -92,7 +98,8 @@ class RealisedMargin:
     make_cost: Decimal
     postage_paid: Decimal
 
-    profit: Decimal
+    #: ``None`` where the make-cost could not be converted (task T231).
+    profit: Optional[Decimal]
     margin_pct: Optional[Decimal]
     margin_basis: str
     basis_amount: Decimal
@@ -111,21 +118,6 @@ class RealisedMargin:
     #: material line is 12 g heavy" is something they can act on. The totals
     #: alone cannot be decomposed after the fact without guessing.
     realised_lines: dict[str, Decimal] = field(default_factory=dict)
-
-
-def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
-    """Exact conversion through ``str``, including out of JSON."""
-    if value is None:
-        return default
-    try:
-        return Decimal(str(value))
-    except (ArithmeticError, TypeError, ValueError):
-        return default
-
-
-def _planned_fee_total(item: OrderItem) -> Decimal:
-    """The fees frozen on this line at the moment of sale."""
-    return sum((_decimal(charge.get("amount")) for charge in (item.fees_json or [])), ZERO)
 
 
 def _snapshot_lines(item: OrderItem) -> dict[str, Decimal]:
@@ -319,7 +311,7 @@ async def realised_margin(
         fees_source = "actual"
         substitutions.append("fees from a reconciled statement for this order")
     else:
-        fees_paid = _planned_fee_total(item)
+        fees_paid = frozen_fee_total(item)
         fees_source = "planned"
         gaps.append("no reconciled fee is recorded for this order; the planned fees are used")
 
@@ -368,29 +360,42 @@ async def realised_margin(
         unit_cost = sum(resolved.values(), ZERO) + _snapshot_premium(item)
         realised_lines = {key: amount.quantize(CENT) for key, amount in resolved.items()}
 
-    make_cost = (unit_cost * quantity).quantize(CENT)
+    # Kept in the books currency; set against revenue in the order's through
+    # the rate the sale froze (task T231). With none frozen it is unknown, and
+    # so is every figure built on it.
+    in_sale_currency = cost_in_sale_currency(item, unit_cost * quantity)
+    if in_sale_currency is None:
+        gaps.append(
+            "no exchange rate was frozen onto this sale, so its make-cost, kept in "
+            "the books currency, cannot be set against what the customer paid"
+        )
+    make_cost = (in_sale_currency if in_sale_currency is not None else ZERO).quantize(CENT)
 
     # --- postage ----------------------------------------------------------
+    if parent.postage_paid is None:
+        gaps.append(
+            "the postage paid on this order is unrecorded, so the margin carries none "
+            "-- record it on the order once the label is bought (task T230)"
+        )
     postage_share = allocate_across_lines(_decimal(parent.postage_paid), weights)[position]
 
-    profit_exact = revenue_received - fees_paid - make_cost - postage_share
-
+    # The one margin derivation (task T221). The item-price basis is taken net
+    # of the refund -- what was kept, on every basis -- through `refund`.
     basis = item.margin_basis_at_sale or "customer_total"
-    if basis == "item_price":
-        # Net of the refund too: the basis is what was kept, on every basis,
-        # or a refunded order would report a healthy percentage of money it
-        # gave back.
-        basis_amount = item_revenue - refund_allocated
-    elif basis == "net_revenue":
-        basis_amount = revenue_received - fees_paid
-    else:
-        basis_amount = revenue_received
-
-    if basis_amount > ZERO:
-        margin_pct: Optional[Decimal] = (profit_exact / basis_amount * HUNDRED).quantize(
-            Decimal("0.0001")
-        )
-    else:
+    figures = margin_of(
+        item_price=item_revenue,
+        shipping_revenue=shipping_share,
+        fees=fees_paid,
+        make_cost=make_cost,
+        postage_paid=postage_share,
+        basis=basis,
+        refund=refund_allocated,
+    )
+    profit_exact: Optional[Decimal] = figures.profit
+    basis_amount = figures.basis_amount
+    margin_pct = figures.margin_pct
+    if in_sale_currency is None:
+        profit_exact = None
         margin_pct = None
 
     return RealisedMargin(
@@ -403,7 +408,7 @@ async def realised_margin(
         fees_source=fees_source,
         make_cost=make_cost,
         postage_paid=postage_share.quantize(CENT),
-        profit=profit_exact.quantize(CENT),
+        profit=profit_exact.quantize(CENT) if profit_exact is not None else None,
         margin_pct=margin_pct,
         margin_basis=basis,
         basis_amount=basis_amount.quantize(CENT),

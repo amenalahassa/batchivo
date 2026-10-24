@@ -22,7 +22,7 @@
 ### Code Quality
 - **All code MUST have tests** — no exceptions
 - Before committing: `cd backend && poetry run pytest && poetry run ruff check`
-- Frontend: `cd frontend && npm test && npm run lint`
+- Frontend: `cd frontend && npm test && npm run lint && npm run typecheck`
 
 ### Multi-Tenant Security
 - Every table has `tenant_id` — **NEVER** query without tenant scope

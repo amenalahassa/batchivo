@@ -92,6 +92,12 @@ class ChannelPnLResponse(BaseModel):
     make_cost_unrecorded_lines: int = Field(
         0, description="Lines that froze no make-cost, left out rather than recomputed"
     )
+    postage_unrecorded_orders: int = Field(
+        0, description="Orders with no postage recorded, carried at none rather than guessed"
+    )
+    tax_unrecorded_orders: int = Field(
+        0, description="Orders whose source did not record the sales tax it collected"
+    )
     profit: Decimal
     margin_pct: Optional[Decimal]
     margin_basis: MarginBasis

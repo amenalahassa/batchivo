@@ -75,6 +75,7 @@ function policy(overrides: Partial<PricingPolicy> = {}): PricingPolicy {
     min_outcomes_before_auto_update: 5,
     estimate_divergence_threshold_pct: '25',
     origin: 'policy_row',
+    source: 'policy',
     effective_from: '2026-03-01',
     effective_to: null,
     set_by_role: 'admin',

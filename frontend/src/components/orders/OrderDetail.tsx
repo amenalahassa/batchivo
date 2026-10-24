@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 
 import { getOrder, shipOrder, deliverOrder, updateOrder } from '@/lib/api/orders'
+import { OrderLineSnapshot } from './OrderLineSnapshot'
 import { useCurrency } from '@/hooks/useCurrency'
 import { compareMoney, ZERO } from '@/lib/money'
 import { Button } from '@/components/ui/button'
@@ -207,6 +208,7 @@ export function OrderDetail() {
                         </p>
                       </div>
                     </div>
+                    <OrderLineSnapshot item={item} orderCurrency={order.currency} />
                   </div>
                 ))}
               </div>
@@ -223,6 +225,28 @@ export function OrderDetail() {
                 <div className="flex justify-between font-medium text-lg pt-2 border-t">
                   <span>Total</span>
                   <span>{formatCurrency(order.total)}</span>
+                </div>
+                {/*
+                  What the seller paid and collected, beside what the buyer
+                  paid. Null is unrecorded, never zero (T230): a Square order
+                  carries no postage, and "£0.00" would read as free postage.
+                */}
+                <div className="flex justify-between text-sm" data-testid="order-postage-paid">
+                  <span className="text-muted-foreground">Postage paid</span>
+                  <span>
+                    {order.postage_paid == null ? 'Not recorded' : formatCurrency(order.postage_paid)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm" data-testid="order-tax-collected">
+                  <span className="text-muted-foreground">
+                    Sales tax collected
+                    {order.tax_exclusive_derived ? ' (derived from tax-inclusive prices)' : ''}
+                  </span>
+                  <span>
+                    {order.sales_tax_collected == null
+                      ? 'Not recorded'
+                      : formatCurrency(order.sales_tax_collected)}
+                  </span>
                 </div>
               </div>
             </CardContent>

@@ -55,6 +55,10 @@ async def channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesChannel
     Every lever is set explicitly rather than left to a column default, so a
     default changing underneath this file cannot quietly change what is tested.
     """
+    # The operator keeps their books in the currency the channel sells in, so
+    # costs and prices meet without a conversion (task T231).
+    test_tenant.currency_code = "CAD"
+    db_session.add(test_tenant)
     row = SalesChannel(
         id=uuid4(),
         tenant_id=test_tenant.id,

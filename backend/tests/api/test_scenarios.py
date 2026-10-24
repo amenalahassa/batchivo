@@ -233,7 +233,7 @@ MEASURED = ("observed", "measured")
 
 
 @pytest_asyncio.fixture
-async def instrumented_item(db_session, test_tenant, test_filament_type):
+async def instrumented_item(db_session, test_tenant, test_filament_type, test_user):
     """The golden item on a machine that reports its own figures.
 
     Part weight, print time, yield and power draw carry an observed origin --
@@ -261,6 +261,9 @@ async def instrumented_item(db_session, test_tenant, test_filament_type):
             ),
             margin_basis="customer_total",
             effective_from=clock.today() - timedelta(days=30),
+            # An operator's own policy: a row nobody set reads as assumed (T219).
+            set_by_user_id=test_user.id,
+            set_by_role="owner",
         )
     )
 
@@ -528,6 +531,14 @@ async def catalogue(db_session, test_tenant, test_filament_type):
     )
     db_session.add(spool)
     await db_session.flush()
+
+    # The operator keeps their books in the currency the channel sells in, so
+
+    # costs and prices meet without a conversion (task T231).
+
+    test_tenant.currency_code = "CAD"
+
+    db_session.add(test_tenant)
 
     channel = SalesChannel(
         id=uuid4(),

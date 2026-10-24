@@ -99,6 +99,19 @@ export function PriceLadder({
           </p>
         ) : null}
 
+        {/* T236: a date no fee rule covers is reported, never priced at zero fees. */}
+        {ladder?.incomplete_reasons && ladder.incomplete_reasons.length > 0 ? (
+          <ul
+            className="list-disc space-y-0.5 rounded-md border border-yellow-200 bg-yellow-500/10 py-2 pl-8 pr-3 text-sm text-yellow-800"
+            data-testid="ladder-incomplete"
+            role="alert"
+          >
+            {ladder.incomplete_reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        ) : null}
+
         {ladder && ladder.rungs.length > 0 ? (
           <>
             <Table data-testid="ladder-table">

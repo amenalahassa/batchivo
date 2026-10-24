@@ -50,10 +50,20 @@ function renderDialog(node: ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>)
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('FilamentPurchaseDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mocked.listFilamentPurchases.mockResolvedValue({ purchases: [], total: 0 })
+    mocked.listFilamentPurchases.mockResolvedValue({ purchases: [], total: 0, skip: 0, limit: 50 })
     mocked.getFilamentPurchase.mockResolvedValue(purchase())
   })
 
@@ -79,6 +89,8 @@ describe('FilamentPurchaseDialog', () => {
     mocked.listFilamentPurchases.mockResolvedValue({
       purchases: [purchase({ id: 'purchase-9', supplier: 'Spool World' })],
       total: 1,
+      skip: 0,
+      limit: 50,
     })
 
     const user = userEvent.setup({ delay: null })
@@ -95,10 +107,21 @@ describe('FilamentPurchaseDialog', () => {
     mocked.listFilamentPurchases.mockResolvedValue({
       purchases: [purchase({ inbound_shipping_cost: '12.00' })],
       total: 1,
+      skip: 0,
+      limit: 50,
     })
 
     renderDialog(<FilamentPurchaseDialog open onOpenChange={vi.fn()} currencySymbol="CA$" />)
 
     expect(await screen.findByText(/CA\$12\.00 shipping/)).toBeInTheDocument()
+  })
+})
+
+describe('FilamentPurchaseDialog for a viewer', () => {
+  it('opens the form read-only, saying why', async () => {
+    auth.role = 'viewer'
+    renderDialog(<FilamentPurchaseDialog open onOpenChange={vi.fn()} />)
+
+    expect(await screen.findByTestId('read-only-notice')).toBeInTheDocument()
   })
 })

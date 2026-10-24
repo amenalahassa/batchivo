@@ -53,8 +53,20 @@ class MarginDivergenceResponse(BaseModel):
     diverges: bool = Field(..., description="Whether this line is past that threshold")
     shortfall: bool = Field(..., description="True where it earned less than planned")
 
-    planned_profit: Decimal
-    realised_profit: Decimal
+    planned_profit: Optional[Decimal] = Field(
+        None, description="Null where the sale froze no exchange rate (T231)"
+    )
+    realised_profit: Optional[Decimal] = Field(
+        None, description="Null where the sale froze no exchange rate (T231)"
+    )
+    fx_rate: Optional[Decimal] = Field(
+        None, description="The rate frozen at sale, order currency to books"
+    )
+    fx_rate_date: Optional[date] = Field(None, description="The day that rate applies to")
+    fx_rate_source: Optional[str] = Field(None, description="parity, service or manual (FR-028h)")
+    snapshot_incomplete: list[str] = Field(
+        default_factory=list, description="Why the snapshot was incomplete at sale"
+    )
 
     movements: list[LineMovementResponse] = Field(
         default_factory=list, description="Which lines moved, heaviest first"

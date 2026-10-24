@@ -40,6 +40,10 @@ PNL_URL = "/api/v1/reconciliation/channel-pnl"
 
 @pytest_asyncio.fixture
 async def channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesChannel:
+    # The operator keeps their books in the currency the channel sells in, so
+    # costs and prices meet without a conversion (task T231).
+    test_tenant.currency_code = "CAD"
+    db_session.add(test_tenant)
     row = SalesChannel(
         id=uuid4(),
         tenant_id=test_tenant.id,
@@ -900,6 +904,9 @@ async def _snapshot_line(
             make_cost_at_sale=Decimal(make_cost),
             fees_json=[{"name": name, "amount": amount} for name, amount in fees],
             margin_basis_at_sale=basis,
+            # A same-currency sale freezes parity; without a rate the make-cost
+            # could not be set against revenue (task T231).
+            fx_rate=Decimal("1"),
             pricing_rev=1,
         )
     )

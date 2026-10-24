@@ -44,6 +44,16 @@ function renderBOMEditor() {
   )
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('BOMEditor - 3MF weight suggestion hand-off', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -115,5 +125,14 @@ describe('BOMEditor - 3MF weight suggestion hand-off', () => {
 
     const weightField = await screen.findByLabelText('Weight (grams)')
     expect(weightField).toHaveValue(null)
+  })
+})
+
+describe('BOMEditor for a viewer', () => {
+  it('shows the bill of materials with adding disabled', async () => {
+    auth.role = 'viewer'
+    renderBOMEditor()
+
+    expect(await screen.findByRole('button', { name: /add material/i })).toBeDisabled()
   })
 })

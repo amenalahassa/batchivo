@@ -17,7 +17,7 @@ const HAS_DOM = typeof window !== 'undefined'
 if (HAS_DOM) {
   // Matchers and unmounting are only meaningful against a DOM. Imported
   // dynamically so a node-environment file does not pay for them either.
-  await import('@testing-library/jest-dom')
+  await import('@testing-library/jest-dom/vitest')
   const { cleanup } = await import('@testing-library/react')
   afterEach(() => {
     cleanup()

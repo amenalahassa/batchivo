@@ -10,6 +10,9 @@ os.environ.setdefault(
     "SECRET_KEY",
     "test-secret-key-for-pytest-only-do-not-use-in-production-minimum-32-chars",
 )
+# No test reaches a live exchange-rate service: a rate a test depends on is one
+# it records itself, so the suite neither needs a network nor varies with one.
+os.environ.setdefault("FX_ENABLED", "false")
 
 import boto3
 import pytest

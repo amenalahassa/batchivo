@@ -24,6 +24,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2, RefreshCw } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 interface AddConsumableDialogProps {
   open: boolean
@@ -31,6 +33,10 @@ interface AddConsumableDialogProps {
 }
 
 export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const queryClient = useQueryClient()
 
   // Auto-generate SKU
@@ -123,6 +129,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
           {/* Basic Info */}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -363,6 +370,18 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             </div>
           )}
 
+          </fieldset>
+
+          {!canEdit && (
+
+            <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+              Changing this needs a member, admin or owner role.
+
+            </p>
+
+          )}
+
           <DialogFooter>
             <Button
               type="button"
@@ -372,7 +391,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
+            <Button type="submit" disabled={createMutation.isPending || !canEdit}>
               {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create Consumable
             </Button>

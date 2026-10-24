@@ -48,8 +48,46 @@ class OrderItemResponse(BaseModel):
     # read (FR-047, Constitution IV).
     unit_price: Decimal
     total_price: Decimal
+    # The rate frozen at sale, with its day and where it came from (FR-028g,
+    # FR-028h, task T232), and why the snapshot was incomplete. Null on a line
+    # sold before snapshots existed, which recorded none of it.
+    fx_rate: Optional[Decimal] = None
+    fx_rate_date: Optional[date] = None
+    fx_rate_source: Optional[str] = None
+    fx_quote_currency: Optional[str] = None
+    fx_rate_is_stale: Optional[bool] = None
+    snapshot_incomplete: list[str] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+def _fx_rate_is_stale(item: OrderItem, order: Order) -> Optional[bool]:
+    """Whether the frozen rate is older than the day the order was placed.
+
+    Derived on read from the two dates rather than stored (Constitution V).
+    """
+    if item.fx_rate_date is None or order.created_at is None:
+        return None
+    return item.fx_rate_date < order.created_at.date()
+
+
+def _item_response(item: OrderItem, order: Order) -> OrderItemResponse:
+    """One order line as every order read serves it, frozen-rate provenance included."""
+    return OrderItemResponse(
+        id=str(item.id),
+        product_id=str(item.product_id) if item.product_id else None,
+        product_sku=item.product_sku,
+        product_name=item.product_name,
+        quantity=item.quantity,
+        unit_price=item.unit_price,
+        total_price=item.total_price,
+        fx_rate=item.fx_rate,
+        fx_rate_date=item.fx_rate_date,
+        fx_rate_source=item.fx_rate_source,
+        fx_quote_currency=item.fx_quote_currency,
+        fx_rate_is_stale=_fx_rate_is_stale(item, order),
+        snapshot_incomplete=list(item.snapshot_incomplete or []),
+    )
 
 
 class OrderResponse(BaseModel):
@@ -82,8 +120,10 @@ class OrderResponse(BaseModel):
     # around them -- `shipping_cost`, `subtotal`, `total` -- were `float` when
     # these arrived and were corrected by T201.
     # ------------------------------------------------------------------
-    postage_paid: Decimal
-    sales_tax_collected: Decimal
+    # Null where the source did not record it -- unrecorded, not zero (T230).
+    postage_paid: Optional[Decimal] = None
+    sales_tax_collected: Optional[Decimal] = None
+    tax_exclusive_derived: bool = False
     subtotal: Decimal
     total: Decimal
     currency: str
@@ -263,6 +303,7 @@ def _order_response(order: Order) -> OrderResponse:
         shipping_cost=order.shipping_cost,
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
+        tax_exclusive_derived=bool(order.tax_exclusive_derived),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -278,18 +319,7 @@ def _order_response(order: Order) -> OrderResponse:
         internal_notes=order.internal_notes,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=item.unit_price,
-                total_price=item.total_price,
-            )
-            for item in order.items
-        ],
+        items=[_item_response(item, order) for item in order.items],
     )
 
 
@@ -488,6 +518,7 @@ async def list_orders(
                 shipping_cost=order.shipping_cost,
                 postage_paid=order.postage_paid,
                 sales_tax_collected=order.sales_tax_collected,
+                tax_exclusive_derived=bool(order.tax_exclusive_derived),
                 subtotal=order.subtotal,
                 total=order.total,
                 currency=order.currency,
@@ -503,18 +534,7 @@ async def list_orders(
                 internal_notes=order.internal_notes,
                 created_at=order.created_at,
                 updated_at=order.updated_at,
-                items=[
-                    OrderItemResponse(
-                        id=str(item.id),
-                        product_id=str(item.product_id) if item.product_id else None,
-                        product_sku=item.product_sku,
-                        product_name=item.product_name,
-                        quantity=item.quantity,
-                        unit_price=item.unit_price,
-                        total_price=item.total_price,
-                    )
-                    for item in order.items
-                ],
+                items=[_item_response(item, order) for item in order.items],
             )
             for order in orders
         ],
@@ -593,6 +613,7 @@ async def get_order(
         shipping_cost=order.shipping_cost,
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
+        tax_exclusive_derived=bool(order.tax_exclusive_derived),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -608,18 +629,7 @@ async def get_order(
         internal_notes=order.internal_notes,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=item.unit_price,
-                total_price=item.total_price,
-            )
-            for item in order.items
-        ],
+        items=[_item_response(item, order) for item in order.items],
     )
 
 
@@ -697,6 +707,7 @@ async def update_order(
         shipping_cost=order.shipping_cost,
         postage_paid=order.postage_paid,
         sales_tax_collected=order.sales_tax_collected,
+        tax_exclusive_derived=bool(order.tax_exclusive_derived),
         subtotal=order.subtotal,
         total=order.total,
         currency=order.currency,
@@ -712,18 +723,7 @@ async def update_order(
         internal_notes=order.internal_notes,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=item.unit_price,
-                total_price=item.total_price,
-            )
-            for item in order.items
-        ],
+        items=[_item_response(item, order) for item in order.items],
     )
 
 

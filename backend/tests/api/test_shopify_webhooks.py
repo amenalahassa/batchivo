@@ -247,3 +247,124 @@ class TestShopifyOrderUpdate:
         assert order is not None
         assert order.status == OrderStatus.SHIPPED
         assert order.tracking_number == "JD000000000GB"
+
+
+# ============================================================================
+# Task T230: a tax-inclusive order enters the books tax-exclusive
+# ============================================================================
+
+
+def _inclusive_payload() -> dict:
+    """A UK order quoted with 20% VAT in every price, as Shopify sends it."""
+    payload = json.loads(json.dumps(SAMPLE_ORDER_PAYLOAD))
+    payload.update(
+        {
+            "id": 5001000077,
+            "order_number": 1077,
+            "name": "#1077",
+            "subtotal_price": "24.00",
+            "total_price": "30.00",
+            "total_tax": "5.00",
+            "taxes_included": True,
+            "discount_codes": [],
+            "total_shipping_price_set": {"shop_money": {"amount": "6.00"}},
+            "shipping_lines": [
+                {"title": "Royal Mail", "price": "6.00", "tax_lines": [{"price": "1.00"}]}
+            ],
+            "line_items": [
+                {
+                    "id": 9077,
+                    "title": "Rosyra the Dragon",
+                    "sku": "DRG-ROSYRA-001",
+                    "quantity": 2,
+                    "price": "12.00",
+                    "tax_lines": [{"price": "4.00"}],
+                }
+            ],
+        }
+    )
+    return payload
+
+
+class TestATaxInclusiveShopifyOrder:
+    async def _ingest(self, async_client, test_tenant, payload: dict):
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        response = await async_client.post(
+            f"/api/v1/shopify/webhooks/{test_tenant.slug}",
+            content=json.dumps(payload).encode(),
+            headers={**NO_HMAC_HEADERS, "x-shopify-topic": "orders/create"},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["order_number"], select(Order).options(selectinload(Order.items))
+
+    @pytest.mark.asyncio
+    async def test_the_tax_is_recorded_and_taken_out_of_revenue(
+        self, async_client: AsyncClient, test_tenant: Tenant, db_session
+    ) -> None:
+        number, query = await self._ingest(async_client, test_tenant, _inclusive_payload())
+
+        order = (await db_session.execute(query.where(Order.order_number == number))).scalar_one()
+
+        assert order.sales_tax_collected == Decimal("5.00")
+        assert order.tax_exclusive_derived is True
+        # 24.00 of goods with 4.00 of tax in them, 6.00 of shipping with 1.00.
+        assert order.subtotal == Decimal("20.00")
+        assert order.shipping_cost == Decimal("5.00")
+        [line] = order.items
+        assert line.total_price == Decimal("20.00")
+        assert line.unit_price == Decimal("10.00")
+
+    @pytest.mark.asyncio
+    async def test_postage_is_unrecorded_not_zero(
+        self, async_client: AsyncClient, test_tenant: Tenant, db_session
+    ) -> None:
+        number, query = await self._ingest(async_client, test_tenant, _inclusive_payload())
+
+        order = (await db_session.execute(query.where(Order.order_number == number))).scalar_one()
+
+        assert order.postage_paid is None
+
+    @pytest.mark.asyncio
+    async def test_the_order_read_shows_the_derivation(
+        self, async_client: AsyncClient, client: AsyncClient, test_tenant: Tenant, db_session
+    ) -> None:
+        number, query = await self._ingest(async_client, test_tenant, _inclusive_payload())
+        order_id = (
+            (await db_session.execute(query.where(Order.order_number == number))).scalar_one().id
+        )
+
+        body = (await client.get(f"/api/v1/orders/{order_id}")).json()
+
+        assert body["sales_tax_collected"] == "5.00"
+        assert body["tax_exclusive_derived"] is True
+        assert body["postage_paid"] is None
+
+    @pytest.mark.asyncio
+    async def test_an_order_without_total_tax_has_its_tax_unrecorded(
+        self, async_client: AsyncClient, test_tenant: Tenant, db_session
+    ) -> None:
+        payload = _inclusive_payload()
+        payload.pop("total_tax")
+        number, query = await self._ingest(async_client, test_tenant, payload)
+
+        order = (await db_session.execute(query.where(Order.order_number == number))).scalar_one()
+
+        assert order.sales_tax_collected is None
+        assert order.tax_exclusive_derived is False
+        assert order.subtotal == Decimal("24.00")
+
+    @pytest.mark.asyncio
+    async def test_a_tax_exclusive_order_is_left_as_quoted(
+        self, async_client: AsyncClient, test_tenant: Tenant, db_session
+    ) -> None:
+        payload = _inclusive_payload()
+        payload["taxes_included"] = False
+        number, query = await self._ingest(async_client, test_tenant, payload)
+
+        order = (await db_session.execute(query.where(Order.order_number == number))).scalar_one()
+
+        assert order.sales_tax_collected == Decimal("5.00")
+        assert order.tax_exclusive_derived is False
+        assert order.subtotal == Decimal("24.00")

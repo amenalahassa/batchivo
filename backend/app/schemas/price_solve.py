@@ -133,6 +133,13 @@ class PriceSolveResponse(BaseModel):
 
     make_cost: Decimal
     postage_paid: Decimal
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Why the figures are less than certain: a cost line not recorded, a "
+            "stale exchange rate, or no fee rule in force on the date (T231, T236)"
+        ),
+    )
     fees: list[FeeChargeResponse] = Field(
         default_factory=list, description="The stack as charged at the price returned"
     )

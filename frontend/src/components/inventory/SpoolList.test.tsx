@@ -119,6 +119,12 @@ function renderWithQueryClient(component: React.ReactElement) {
   return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>)
 }
 
+// SpoolList mounts AddSpoolDialog, which reads the signed-in role (T238).
+vi.mock('@/contexts/AuthContext', () => {
+  const session = { user: { email: 'operator@example.com', role: 'admin' }, logout: vi.fn() }
+  return { useAuth: () => session, useOptionalAuth: () => session }
+})
+
 describe('SpoolList', () => {
   beforeEach(() => {
     vi.clearAllMocks()

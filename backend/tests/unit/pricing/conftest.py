@@ -87,6 +87,8 @@ def make_policy(**overrides) -> CostPolicy:
         overhead_monthly_pool=golden.MONTHLY_OVERHEAD_POOL,
         expected_monthly_machine_hours=golden.EXPECTED_MONTHLY_MACHINE_HOURS,
         electricity_rate_per_kwh=golden.ELECTRICITY_RATE_PER_KWH,
+        # The golden case's rates are the operator's own decisions.
+        decided=True,
     )
     defaults.update(overrides)
     return CostPolicy(**defaults)

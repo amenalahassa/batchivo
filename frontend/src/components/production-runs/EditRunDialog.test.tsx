@@ -87,8 +87,8 @@ const mockInProgressRun: ProductionRunDetail = {
       actual_model_weight_grams: null,
       actual_total_weight: 0,
       cost_per_gram: '0.025',
-      estimated_cost: 2.875,
-      total_cost: 0,
+      estimated_cost: '2.875',
+      total_cost: '0',
       spool: {
         id: 'spool-1',
         spool_id: 'FIL-001',
@@ -107,8 +107,8 @@ const mockInProgressRun: ProductionRunDetail = {
   total_items_successful: 0,
   total_items_failed: 0,
   overall_success_rate: null,
-  total_estimated_cost: 2.875,
-  total_material_cost: 0,
+  total_estimated_cost: '2.875',
+  total_material_cost: '0',
   created_at: '2024-01-01T10:00:00Z',
   updated_at: '2024-01-01T10:00:00Z',
 }

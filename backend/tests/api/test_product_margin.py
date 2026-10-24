@@ -36,6 +36,10 @@ APPLIES_FROM = date(2020, 1, 1)
 @pytest_asyncio.fixture
 async def channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesChannel:
     """A channel charging a percentage, a fixed amount and a refund reserve."""
+    # The operator keeps their books in the currency the channel sells in, so
+    # costs and prices meet without a conversion (task T231).
+    test_tenant.currency_code = "CAD"
+    db_session.add(test_tenant)
     row = SalesChannel(
         id=uuid4(),
         tenant_id=test_tenant.id,
@@ -348,3 +352,27 @@ class TestReadingAsAtADate:
         assert "future_fee" not in {c["name"] for c in today["fees"]}
         assert "future_fee" in {c["name"] for c in later["fees"]}
         assert Decimal(later["fee_total"]) > Decimal(today["fee_total"])
+
+
+# ============================================================================
+# Task T236: lapsed rules are reported, not priced as zero fees
+# ============================================================================
+
+
+class TestLapsedRulesAreReportedOnTheMargin:
+    async def test_a_date_after_every_rule_lapsed_is_incomplete(
+        self, client: AsyncClient, db_session: AsyncSession, channel, priced, test_product
+    ) -> None:
+        from sqlalchemy import update
+
+        await db_session.execute(
+            update(FeeRule)
+            .where(FeeRule.sales_channel_id == channel.id)
+            .values(applies_to=date(2026, 1, 31))
+        )
+        await db_session.commit()
+
+        body = (await client.get(_url(test_product, channel))).json()
+
+        assert body["fees"] == []
+        assert any("no fee rule" in reason for reason in body["incomplete_reasons"])

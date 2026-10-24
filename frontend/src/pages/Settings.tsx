@@ -6,6 +6,7 @@
 
 import { AppLayout } from '@/components/layout/AppLayout'
 import { EstimateProposalList } from '@/components/pricing/EstimateProposalList'
+import { ExchangeRatePanel } from '@/components/pricing/ExchangeRatePanel'
 import { EtsySettings } from '@/components/settings/EtsySettings'
 import { GeneralSettings } from '@/components/settings/GeneralSettings'
 import { PricingPolicySettings } from '@/components/settings/PricingPolicySettings'
@@ -80,6 +81,11 @@ export function Settings() {
               more land here.
             */}
             <MarginDivergencePanel />
+            {/*
+              A settled sale in another currency that froze no rate cannot
+              state its margin; the operator gives it one here (FR-028h).
+            */}
+            <ExchangeRatePanel canEdit={canEditPricing} />
           </TabsContent>
 
           <TabsContent value="payments">

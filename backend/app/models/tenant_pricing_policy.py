@@ -113,6 +113,14 @@ class TenantPricingPolicy(Base, UUIDMixin, TimestampMixin):
         comment="Tenant electricity rate, used by any printer that carries none of its own",
     )
 
+    overhead_percentage: Mapped[Decimal] = mapped_column(
+        Numeric(7, 4),
+        nullable=False,
+        default=Decimal("0"),
+        server_default="0",
+        comment="Overhead percentage of material and labor, for the percentage method (FR-014)",
+    )
+
     # ------------------------------------------------------------------
     # Margin and price presentation
     # ------------------------------------------------------------------
@@ -244,6 +252,10 @@ class TenantPricingPolicy(Base, UUIDMixin, TimestampMixin):
         CheckConstraint(
             "effective_to IS NULL OR effective_to >= effective_from",
             name="check_pricing_policy_effective_range",
+        ),
+        CheckConstraint(
+            "overhead_percentage >= 0",
+            name="check_policy_overhead_percentage_non_negative",
         ),
         {"comment": "Operator monetary policy, one row per effective period (research.md D2)"},
     )

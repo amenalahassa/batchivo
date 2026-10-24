@@ -44,6 +44,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { useFilamentPurchase, useSaveFilamentPurchase } from '@/hooks/usePricing'
 import { formatMoney } from '@/lib/money'
 import type { FilamentPurchase, SpoolLandedCost } from '@/types/pricing'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 const nonNegative = (message: string) =>
   z
@@ -186,6 +188,10 @@ export function FilamentPurchaseForm({
   currencySymbol = '$',
   onSaved,
 }: FilamentPurchaseFormProps) {
+  // A viewer reads a purchase but cannot record one (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const { purchase, isLoading, error } = useFilamentPurchase(purchaseId)
   const {
     createPurchaseAsync,
@@ -296,6 +302,7 @@ export function FilamentPurchaseForm({
 
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
             <FormField
               control={form.control}
               name="supplier"
@@ -412,8 +419,14 @@ export function FilamentPurchaseForm({
               )}
             />
 
+            </fieldset>
+            {!canEdit && (
+              <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+                Recording a purchase needs a member, admin or owner role.
+              </p>
+            )}
             <div className="flex items-center gap-4 pt-2">
-              <Button type="submit" disabled={isSaving || !form.formState.isDirty}>
+              <Button type="submit" disabled={isSaving || !form.formState.isDirty || !canEdit}>
                 {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {purchaseId ? 'Save purchase' : 'Record purchase'}
               </Button>

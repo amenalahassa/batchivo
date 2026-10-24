@@ -45,9 +45,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.order import Order, OrderItem
-from app.services.costing import basis_amount_for
+from app.services.costing import margin_of
+from app.services.currency_edge import cost_in_sale_currency
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.realised_margin import RealisedMargin, realised_margin
+from app.services.sale_snapshot import frozen_fee_total
+from app.services.sale_snapshot import snapshot_amount as _decimal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.models.tenant import Tenant
@@ -103,8 +106,10 @@ class MarginDivergence:
     divergence_points: Optional[Decimal]
     threshold_points: Decimal
 
-    planned_profit: Decimal
-    realised_profit: Decimal
+    #: ``None`` where the line froze no exchange rate, so its book-currency
+    #: make-cost cannot be set against its price (task T231).
+    planned_profit: Optional[Decimal]
+    realised_profit: Optional[Decimal]
 
     #: Which cost lines moved, heaviest movement first (US7 scenario 3).
     movements: list[LineMovement] = field(default_factory=list)
@@ -114,6 +119,12 @@ class MarginDivergence:
     substitutions: list[str] = field(default_factory=list)
     #: Why something could not be realised.
     gaps: list[str] = field(default_factory=list)
+    #: The rate frozen at sale, with its day and origin (FR-028g/h, T232).
+    fx_rate: Optional[Decimal] = None
+    fx_rate_date: Optional[date] = None
+    fx_rate_source: Optional[str] = None
+    #: Why the snapshot was incomplete when it was taken (T232).
+    snapshot_incomplete: list[str] = field(default_factory=list)
 
     @property
     def diverges(self) -> bool:
@@ -134,19 +145,6 @@ class MarginDivergence:
         return self.divergence_points is not None and self.divergence_points < ZERO
 
 
-def _decimal(value: Any, default: Decimal = ZERO) -> Decimal:
-    if value is None:
-        return default
-    try:
-        return Decimal(str(value))
-    except (ArithmeticError, TypeError, ValueError):
-        return default
-
-
-def _planned_fee_total(item: OrderItem) -> Decimal:
-    return sum((_decimal(charge.get("amount")) for charge in (item.fees_json or [])), ZERO)
-
-
 def _planned_lines(item: OrderItem) -> dict[str, Decimal]:
     breakdown = item.cost_breakdown_json or {}
     return {
@@ -161,7 +159,7 @@ def planned_margin_pct(
     *,
     shipping_revenue: Decimal = ZERO,
     postage_paid: Decimal = ZERO,
-) -> tuple[Optional[Decimal], Decimal, str]:
+) -> tuple[Optional[Decimal], Optional[Decimal], str]:
     """The margin this line was sold at, from its own snapshot.
 
     Returns ``(margin_pct, profit, basis)``. The percentage is recomputed from
@@ -177,21 +175,25 @@ def planned_margin_pct(
     """
     basis = item.margin_basis_at_sale or "customer_total"
     quantity = Decimal(str(item.quantity or 1))
-    item_price = _decimal(item.list_price_at_sale) * quantity
-    customer_total = item_price + shipping_revenue
-    fees = _planned_fee_total(item)
-    make_cost = _decimal(item.make_cost_at_sale) * quantity
-
-    profit = (customer_total - fees - make_cost - postage_paid).quantize(CENT)
-    basis_amount = basis_amount_for(
-        basis,
-        item_price=item_price,
-        customer_total=customer_total,
-        fee_total_exact=fees,
+    # The same derivation the realised side takes (task T221), so an
+    # unrefunded line with no actuals diverges by nothing, to the cent.
+    # The make-cost was frozen in the books currency; the price in the
+    # order's. The rate frozen with them puts them in one (task T231), and a
+    # line that froze none has no planned margin to state.
+    make_cost = cost_in_sale_currency(item, _decimal(item.make_cost_at_sale) * quantity)
+    if make_cost is None:
+        return None, None, basis
+    figures = margin_of(
+        item_price=_decimal(item.list_price_at_sale) * quantity,
+        shipping_revenue=shipping_revenue,
+        fees=frozen_fee_total(item),
+        make_cost=make_cost,
+        postage_paid=postage_paid,
+        basis=basis,
     )
-    if basis_amount <= ZERO:
-        return None, profit, basis
-    return (profit / basis_amount * HUNDRED).quantize(POINTS), profit, basis
+    # At the engine's own precision, like the realised side: re-rounding one
+    # of the two would report a divergence that is only a rounding step.
+    return figures.margin_pct, figures.profit.quantize(CENT), basis
 
 
 def _movements(item: OrderItem, realised: RealisedMargin) -> list[LineMovement]:
@@ -221,7 +223,7 @@ def _movements(item: OrderItem, realised: RealisedMargin) -> list[LineMovement]:
     # Fees sit alongside the cost lines in an alert even though they are not
     # one: on a marketplace they are the line most likely to have moved, and
     # FR-041 exists because the planned figure and the statement disagree.
-    planned_fees = _planned_fee_total(item)
+    planned_fees = frozen_fee_total(item)
     if abs(realised.fees_paid - planned_fees) >= MOVEMENT_FLOOR:
         movements.append(
             LineMovement(key="fees", planned=planned_fees, realised=realised.fees_paid)
@@ -280,6 +282,10 @@ async def divergence_for_item(
         fees_source=realised.fees_source,
         substitutions=list(realised.substitutions),
         gaps=list(realised.gaps),
+        fx_rate=item.fx_rate,
+        fx_rate_date=item.fx_rate_date,
+        fx_rate_source=item.fx_rate_source,
+        snapshot_incomplete=list(item.snapshot_incomplete or []),
     )
 
 

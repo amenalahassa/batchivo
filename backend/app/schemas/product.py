@@ -135,6 +135,13 @@ class ProductPricingResponse(ProductPricingBase):
     net_revenue: Optional[Decimal] = Field(None, description="Net revenue after fees")
     profit: Optional[Decimal] = Field(None, description="Profit after make cost")
     margin_percentage: Optional[Decimal] = Field(None, description="Profit margin %")
+    profit_per_machine_hour: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Profit per hour of machine time, beside the margin (FR-043); null, never "
+            "zero, where nobody has timed the print"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 

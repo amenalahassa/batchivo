@@ -184,3 +184,7 @@ class FeePreviewResponse(BaseModel):
     as_of: date
     revenue_tax_exclusive: Decimal
     tax_exclusive_derived: bool = False
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="Why the stack is not the whole story, e.g. every rule lapsed (T236)",
+    )

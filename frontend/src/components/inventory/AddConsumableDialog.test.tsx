@@ -52,6 +52,16 @@ async function fillRequired() {
   fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: 'Magnet 3x1' } })
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('AddConsumableDialog cost per unit', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -81,5 +91,16 @@ describe('AddConsumableDialog cost per unit', () => {
 
     await waitFor(() => expect(api.create).toHaveBeenCalled())
     expect(api.create.mock.calls[0][0].current_cost_per_unit).toBeUndefined()
+  })
+})
+
+describe('AddConsumableDialog for a viewer', () => {
+  it('shows the form disabled, with the reason, rather than hiding it', async () => {
+    auth.role = 'viewer'
+    renderDialog(<AddConsumableDialog open onOpenChange={() => {}} />)
+
+    expect(await screen.findByTestId('read-only-notice')).toBeInTheDocument()
+    expect(screen.getByLabelText('Cost per Unit')).toBeDisabled()
+    expect(screen.getByRole('button', { name: /create consumable/i })).toBeDisabled()
   })
 })

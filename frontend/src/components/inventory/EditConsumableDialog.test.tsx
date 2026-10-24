@@ -69,6 +69,16 @@ function renderDialog(node: ReactNode) {
   return render(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>)
 }
 
+// The role the signed-in user holds; each test starts as an admin (T238).
+const auth = vi.hoisted(() => ({ role: 'admin' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+beforeEach(() => {
+  auth.role = 'admin'
+})
+
 describe('EditConsumableDialog cost per unit', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -111,5 +121,18 @@ describe('EditConsumableDialog cost per unit', () => {
 
     await waitFor(() => expect(api.update).toHaveBeenCalled())
     expect(api.update.mock.calls[0][1].current_cost_per_unit).toBeNull()
+  })
+})
+
+describe('EditConsumableDialog for a viewer', () => {
+  it('shows the stored cost but will not save a change', async () => {
+    auth.role = 'viewer'
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    const cost = await screen.findByLabelText('Cost per Unit')
+    await waitFor(() => expect(cost).toHaveValue(0.045))
+    expect(cost).toBeDisabled()
+    expect(screen.getByTestId('read-only-notice')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled()
   })
 })

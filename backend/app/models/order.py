@@ -3,9 +3,9 @@
 import uuid
 from typing import TYPE_CHECKING, Optional
 from decimal import Decimal
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, ForeignKey, Integer, Numeric, String, Text, DateTime
+from sqlalchemy import JSON, Boolean, Date, ForeignKey, Integer, Numeric, String, Text, DateTime
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -155,22 +155,35 @@ class Order(Base, UUIDMixin, TimestampMixin):
     # the only shipping figure the system held, which is why free shipping
     # looked free. These two are the other side of that sale.
     # ------------------------------------------------------------------
-    postage_paid: Mapped[Decimal] = mapped_column(
+    # NULL means unrecorded -- the source did not say -- which is not zero
+    # (task T230, FR-019). A margin built over an unrecorded figure says so.
+    postage_paid: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default="0",
-        comment="What the operator paid to post this order; a cost, never netted off revenue",
+        nullable=True,
+        comment=(
+            "What the operator paid to post this order; a cost, never netted off "
+            "revenue. NULL where the source did not record it"
+        ),
     )
 
-    sales_tax_collected: Mapped[Decimal] = mapped_column(
+    sales_tax_collected: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default="0",
+        nullable=True,
         comment=(
             "Sales tax taken from the customer. A liability where the operator "
-            "remits it, and never revenue or profit under either remitter (FR-028c, FR-028d)"
+            "remits it, and never revenue or profit under either remitter (FR-028c, "
+            "FR-028d). NULL where the source did not record it"
+        ),
+    )
+
+    tax_exclusive_derived: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment=(
+            "The source quoted prices tax-inclusive, so the stored subtotal, "
+            "shipping and line totals are derived by taking the tax out (FR-028e)"
         ),
     )
 
@@ -416,7 +429,10 @@ class OrderItem(Base, UUIDMixin, TimestampMixin):
     make_cost_at_sale: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
-        comment="Make-cost of one unit as it stood at the moment of sale",
+        comment=(
+            "Make-cost of one unit as it stood at the moment of sale, in the "
+            "tenant's books currency; fx_rate converts it to the order's"
+        ),
     )
 
     list_price_at_sale: Mapped[Optional[Decimal]] = mapped_column(
@@ -445,6 +461,33 @@ class OrderItem(Base, UUIDMixin, TimestampMixin):
             "The exchange rate used, frozen. Never revised when a newer or "
             "more accurate rate becomes known (FR-028j); the difference is "
             "reported as a variance, not corrected"
+        ),
+    )
+
+    fx_rate_date: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment="The day the frozen rate applies to; older than the sale means stale (FR-028g)",
+    )
+
+    fx_rate_source: Mapped[Optional[str]] = mapped_column(
+        String(20),
+        nullable=True,
+        comment="Where the frozen rate came from: parity, service or manual (FR-028h)",
+    )
+
+    fx_quote_currency: Mapped[Optional[str]] = mapped_column(
+        String(3),
+        nullable=True,
+        comment="The books currency the frozen rate converts the order's currency into",
+    )
+
+    snapshot_incomplete: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment=(
+            "Why this line's snapshot is incomplete, as the sale recorded it -- a "
+            "stale or missing rate, a line that could not be costed (FR-019)"
         ),
     )
 

@@ -1501,10 +1501,35 @@ class ProductionRunService:
                 logger.error(f"Failed to fail production run {run_id}, rolled back: {e}")
                 raise
 
+    async def backfill_run_actuals(self, production_run: ProductionRun) -> bool:
+        """Record a completed run's unit actuals where it carries none (task T237).
+
+        For ``scripts/backfill_cost_analysis.py``, which had its own copy of
+        the weight-times-rate arithmetic. The material cost is each
+        material's own ``total_cost``, and the unit costs are
+        :meth:`record_actual_unit_costs`'s. Rolling averages are left alone:
+        the run was completed long ago, and feeding it in now would weight an
+        old outcome as a new one. Returns whether anything was recorded.
+        """
+        total_material_cost = sum(
+            (
+                material.total_cost
+                for material in production_run.materials
+                if material.cost_per_gram
+            ),
+            Decimal("0"),
+        )
+        if total_material_cost == Decimal("0"):
+            return False
+        await self._record_run_actuals(production_run, total_material_cost, update_averages=False)
+        return production_run.cost_per_gram_actual is not None
+
     async def _record_run_actuals(
         self,
         production_run: ProductionRun,
         total_material_cost: Decimal,
+        *,
+        update_averages: bool = True,
     ) -> None:
         """Weigh the successful output, record its unit costs, update averages.
 
@@ -1543,7 +1568,7 @@ class ProductionRunService:
             )
             return
 
-        for unit, quantity in units:
+        for unit, quantity in units if update_averages else []:
             if unit.model_id and getattr(unit, "actual_cost_per_unit", None) is not None:
                 await self._update_model_rolling_average(
                     model_id=unit.model_id,

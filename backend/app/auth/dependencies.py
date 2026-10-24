@@ -113,6 +113,11 @@ async def get_current_tenant(
         )
         db.add(user_tenant)
 
+        # Deferred: pricing_policy imports models that import this module.
+        from app.services.pricing_policy import seed_policy_row
+
+        await seed_policy_row(db, tenant)  # task T219
+
         await db.commit()
         await db.refresh(tenant)
         return tenant

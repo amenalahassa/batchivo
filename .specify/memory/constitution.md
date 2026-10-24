@@ -21,7 +21,8 @@ All code MUST ship with tests. There is no exception and no "I'll add them after
 - A bug fix MUST carry a regression test that fails before the fix.
 - A schema change MUST cover CRUD, relationships and constraints.
 - `poetry run pytest` and `poetry run ruff check` MUST pass before a commit; frontend changes MUST
-  additionally pass `npm test` and `npm run lint`.
+  additionally pass `npm test`, `npm run lint` and `npm run typecheck` -- CI runs the typecheck, so
+  a type error found there is a red pipeline every change must wait behind.
 
 **Why**: this project's own history shows the costly defects are the quiet ones — a wrong number
 that raises no error.

@@ -6,6 +6,7 @@ import { divideMoney, formatMoney } from '@/lib/money'
 import type { SpoolmanDBFilament } from '@/types/spoolmandb'
 import { SpoolmanDBPicker } from './SpoolmanDBPicker'
 import { useNextSKU } from '@/hooks/useSKU'
+import { useCurrency } from '@/hooks/useCurrency'
 
 // Normalize brand/supplier names to prevent duplicates
 const normalizeName = (name: string): string => {
@@ -43,6 +44,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2, Sparkles, Droplets, RefreshCw } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 interface AddSpoolDialogProps {
   open: boolean
@@ -50,6 +53,10 @@ interface AddSpoolDialogProps {
 }
 
 export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const queryClient = useQueryClient()
 
   // Auto-generate spool ID
@@ -103,7 +110,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
 
   // Additional UI state for bulk purchases
   const [quantity, setQuantity] = useState(1)
-  const [currency, setCurrency] = useState('GBP')
+  // A spool's price is entered in the currency the books are kept in: the
+  // tenant's. There is no per-spool currency to choose (T231).
+  const { currency } = useCurrency()
   const [customSupplier, setCustomSupplier] = useState('')
 
   // SpoolmanDB integration
@@ -256,7 +265,6 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
       is_active: true,
     })
     setQuantity(1)
-    setCurrency('GBP')
     setCustomSupplier('')
     setSelectedSpoolmanDBFilament(null)
   }
@@ -297,6 +305,7 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
           {/* SpoolmanDB Lookup */}
           <div className="bg-muted/50 rounded-lg p-4 border">
             <SpoolmanDBPicker
@@ -612,22 +621,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
                 <p className="text-xs text-muted-foreground">How many spools in this purchase</p>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="currency">Currency</Label>
-                <Select value={currency} onValueChange={setCurrency}>
-                  <SelectTrigger id="currency">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="GBP">£ GBP</SelectItem>
-                    <SelectItem value="USD">$ USD</SelectItem>
-                    <SelectItem value="EUR">€ EUR</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
 
               <div className="space-y-2">
-                <Label htmlFor="purchase_price">Total Price</Label>
+                <Label htmlFor="purchase_price">Total Price ({currency.code})</Label>
                 <Input
                   id="purchase_price"
                   type="number"
@@ -642,7 +638,7 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  {formatMoney(costPerSpool, currency)} per spool
+                  {formatMoney(costPerSpool, currency.symbol)} per spool
                 </p>
               </div>
 
@@ -753,6 +749,18 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
             </div>
           )}
 
+          </fieldset>
+
+          {!canEdit && (
+
+            <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+              Changing this needs a member, admin or owner role.
+
+            </p>
+
+          )}
+
           <DialogFooter>
             <Button
               type="button"
@@ -762,7 +770,7 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
+            <Button type="submit" disabled={createMutation.isPending || !canEdit}>
               {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create Spool
             </Button>

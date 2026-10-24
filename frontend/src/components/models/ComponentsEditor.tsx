@@ -56,6 +56,8 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 const componentFormSchema = z.object({
   component_name: z.string().min(1, 'Component name is required').max(200),
@@ -79,6 +81,10 @@ interface ComponentsEditorProps {
 }
 
 export function ComponentsEditor({ modelId, components }: ComponentsEditorProps) {
+  // A viewer sees the bill of materials with its controls disabled (T238).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'inventory' | 'manual'>('inventory')
   const queryClient = useQueryClient()
@@ -164,7 +170,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
         <h3 className="text-lg font-medium">Components</h3>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" disabled={!canEdit}>
               <Plus className="mr-2 h-4 w-4" />
               Add Component
             </Button>
@@ -363,7 +369,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                 </div>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending}>
+                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending || !canEdit}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>

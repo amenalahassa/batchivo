@@ -47,6 +47,7 @@ from app.models.product import Product
 from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.models.scenario_run import ScenarioRun
+from app.services.currency_edge import books_to_channel
 from app.services import fee_engine
 from app.services.cost_resolution import cost_load_options, product_cost_breakdown
 from app.services.channel_economics import resolve_channel_economics
@@ -392,6 +393,20 @@ async def _sweep(
             )
             continue
 
+        # Costs in the books currency, the price in the channel's (task T231).
+        # A pair with no rate is named, never swept at parity.
+        conversion = await books_to_channel(db, tenant, channel, reference)
+        if not conversion.known:
+            skipped.append(
+                {
+                    "product_id": str(product.id),
+                    "sku": product.sku,
+                    "sales_channel_id": str(channel.id),
+                    "reason": conversion.reasons[0],
+                }
+            )
+            continue
+
         context, treatment = fee_engine.exclusive_context(
             item_subtotal=Decimal(str(pricing.list_price)),
             quantity=1,
@@ -399,7 +414,7 @@ async def _sweep(
         stack = fee_engine.compute(channel, context, reference, rules=list(channel.fee_rules or []))
         margin = CostingService.margin(
             context=context,
-            make_cost=breakdown.total_make_cost,
+            make_cost=conversion.apply(breakdown.total_make_cost),
             channel=channel,
             fees=stack,
             policy=policy,

@@ -26,8 +26,6 @@ interface ProductVarianceData {
   averageVariance: number
   averageVariancePercent: number
   runCount: number
-  totalEstimated: number
-  totalActual: number
 }
 
 interface VarianceByProductChartProps {
@@ -46,8 +44,6 @@ function aggregateByProduct(runs: ProductionRunDetail[]): ProductVarianceData[] 
       sku: string
       variances: number[]
       variancePercents: number[]
-      estimated: number
-      actual: number
     }
   >()
 
@@ -70,16 +66,12 @@ function aggregateByProduct(runs: ProductionRunDetail[]): ProductVarianceData[] 
         if (existing) {
           existing.variances.push(itemVariance)
           existing.variancePercents.push(itemVariancePercent)
-          existing.estimated += item.estimated_total_cost || 0
-          existing.actual += item.estimated_total_cost || 0 // Approximate
         } else {
           productMap.set(key, {
             name: item.model.name,
             sku: item.model.sku,
             variances: [itemVariance],
             variancePercents: [itemVariancePercent],
-            estimated: item.estimated_total_cost || 0,
-            actual: item.estimated_total_cost || 0,
           })
         }
       })
@@ -94,8 +86,6 @@ function aggregateByProduct(runs: ProductionRunDetail[]): ProductVarianceData[] 
     averageVariancePercent:
       data.variancePercents.reduce((sum, v) => sum + v, 0) / data.variancePercents.length,
     runCount: data.variances.length,
-    totalEstimated: data.estimated,
-    totalActual: data.actual,
   }))
 }
 

@@ -8,7 +8,6 @@ an order was costed at stays readable after the rate changes.
 
 import logging
 from datetime import date
-from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -22,7 +21,6 @@ from app.services.pricing_policy import (
     resolve_policy_row,
     write_policy,
 )
-from app.services.tenant_cost_settings import tenant_overhead_percentage
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +56,7 @@ def _response(
         effective_from=policy.effective_from,
         effective_to=effective_to,
         set_by_role=set_by_role,
+        source=policy.source,
     )
 
 
@@ -77,13 +76,11 @@ async def get_pricing_policy(
     a fallback for a decision (FR-050).
     """
     row = await resolve_policy_row(db, tenant, as_of)
-    overhead_percentage: Decimal = tenant_overhead_percentage(tenant)
 
     if row is None:
-        policy = legacy_cost_policy(tenant)
-        return _response(policy.with_overhead_percentage(overhead_percentage))
+        return _response(legacy_cost_policy(tenant))
 
-    policy = cost_policy_from_row(row, overhead_percentage=overhead_percentage)
+    policy = cost_policy_from_row(row)
     return _response(policy, effective_to=row.effective_to, set_by_role=row.set_by_role)
 
 
@@ -121,5 +118,5 @@ async def update_pricing_policy(
     await db.commit()
     await db.refresh(row)
 
-    policy = cost_policy_from_row(row, overhead_percentage=tenant_overhead_percentage(tenant))
+    policy = cost_policy_from_row(row)
     return _response(policy, effective_to=row.effective_to, set_by_role=row.set_by_role)
