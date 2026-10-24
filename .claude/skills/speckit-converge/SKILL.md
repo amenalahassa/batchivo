@@ -87,6 +87,25 @@ of the code relative to the feature's artifacts — no git, no branch comparison
 When the codebase already satisfies everything, the command MUST leave `tasks.md`
 **byte-for-byte unchanged** (no empty Convergence header) and report a clean result.
 
+**COMPLETE IN ONE ROUND, NEVER DEFER**: A round's output is the *whole* remaining work, not
+the part this round happened to reach. Every round MUST:
+
+- walk **every** item in the intent inventory individually against code — every FR, every
+  buildable SC, every acceptance scenario, every edge case, every contract endpoint, every
+  research decision and every data-model constraint (Step 4c). A requirement covered only by
+  a pattern sweep has not been walked;
+- run **every** pattern sweep to completion over the whole repository. A sweep too broad for
+  one command is split into several commands, never sampled;
+- run every check the project's CI runs (Step 4d), and treat a failing one as a finding;
+- turn every gap it sees into a task, including one that looks "pre-existing", "out of this
+  round's focus" or "already known". Nothing observed is left to "the next round".
+
+A summary that names areas "left for later", "sampled", "remaining" or "to start from next
+time" is a failed round, not a partial success: go back and finish them before appending.
+The only legitimate reason to stop short is a hard blocker the user must resolve (a missing
+credential, an artifact that cannot be read), and that is reported as a blocker, not as
+deferred work.
+
 **Constitution Authority**: The project constitution (`.specify/memory/constitution.md`) is
 **non-negotiable**. Code that violates a MUST principle is the highest-severity finding and
 produces a corresponding remediation task. If the constitution is an unfilled template,
@@ -225,8 +244,8 @@ So for each finding, before moving on:
    a path where the pattern is legitimate — money as a `float` in a Prometheus counter or
    an OpenTelemetry span attribute, a grams or percentage field whose name merely looks
    monetary — is a decision to record in the summary, not a silent omission.
-4. If a sweep is impractical to complete, say in the summary that it was sampled and which
-   part. Do not present a sample as a sweep.
+4. Complete every sweep. If one is too broad for a single command, split it by directory or
+   by pattern and run all the parts. A sampled sweep is not an acceptable outcome.
 
 **Run the sweep as one command over the repository, before reading any file.** A sweep
 performed by following findings one surface at a time is not a sweep; it reaches exactly
@@ -318,6 +337,42 @@ file that never mentions them as an absent test for that behaviour. Rank by the 
 test size to module size as well as by absence: a large module with a small test is the
 same signal as a large module with none, and it hides better.
 
+#### 4c. Walk every item in the inventory, every round
+
+Sweeps find a defect repeated across surfaces; they never show that a requirement was
+built. So every round walks the whole inventory one item at a time — not a share of it,
+and not only the items earlier rounds did not reach:
+
+1. **Map first.** Grep the tests and the source for each item's id (`FR-031d`, `US3/AC5`)
+   and for the concepts it names. Items with no test citation, or whose tests never mention
+   the figure the item is about, are walked first — they are where unbuilt work hides.
+2. **Walk each item** to the code that owns it and the test that asserts it, and record a
+   verdict: `holds` (name the owning code and the asserting test), or a finding. A verdict
+   resting on a test means the test was opened and asserts the behaviour, not that a test
+   file exists.
+3. **Check reachability, not just existence.** A service function no route calls, a route
+   no client calls, and a hook no component calls are `missing` for any requirement that
+   says the operator can see or do the thing. Grep for the callers of every function an
+   item depends on.
+4. **Walk every edge case and acceptance scenario** as its own item, with the same verdicts.
+   An edge case is usually a branch nobody wrote.
+5. **Walk every write path for a figure in scope**, not only the one the plan names: each
+   must honour the same rules (role, provenance, observed-is-read-only, effective dating,
+   exact money). A rule enforced on one route and absent from its siblings is a finding per
+   sibling.
+6. **Walk every external entry point** that creates a record in scope — imports, webhooks,
+   bridges, storefront, scripts — against the same rules as the console path.
+
+The Step 6 count of items verified individually MUST equal the size of the inventory.
+
+#### 4d. Run the project's CI gates
+
+Read the CI configuration (`.woodpecker/`, `.github/workflows/`, and so on) and run every
+check it runs for the code in scope — lint, format, type checking, unit tests, build. A
+gate that fails is a CRITICAL finding, because nothing reaches production through a red
+pipeline, whatever the cause and whoever introduced it. "The errors were already there"
+is not a reason to leave them out.
+
 **Edge cases:**
 
 - **Little or no code yet**: treat the entire specified scope as `missing` remaining work
@@ -346,11 +401,12 @@ Before appending anything, output a compact, severity-graded summary (no file wr
 
 **Summary metrics:**
 
-- Requirements / acceptance criteria checked, split into **verified individually** and
-  **covered by a pattern sweep**
+- Inventory size, and items verified individually (Step 4c) — the two numbers MUST match;
+  if they do not, the round is not finished
 - Plan decisions checked
-- Artifacts loaded, and any `AVAILABLE_DOCS` entry **not** opened, named
-- Pattern sweeps run (Step 4a), each marked complete or sampled
+- Artifacts loaded — every `AVAILABLE_DOCS` entry MUST be opened
+- Pattern sweeps run (Step 4a), each complete
+- CI gates run (Step 4d), each with its result
 - Enumerated requirements walked item by item (Step 4a-ii), each with its unowned elements
 - Guardrail tests examined (Step 4a-i), split into **derived from the application** and
   **enumerated by hand**, the latter with the diff against the real population stated
@@ -368,10 +424,9 @@ closing, and a finding created by the previous round's own work is not evidence 
 spot. Do not let the count of findings stand in for that distinction.
 
 **Report these honestly; a number here is a claim about work done.** "103 requirements
-checked" means 103 were walked one by one against code. If 20 were walked and the rest
-were covered by greps for their concepts, say that — the split exists so the reader knows
-which parts of the verdict to trust, and an inflated count converts a sampling gap into
-false confidence, which is worse than an admitted one.
+checked" means 103 were walked one by one against code. Never inflate the count. If the
+walk is not complete, the answer is to finish it in this round, not to report a smaller
+number and move on.
 
 Alongside the findings, list what was **checked and ruled out**: a sweep hit that is
 legitimate, a component whose test lives in a sibling file, a skip guarded by a genuine
@@ -413,22 +468,14 @@ Append to the **end** of `tasks.md`, per the append contract:
 ### 8. Provide Next Actions (Handoff)
 
 - On `tasks_appended`: state how many tasks were appended under which phase, and recommend
-  running `/speckit-implement` to complete them. Do **not** promise that a follow-up
-  converge run will find fewer items. It finds fewer only where this run's sweeps were
-  complete; where they were sampled, the next run finds what this one did not reach, and
-  saying otherwise invites the reader to treat a sampled pass as a finished one. Name the
-  sampled areas instead, so the next run — or the reader — knows where to start.
-- Deferring a check to "after the fixes land" is only valid for a check that *depends* on
-  them. Re-reading a file you have just read finds nothing; sweeping for the pattern it
-  taught you is what pays, and that is available now. Do it in this run.
-- **A requirement covered only by a sweep is an unwalked requirement, and the debt is
-  cumulative.** A sweep answers "is this defect repeated here"; it never answers "was this
-  requirement built". Carrying a hundred requirements as swept-only round after round is how
-  a feature reports six clean-ish rounds with a requirement nobody ever read against code.
-  So on every round, walk a real share of the swept-only set individually — the ones whose
-  requirements enumerate behaviour the sweeps cannot see are first — and name in the handoff
-  which remain. Where the artifacts have been stable and the suite is green, prefer spending
-  the round on the unwalked set over re-sweeping patterns an earlier round closed.
+  running `/speckit-implement` to complete them. The appended list is the whole remaining
+  work as of this round; the handoff names no "remaining", "sampled" or "next time" areas,
+  because the round does not end while any exist.
+- The only thing a follow-up converge run should find is what the implement pass itself
+  introduced. Say so, and recommend running converge once more after implement to check
+  exactly that.
+- A check may wait for the fixes only if it *depends* on them — for example, verifying a
+  fix's own behaviour. Every other check runs in this round.
 - On `converged`: recommend proceeding to review / opening a PR. No further implement pass
   is needed for this feature's specified scope.
 
