@@ -97,8 +97,16 @@ the part this round happened to reach. Every round MUST:
 - run **every** pattern sweep to completion over the whole repository. A sweep too broad for
   one command is split into several commands, never sampled;
 - run every check the project's CI runs (Step 4d), and treat a failing one as a finding;
-- turn every gap it sees into a task, including one that looks "pre-existing", "out of this
-  round's focus" or "already known". Nothing observed is left to "the next round".
+- turn every gap it sees into either a task or a side finding (Step 4e), including one that
+  looks "pre-existing", "out of this round's focus" or "already known". Nothing observed is
+  left unrecorded.
+
+**FOCUS ON THE FEATURE**: Convergence measures *this feature* against its spec, plan and
+tasks. Only gaps that trace to the feature become Convergence tasks and keep the round from
+converging. A defect the sweeps or CI gates surface in code the feature neither built nor
+depends on is still reported — never silently dropped — but as a **side finding** (Step 4e)
+to be fixed on the side through the bug workflow, not as a task in this feature's
+`tasks.md`.
 
 A summary that names areas "left for later", "sampled", "remaining" or "to start from next
 time" is a failed round, not a partial success: go back and finish them before appending.
@@ -373,6 +381,33 @@ gate that fails is a CRITICAL finding, because nothing reaches production throug
 pipeline, whatever the cause and whoever introduced it. "The errors were already there"
 is not a reason to leave them out.
 
+A failing gate is a CRITICAL **task** when the failure lies in code the feature built or
+depends on. When it lies wholly outside the feature (Step 4e), it is a CRITICAL **side
+finding**: reported first among side findings, with a recommendation to fix it before
+merging, because the pipeline is red either way.
+
+#### 4e. Separate feature findings from side findings
+
+Before assigning severity, classify every finding's **scope**:
+
+- **`feature`** — it traces to a requirement, acceptance scenario, edge case, plan decision,
+  data-model entity or contract of this feature, or it sits in code the feature created or
+  changed, or in a surface that reads or writes a figure the feature owns. A constitution
+  violation in that code is a `feature` finding.
+- **`side`** — it was surfaced by a repository-wide sweep or a CI gate but lives in code the
+  feature neither built nor depends on, and no requirement of this feature names it (a
+  timezone bug in an unrelated audit log, RLS gaps on routers that hold no figure in scope,
+  role guards on surfaces outside the feature).
+
+Split mixed findings: when a sweep's hits fall partly inside the feature and partly outside,
+the inside hits become a `feature` finding and the rest a `side` finding. When in doubt, the
+finding is `feature` — misfiling a real feature gap as a side finding hides unfinished work.
+
+Side findings are **not** appended to `tasks.md` and do **not** prevent a `converged`
+outcome. Each one is recorded in Step 6 with a suggested action, and handed to the bug
+workflow (`/speckit-bug-assess`) in Step 8 so it is tracked under `.specify/bugs/<slug>/` and
+fixed separately.
+
 **Edge cases:**
 
 - **Little or no code yet**: treat the entire specified scope as `missing` remaining work
@@ -428,12 +463,28 @@ checked" means 103 were walked one by one against code. Never inflate the count.
 walk is not complete, the answer is to finish it in this round, not to report a smaller
 number and move on.
 
+Then list the side findings (Step 4e) in their own table, below the feature findings:
+
+## Side Findings (outside this feature — fix on the side)
+
+| ID | Severity | Area | Evidence | Suggested Action |
+|----|----------|------|----------|------------------|
+| S1 | CRITICAL | CI: integration stage | Example: aware datetime written to a naive column in an unrelated audit log | `/speckit-bug-assess slug=<slug>`, fix before merging (red pipeline) |
+
+For each side finding give a concrete suggested action: the `/speckit-bug-assess` call with a
+proposed slug, and whether it should land **before merging** this feature (it breaks a CI
+gate or a constitution MUST principle the feature's release depends on) or **any time**
+(independent hygiene). Count side findings separately in the metrics; never fold them into
+the feature's totals.
+
 Alongside the findings, list what was **checked and ruled out**: a sweep hit that is
 legitimate, a component whose test lives in a sibling file, a skip guarded by a genuine
 environment gate. A reader cannot tell a question you answered from one you never asked
 unless you say.
 
 ### 7. Append Convergence Tasks (or report converged)
+
+Only `feature` findings are actionable here; side findings never enter `tasks.md`.
 
 **If there are one or more actionable findings** (`tasks_appended` outcome):
 
@@ -478,6 +529,13 @@ Append to the **end** of `tasks.md`, per the append contract:
   fix's own behaviour. Every other check runs in this round.
 - On `converged`: recommend proceeding to review / opening a PR. No further implement pass
   is needed for this feature's specified scope.
+- In either case, when side findings exist: list each with its suggested
+  `/speckit-bug-assess slug=<slug> <one-paragraph report>` call, then `/speckit-bug-fix` and
+  `/speckit-bug-test` with the same slug. Flag those that must land before merging (a red CI
+  gate, a constitution MUST breach the release depends on). Offer to run the assessments;
+  run them only when the user agrees, since they write under `.specify/bugs/`. A side finding
+  already assessed in an earlier round (its `.specify/bugs/<slug>/` exists) is reported by
+  its slug and status, not raised again.
 
 ### 9. Check for extension hooks
 
