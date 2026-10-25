@@ -106,6 +106,7 @@ async def get_tenant_detail(
         name=tenant.name,
         slug=tenant.slug,
         tenant_type=tenant.tenant_type,
+        currency_code=tenant.currency_code,
         is_active=tenant.is_active,
         created_at=tenant.created_at,
         settings=tenant.settings,

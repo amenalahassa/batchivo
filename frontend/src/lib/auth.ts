@@ -2,6 +2,7 @@
  * Authentication utilities and types for JWT-based auth
  */
 import { config } from "./config";
+import { detailText } from "./apiError";
 
 // API base URL - supports runtime config (container env vars) with build-time fallback
 const API_BASE_URL = config.apiUrl;
@@ -68,7 +69,7 @@ export async function register(data: RegisterData): Promise<AuthTokens> {
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Registration failed')
+    throw new Error(detailText(error.detail) ?? 'Registration failed')
   }
 
   const tokens = await response.json()
@@ -91,7 +92,7 @@ export async function login(credentials: LoginCredentials, rememberMe = true): P
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Login failed')
+    throw new Error(detailText(error.detail) ?? 'Login failed')
   }
 
   const tokens = await response.json()

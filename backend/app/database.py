@@ -3,12 +3,13 @@
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import get_settings
+from app.core.rls import set_rls_context
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,32 @@ async_session_maker = async_sessionmaker(
     autocommit=False,
     autoflush=False,
 )
+
+
+@lru_cache(maxsize=1)
+def privileged_session_maker() -> async_sessionmaker[AsyncSession]:
+    """Sessions on the migration role, which row-level security does not apply to.
+
+    Under `app_user` a session with no tenant set sees no rows at all -- it is
+    not a bypass. Work that is cross-tenant by nature (the platform admin)
+    needs a connection RLS really does not filter, and this is the only one.
+    It has two users, pinned by a test: `get_platform_admin_db`, behind
+    `get_platform_admin`, and the power-reading task, which must find which
+    tenant a printer belongs to before it can scope anything. With RLS off both URLs are the same
+    connection and this is the ordinary session factory.
+    """
+    if settings.effective_database_url == settings.database_url:
+        return async_session_maker
+    privileged = create_async_engine(
+        settings.database_url, pool_pre_ping=True, pool_size=2, max_overflow=3
+    )
+    return async_sessionmaker(
+        privileged,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autocommit=False,
+        autoflush=False,
+    )
 
 
 class Base(DeclarativeBase):
@@ -77,23 +104,15 @@ async def scope_session_to_tenant(session: AsyncSession, tenant_id) -> None:
     tenant becomes known partway through the request, after the session is
     open, and the only place left to issue the statement is there.
 
-    `SET LOCAL` is transaction-scoped, so this applies from here until the
-    transaction ends and clears itself. Call it after the tenant is resolved
-    and **before the first write**, in the same transaction as those writes; a
-    rollback clears it, so a handler that continues after one calls this again
-    (as `filament_types.py` does).
+    The scope holds for the rest of the session's life, across commits and
+    rollbacks (`app.core.rls`). Call it after the tenant is resolved and
+    **before the first write**.
 
     A no-op when `rls_enabled` is off, which is the development default --
     application-level `tenant_id` filtering is the second belt there, exactly
     as in the dependencies.
     """
-    if not settings.rls_enabled:
-        return
-    await session.execute(
-        text("SET LOCAL app.current_tenant_id = :tenant_id"),
-        {"tenant_id": str(tenant_id)},
-    )
-    logger.debug(f"RLS context set on an open session: tenant_id={tenant_id}")
+    await set_rls_context(session, tenant_id=tenant_id)
 
 
 @asynccontextmanager

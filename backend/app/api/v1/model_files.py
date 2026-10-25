@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember
 from app.database import get_db
 from app.models.model_file import FileLocation, ModelFileType
 from app.schemas.model_file import (
@@ -64,6 +64,7 @@ def enrich_file_response(model_file, service: ModelFileService) -> ModelFileResp
 )
 async def upload_file(
     model_id: UUID,
+    _member: RequireMember,
     file: UploadFile = File(..., description="The file to upload"),
     file_type: SchemaFileType = Form(..., description="Type of file"),
     part_name: Optional[str] = Form(None, description="Part name for multi-part models"),
@@ -121,6 +122,7 @@ async def upload_file(
 async def link_local_file(
     model_id: UUID,
     data: ModelFileLocalCreate,
+    _admin: RequireAdmin,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
     db: AsyncSession = Depends(get_db),
@@ -165,6 +167,7 @@ async def link_local_file(
 )
 async def validate_local_path(
     data: LocalPathValidationRequest,
+    _admin: RequireAdmin,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
 ) -> LocalPathValidationResponse:
@@ -188,6 +191,7 @@ async def validate_local_path(
     ),
 )
 async def parse_3mf_file(
+    _member: RequireMember,
     file: UploadFile = File(..., description="The .3mf file to parse"),
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
@@ -379,6 +383,7 @@ async def update_file(
     model_id: UUID,
     file_id: UUID,
     update_data: ModelFileUpdate,
+    _member: RequireMember,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
     db: AsyncSession = Depends(get_db),
@@ -419,6 +424,7 @@ async def update_file(
 async def delete_file(
     model_id: UUID,
     file_id: UUID,
+    _admin: RequireAdmin,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
     db: AsyncSession = Depends(get_db),

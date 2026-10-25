@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, Index, Integer, JSON, String, Text, TypeDecorator
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeEngine
 
@@ -138,11 +138,13 @@ class WebhookSubscription(Base, UUIDMixin, TimestampMixin):
 
     # Tracking
     last_triggered_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
         comment="Last time webhook was triggered",
     )
 
     last_success_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
         comment="Last successful delivery",
     )
@@ -263,11 +265,13 @@ class WebhookDelivery(Base, UUIDMixin, TimestampMixin):
     )
 
     next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
         comment="Scheduled time for next retry (if failed)",
     )
 
     completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
         comment="When delivery was completed (success or final failure)",
     )

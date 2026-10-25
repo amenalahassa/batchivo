@@ -239,6 +239,53 @@ spec:
           storage: 10Gi
 ```
 
+## Row-level security
+
+PostgreSQL row-level security (RLS) is the database-level guard that keeps each tenant's rows
+away from every other tenant. The policies are created by the migrations, but the application
+only runs under them when `RLS_ENABLED` is `"true"` **and** `RLS_DATABASE_URL` points at the
+non-superuser `app_user` role. Both ship off: `RLS_ENABLED: "false"` in
+`infrastructure/k8s/backend/deployment.yaml`, and `rls_enabled = False` by default for local
+development, where the application's own `tenant_id` filters do the isolating.
+
+Turn it on in production in this order. Each step is safe on its own.
+
+1. **Deploy the code with RLS still off.** Push to `main` and let Woodpecker and ArgoCD roll it
+   out. The migrations up to `user_tenants_member_policy_v1` must be applied; with the flag off,
+   the RLS context calls are no-ops, so nothing changes yet.
+2. **Give `app_user` a password.** The role exists (created by migration `ecce200bf082`) but
+   has no usable password until you set one:
+
+   ```bash
+   kubectl exec -it postgres-0 -n batchivo -- psql -U batchivo -d batchivo \
+     -c "ALTER ROLE app_user WITH LOGIN PASSWORD '<strong-password>';"
+   ```
+
+3. **Create the `rls-credentials` secret.** The backend and Celery worker already reference it
+   (as optional):
+
+   ```bash
+   kubectl create secret generic rls-credentials -n batchivo \
+     --from-literal=RLS_DATABASE_URL='postgresql+psycopg://app_user:<strong-password>@postgres:5432/batchivo'
+   ```
+
+   Migrations keep using `DATABASE_URL` (the owner role), and so do the few deliberately
+   cross-tenant paths: the platform admin console and the printer power-reading task.
+4. **Review the commerce bridge.** `app/commerce_bridge.py` and its siblings run their own engine
+   and role checks; confirm they behave under RLS before the flag flips.
+5. **Flip the flag through git.** Change `RLS_ENABLED` to `"true"` in
+   `infrastructure/k8s/backend/deployment.yaml`, push to `main`, and let ArgoCD sync. Never
+   `kubectl apply` or `kubectl set env` by hand.
+6. **Verify.** Log in, open a few tenant pages and the storefront, and check
+   `kubectl logs -l app=backend -n batchivo` for permission errors. To roll back, set the flag to
+   `"false"` through git again; no data changes either way.
+
+:::warning
+If `RLS_ENABLED` is `"true"` but the `rls-credentials` secret is missing or empty, the backend
+**silently keeps using the owner connection**, which bypasses every policy. Confirm the secret
+exists (`kubectl get secret rls-credentials -n batchivo`) before step 5.
+:::
+
 ## Monitoring
 
 Batchivo exposes Prometheus metrics at `/metrics` when `ENABLE_METRICS=true`.

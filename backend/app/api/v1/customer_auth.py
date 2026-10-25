@@ -19,6 +19,7 @@ from app.auth.customer_dependencies import (
     verify_customer_token_type,
 )
 from app.auth.dependencies import ShopTenant
+from app.core.rls import set_rls_context
 from app.database import get_db
 from app.models.customer import Customer
 from app.models.tenant import Tenant
@@ -212,6 +213,9 @@ async def refresh_token(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
         )
+
+    # The refresh token's signature is verified: its tenant scopes the lookup.
+    await set_rls_context(db, tenant_id=token_data.tenant_id)
 
     # Verify customer exists and is active
     result = await db.execute(

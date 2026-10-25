@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, Package, ArrowRight } from 'lucide-react'
 import type { Money } from '@/types/pricing'
+import { symbolForCurrency } from '@/lib/money'
 
 const step4Schema = z.object({
   skip: z.boolean().default(false),
@@ -76,7 +77,7 @@ export function Step4FirstProduct({
     onSubmit({ ...data, skip: false })
   }
 
-  const currencySymbol = currency === 'GBP' ? '£' : currency === 'EUR' ? '€' : '$'
+  const currencySymbol = symbolForCurrency(currency ?? 'GBP')
 
   return (
     <div className="space-y-6">

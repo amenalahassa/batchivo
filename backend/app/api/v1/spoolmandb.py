@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentUser
+from app.auth.dependencies import CurrentUser, RequireAdmin
 from app.database import get_db
 from app.models.spoolmandb import SpoolmanDBFilament, SpoolmanDBManufacturer
 from app.schemas.spoolmandb import (
@@ -47,6 +47,7 @@ async def get_stats(
 @router.post("/sync", response_model=SpoolmanDBSyncResponse)
 async def sync_database(
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> SpoolmanDBSyncResponse:
     """

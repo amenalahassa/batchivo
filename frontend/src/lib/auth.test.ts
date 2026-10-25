@@ -256,6 +256,26 @@ describe('Authentication Functions', () => {
       await expect(login({ email: 'test@example.com', password: 'wrong' }))
         .rejects.toThrow('Invalid credentials')
     })
+
+    it('reads a validation error list instead of showing [object Object]', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: () =>
+          Promise.resolve({
+            detail: [{ loc: ['body', 'email'], msg: 'value is not a valid email address' }],
+          }),
+      })
+
+      await expect(login({ email: 'someone@example.test', password: 'x' })).rejects.toThrow(
+        'value is not a valid email address',
+      )
+    })
+
+    it('falls back to a plain message when the detail says nothing', async () => {
+      mockFetch.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({ detail: [] }) })
+
+      await expect(login({ email: 'a@b.co', password: 'x' })).rejects.toThrow('Login failed')
+    })
   })
 
   describe('logout', () => {

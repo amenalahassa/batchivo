@@ -430,7 +430,7 @@ A focused refinement of Batchivo's filament tracking system. The current system 
 ## Architectural Constraints
 - **Threading:** FastAPI async (asyncio single-threaded event loop). All DB operations are async via `sqlalchemy.ext.asyncio`. WebSocket connections handled in same event loop.
 - **Global state:** `engine` and `async_session_maker` are module-level singletons in `backend/app/database.py`. Settings cached with `@lru_cache` in `backend/app/config.py`.
-- **RLS toggle:** `settings.rls_enabled` (default `False` in dev, `True` in production). When disabled, tenant isolation relies on application-level `tenant_id` filtering. `get_tenant_db` dependency is required (not `get_db`) for RLS to function.
+- **RLS toggle:** `settings.rls_enabled` (default `False`; also `"false"` in the production manifest until it is switched on — see `docs-site/docs/self-hosting/kubernetes.md#row-level-security`). When disabled, tenant isolation relies on application-level `tenant_id` filtering. `get_tenant_db` dependency is required (not `get_db`) for RLS to function.
 - **Module gating (frontend):** `ModuleGuard` calls `useRouteAccess` hook (`frontend/src/hooks/useModules.ts`), which queries `/api/v1/modules` to check if the current tenant has the feature enabled.
 - **Circular imports:** Module system defers router imports inside `register_routes` to avoid circular import at startup (see `backend/app/modules/base.py:54`).
 ## Anti-Patterns

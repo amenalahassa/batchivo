@@ -37,8 +37,17 @@ def make_config(printer_id):
 
 
 def make_material(material_code):
-    """Build a minimal material-like namespace."""
-    return SimpleNamespace(material_code=material_code)
+    """Build a bill-of-materials line shaped like the real one.
+
+    The code lives on the material type, reached through the line's spool and
+    the spool's filament type. An earlier version of this helper put
+    `material_code` on the line itself, an attribute `ModelMaterial` does not
+    have, so these tests passed while auto-assign raised AttributeError
+    (bug print-queue-material-code).
+    """
+    material_type = SimpleNamespace(code=material_code)
+    spool = SimpleNamespace(filament_type=SimpleNamespace(material_type=material_type))
+    return SimpleNamespace(spool=spool)
 
 
 class TestIsPrinterCompatible:
@@ -142,3 +151,25 @@ class TestIsPrinterCompatible:
         )
         result = await service._is_printer_compatible(printer, model)
         assert result is True
+
+
+class TestMaterialCodeResolution:
+    @pytest.mark.asyncio
+    async def test_a_line_with_no_spool_does_not_block_assignment(self, service: PrintQueueService):
+        printer = make_printer(capabilities={"materials": ["PLA"]})
+        model = make_model(materials=[SimpleNamespace(spool=None)])
+        assert await service._is_printer_compatible(printer, model) is True
+
+    @pytest.mark.asyncio
+    async def test_codes_compare_without_regard_to_case(self, service: PrintQueueService):
+        printer = make_printer(capabilities={"materials": ["pla"]})
+        model = make_model(materials=[make_material("PLA")])
+        assert await service._is_printer_compatible(printer, model) is True
+
+    @pytest.mark.asyncio
+    async def test_the_real_model_has_no_material_code(self) -> None:
+        """Pin the shape the helper above mirrors."""
+        from app.models.model_material import ModelMaterial
+
+        assert not hasattr(ModelMaterial, "material_code")
+        assert hasattr(ModelMaterial, "spool")

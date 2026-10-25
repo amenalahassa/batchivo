@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, TenantDB
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember, TenantDB
 from app.config import get_settings
 
 settings = get_settings()
@@ -104,6 +104,7 @@ async def create_filament_type(
     data: FilamentTypeCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> FilamentTypeResponse:
     """
@@ -261,6 +262,7 @@ async def bulk_create(
     data: BulkCreateRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> BulkCreateResponse:
     """Create multiple identical spools, auto-generating sequential FIL-NNN IDs."""
@@ -328,6 +330,7 @@ async def batch_create(
     data: BatchCreateRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> BatchCreateResponse:
     """Create one spool per entry, supporting multiple color variants in one call."""
@@ -454,6 +457,7 @@ async def update_filament_type(
     data: FilamentTypeUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> FilamentTypeResponse:
     """
@@ -500,6 +504,7 @@ async def delete_filament_type(
     filament_type_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
     db: TenantDB,
 ) -> None:
     """

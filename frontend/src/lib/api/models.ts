@@ -8,6 +8,7 @@
 import { apiClient } from '../api'
 import { config } from '../config'
 import { getAuthTokens } from '../auth'
+import { detailText } from '../apiError'
 
 /** Bearer header for the raw `fetch()` calls below (multipart uploads the
  * shared axios client doesn't carry), reading the same token store the
@@ -37,19 +38,8 @@ async function extractErrorMessage(response: Response, fallback: string): Promis
     return `${fallback} (server returned ${response.status} ${response.statusText || ''}`.trim() + ')'
   }
 
-  const detail = (body as { detail?: unknown } | null)?.detail
-  if (typeof detail === 'string' && detail.trim()) {
-    return detail
-  }
-  if (Array.isArray(detail) && detail.length > 0) {
-    const messages = detail
-      .map((item) => (item && typeof item === 'object' && 'msg' in item ? String(item.msg) : null))
-      .filter((msg): msg is string => !!msg)
-    if (messages.length > 0) {
-      return messages.join('; ')
-    }
-  }
-  return `${fallback} (server returned ${response.status})`
+  const text = detailText((body as { detail?: unknown } | null)?.detail)
+  return text ?? `${fallback} (server returned ${response.status})`
 }
 
 // ==================== Types ====================

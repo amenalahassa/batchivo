@@ -14,7 +14,7 @@ will be skipped when running with SQLite.
 """
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_tenant_db
 from app.auth.middleware import TenantContextMiddleware
+from app.core.rls import rls_context, set_rls_context
 from app.database import get_db
 from app.main import app
 from app.models.filament_type import FilamentType
@@ -321,84 +322,34 @@ class TestTenantContextMiddleware:
 
 
 class TestGetTenantDbDependency:
-    """Tests for get_tenant_db dependency RLS context setting."""
+    """get_tenant_db is the request session, scoped by get_current_tenant.
+
+    Bug rls-unscoped-routes: it no longer opens a second session from a raw
+    header. The tenant it acts for is the one get_current_tenant validated, and
+    the scope lives on the session (app.core.rls), not in one transaction.
+    """
 
     @pytest.mark.asyncio
-    async def test_sets_session_variable_when_rls_enabled(
+    async def test_returns_the_session_it_is_given(
         self, db_session: AsyncSession, tenant_a: Tenant
     ):
-        """Verify SET LOCAL is executed when RLS is enabled."""
-
-        # Create mock request with tenant_id
-        request = MagicMock(spec=Request)
-        request.state = MagicMock()
-        request.state.tenant_id = tenant_a.id
-
-        # Mock the session maker to use our test session
-        mock_session_maker = MagicMock()
-        mock_session_maker.return_value.__aenter__ = AsyncMock(return_value=db_session)
-        mock_session_maker.return_value.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("app.auth.dependencies.settings") as mock_settings,
-            patch("app.auth.dependencies.async_session_maker", mock_session_maker),
-        ):
-            mock_settings.rls_enabled = True
-
-            # The dependency will try to execute SET LOCAL which SQLite doesn't support
-            # So we just verify the flow works without the actual SQL
-            # Full RLS testing requires PostgreSQL
-            try:
-                async for session in get_tenant_db(request):
-                    assert session is not None
-            except Exception:
-                # SQLite doesn't support SET LOCAL, which is expected
-                pass
+        assert await get_tenant_db(tenant=tenant_a, db=db_session) is db_session
 
     @pytest.mark.asyncio
-    async def test_skips_session_variable_when_rls_disabled(
+    async def test_records_the_tenant_on_the_session_when_rls_enabled(
         self, db_session: AsyncSession, tenant_a: Tenant
     ):
-        """Verify SET LOCAL is NOT executed when RLS is disabled."""
-
-        request = MagicMock(spec=Request)
-        request.state = MagicMock()
-        request.state.tenant_id = tenant_a.id
-
-        mock_session_maker = MagicMock()
-        mock_session_maker.return_value.__aenter__ = AsyncMock(return_value=db_session)
-        mock_session_maker.return_value.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("app.auth.dependencies.settings") as mock_settings,
-            patch("app.auth.dependencies.async_session_maker", mock_session_maker),
-        ):
-            mock_settings.rls_enabled = False
-
-            async for session in get_tenant_db(request):
-                # Should work without setting session variable
-                assert session is not None
+        with patch("app.core.rls._enabled", return_value=True):
+            await set_rls_context(db_session, tenant_id=tenant_a.id)
+        assert rls_context(db_session)["app.current_tenant_id"] == str(tenant_a.id)
 
     @pytest.mark.asyncio
-    async def test_handles_missing_tenant_id_gracefully(self, db_session: AsyncSession):
-        """Verify dependency works when tenant_id is not set."""
-        request = MagicMock(spec=Request)
-        request.state = MagicMock()
-        request.state.tenant_id = None  # No tenant context
-
-        mock_session_maker = MagicMock()
-        mock_session_maker.return_value.__aenter__ = AsyncMock(return_value=db_session)
-        mock_session_maker.return_value.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("app.auth.dependencies.settings") as mock_settings,
-            patch("app.auth.dependencies.async_session_maker", mock_session_maker),
-        ):
-            mock_settings.rls_enabled = True
-
-            async for session in get_tenant_db(request):
-                # Should work without tenant context (for public endpoints)
-                assert session is not None
+    async def test_records_nothing_when_rls_disabled(
+        self, db_session: AsyncSession, tenant_a: Tenant
+    ):
+        with patch("app.core.rls._enabled", return_value=False):
+            await set_rls_context(db_session, tenant_id=tenant_a.id)
+        assert rls_context(db_session) == {}
 
 
 # =============================================================================

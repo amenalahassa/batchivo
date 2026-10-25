@@ -7,7 +7,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_tenant, get_tenant_db, CurrentUser, RequireAdmin
+from app.auth.dependencies import (
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    get_current_tenant,
+    get_tenant_db,
+)
 from app.core import clock
 from app.models.print_job import JobPriority, JobStatus
 from app.models.tenant import Tenant
@@ -51,6 +57,7 @@ def get_queue_service(
 @router.post("", response_model=PrintJobResponse, status_code=status.HTTP_201_CREATED)
 async def create_print_job(
     data: PrintJobCreate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -158,6 +165,7 @@ async def get_print_job(
 async def update_print_job(
     job_id: UUID,
     data: PrintJobUpdate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -200,6 +208,7 @@ async def delete_print_job(
 async def assign_job_to_printer(
     job_id: UUID,
     data: PrintJobAssign,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -218,6 +227,7 @@ async def assign_job_to_printer(
 
 @router.post("/auto-assign", response_model=AutoAssignResult)
 async def auto_assign_jobs(
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> AutoAssignResult:
     """
@@ -240,6 +250,7 @@ async def auto_assign_jobs(
 @router.post("/{job_id}/cancel", response_model=PrintJobResponse)
 async def cancel_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -259,6 +270,7 @@ async def cancel_print_job(
 @router.post("/{job_id}/start", response_model=PrintJobResponse)
 async def start_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -278,6 +290,7 @@ async def start_print_job(
 @router.post("/{job_id}/complete", response_model=PrintJobResponse)
 async def complete_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -298,6 +311,7 @@ async def complete_print_job(
 async def fail_print_job(
     job_id: UUID,
     data: PrintJobStatusUpdate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """

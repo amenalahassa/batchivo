@@ -47,7 +47,7 @@ PRICING_MODULES: frozenset[str] = frozenset(
 )
 
 #: Routers that hold no pricing figure. Their role guards are tracked by the
-#: bug `.specify/bugs/viewer-write-guards`, not by this feature. `settings`
+#: `tests/unit/test_write_route_role_guards.py`, not by this feature. `settings`
 #: is here although `PUT /settings/tenant` sets the books currency: that one
 #: route is guarded and tested in `tests/api/test_books_currency.py`, and the
 #: router's other fifteen are shop and branding settings.
@@ -98,8 +98,6 @@ GUARDS = frozenset({"check_member", "check_admin", "require_role", "get_platform
 
 #: Pricing-router writes that deliberately take no role guard, each with why.
 #: Keyed by (module, method, route path as declared on the router).
-_IMAGES = "product photographs, not a pricing figure; tracked by .specify/bugs/viewer-write-guards"
-
 NOT_ROLE_GUARDED: dict[tuple[str, str, str], str] = {
     ("discounts", "POST", "/validate"): "a read: checks a code against an order, writes nothing",
     ("products", "POST", "/{product_id}/pricing/{channel_id}/solve"): (
@@ -109,12 +107,6 @@ NOT_ROLE_GUARDED: dict[tuple[str, str, str], str] = {
         "guarded inline by `_require_write_role`: admin for a policy field, member "
         "otherwise, which one dependency cannot express"
     ),
-    ("products", "POST", "/{product_id}/images"): _IMAGES,
-    ("products", "POST", "/{product_id}/images/import-url"): _IMAGES,
-    ("products", "PATCH", "/{product_id}/images/{image_id}"): _IMAGES,
-    ("products", "DELETE", "/{product_id}/images/{image_id}"): _IMAGES,
-    ("products", "POST", "/{product_id}/images/{image_id}/rotate"): _IMAGES,
-    ("products", "POST", "/{product_id}/images/{image_id}/set-primary"): _IMAGES,
 }
 
 

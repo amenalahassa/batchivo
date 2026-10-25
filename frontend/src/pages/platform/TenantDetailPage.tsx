@@ -7,7 +7,7 @@
 
 import { useParams, Link } from '@tanstack/react-router'
 import { PlatformLayout } from '@/components/platform/PlatformLayout'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, symbolForCurrency } from '@/lib/money'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -239,7 +239,7 @@ export function TenantDetailPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {formatMoney(tenant.total_revenue, '£')}
+                {formatMoney(tenant.total_revenue, symbolForCurrency(tenant.currency_code))}
               </div>
             </CardContent>
           </Card>

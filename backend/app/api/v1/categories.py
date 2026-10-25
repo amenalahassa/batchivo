@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember
 from app.database import get_db
 from app.models.category import Category, product_categories
 from app.models.product import Product
@@ -126,6 +126,7 @@ async def create_category(
     category_data: CategoryCreate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new category."""
@@ -174,6 +175,7 @@ async def update_category(
     category_data: CategoryUpdate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Update a category."""
@@ -236,6 +238,7 @@ async def delete_category(
     category_id: UUID,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
     hard_delete: bool = Query(False, description="Permanently delete (default: soft delete)"),
 ):
@@ -308,6 +311,7 @@ async def add_product_to_category(
     product_id: UUID,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Add a product to a category."""
@@ -357,6 +361,7 @@ async def remove_product_from_category(
     product_id: UUID,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a product from a category."""

@@ -193,6 +193,7 @@ async def sweep_tenant(
 
 async def _sweep_all(tenant_id: Optional[UUID] = None) -> int:
     """Sweep one tenant, or every active one. Returns the alert count."""
+    from app.core.rls import set_rls_context
     from app.database import async_session_maker
     from app.models.tenant import Tenant
 
@@ -205,6 +206,8 @@ async def _sweep_all(tenant_id: Optional[UUID] = None) -> int:
             query = query.where(Tenant.is_active.is_(True))
 
         for tenant in (await db.execute(query)).scalars().all():
+            # tenants is not a tenant table; everything read after this is.
+            await set_rls_context(db, tenant_id=tenant.id)
             try:
                 total += len(await sweep_tenant(db, tenant))
             except Exception:  # pragma: no cover - one tenant must not stop the rest

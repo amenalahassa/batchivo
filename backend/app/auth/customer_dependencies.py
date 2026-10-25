@@ -14,10 +14,11 @@ import jwt
 from fastapi import Depends, Header, HTTPException, status
 from jwt.exceptions import PyJWTError
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.rls import set_rls_context
 from app.database import async_session_maker, get_db
 from app.models.customer import Customer
 from app.models.tenant import Tenant
@@ -147,6 +148,10 @@ async def get_current_customer(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # The token's signature is verified, so its tenant can scope the lookup:
+    # customers is a tenant table under RLS.
+    await set_rls_context(db, tenant_id=token_data.tenant_id)
+
     # Look up customer
     result = await db.execute(
         select(Customer).where(
@@ -204,6 +209,7 @@ async def get_optional_customer(
     if not token_data:
         return None
 
+    await set_rls_context(db, tenant_id=token_data.tenant_id)
     result = await db.execute(
         select(Customer).where(
             Customer.id == token_data.customer_id,
@@ -240,13 +246,7 @@ async def get_customer_db(
     """
     async with async_session_maker() as session:
         try:
-            if settings.rls_enabled:
-                # SET LOCAL is transaction-scoped and clears itself at the end.
-                await session.execute(
-                    text("SET LOCAL app.current_tenant_id = :tenant_id"),
-                    {"tenant_id": str(customer.tenant_id)},
-                )
-                logger.debug(f"Customer RLS context set: tenant_id={customer.tenant_id}")
+            await set_rls_context(session, tenant_id=customer.tenant_id)
 
             yield session
             await session.commit()

@@ -195,19 +195,27 @@ def _parse(readings: list[list[Any]]) -> list[PowerReading]:
 async def _ingest(printer_id: uuid.UUID, readings: list[list[Any]]) -> dict[str, Any]:
     from sqlalchemy import select
 
-    from app.database import async_session_maker
+    from app.core.rls import set_rls_context
+    from app.database import async_session_maker, privileged_session_maker
     from app.models.printer import Printer
     from app.models.tenant import Tenant
 
     parsed = _parse(readings)
 
-    async with async_session_maker() as db:
-        printer = (
-            await db.execute(select(Printer).where(Printer.id == printer_id))
+    # A reading names a printer, not a tenant. Finding the printer's tenant is
+    # the one cross-tenant step, done on the privileged connection; everything
+    # after it is scoped to that tenant.
+    async with privileged_session_maker()() as lookup:
+        owner = (
+            await lookup.execute(select(Printer.tenant_id).where(Printer.id == printer_id))
         ).scalar_one_or_none()
-        if printer is None:
-            logger.warning("No printer %s to attribute power readings to", printer_id)
-            return {"applied": False, "reason": "printer not found"}
+    if owner is None:
+        logger.warning("No printer %s to attribute power readings to", printer_id)
+        return {"applied": False, "reason": "printer not found"}
+
+    async with async_session_maker() as db:
+        await set_rls_context(db, tenant_id=owner)
+        printer = (await db.execute(select(Printer).where(Printer.id == printer_id))).scalar_one()
 
         tenant = (
             await db.execute(select(Tenant).where(Tenant.id == printer.tenant_id))

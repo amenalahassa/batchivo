@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -22,6 +22,9 @@ import {
   updateOnboardingStep4,
   type OnboardingStatusResponse,
 } from '@/lib/api/onboarding'
+import { apiErrorDetail } from '@/lib/apiError'
+import { symbolForCurrency } from '@/lib/money'
+import type { TenantType } from '@/types/modules'
 
 export function Onboarding() {
   const navigate = useNavigate()
@@ -60,7 +63,7 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -74,12 +77,17 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
   const step3Mutation = useMutation({
-    mutationFn: updateOnboardingStep3,
+    // The symbol travels with the code, as on the settings screen.
+    mutationFn: (data: Parameters<typeof updateOnboardingStep3>[0]) =>
+      updateOnboardingStep3({
+        ...data,
+        currency_symbol: data.currency ? symbolForCurrency(data.currency) : undefined,
+      }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['onboarding-status'] })
       if (data.next_step) {
@@ -88,7 +96,7 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -103,7 +111,7 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -182,7 +190,7 @@ export function Onboarding() {
 
             {currentStep === 2 && (
               <Step2CraftType
-                initialData={stepData.step_2 as { tenant_type?: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING' } | undefined}
+                initialData={stepData.step_2 as { tenant_type?: TenantType } | undefined}
                 onSubmit={step2Mutation.mutate}
                 onBack={goBack}
                 isLoading={isLoading}
@@ -212,7 +220,10 @@ export function Onboarding() {
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground mt-6">
-          Your progress is saved automatically. You can come back to finish setup anytime.
+          Your progress is saved automatically. You can come back to finish setup anytime.{' '}
+          <Link to="/dashboard" className="underline">
+            Finish later
+          </Link>
         </p>
       </div>
     </div>

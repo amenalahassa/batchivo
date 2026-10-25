@@ -5,12 +5,13 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Annotated, Optional
 
-from fastapi import Depends, Header, HTTPException, Request, status
-from sqlalchemy import select, text
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.database import async_session_maker, get_db
+from app.core.rls import set_rls_context
+from app.database import async_session_maker, get_db, privileged_session_maker
 from app.models.tenant import Tenant
 from app.models.user import User, UserTenant
 
@@ -67,6 +68,9 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # The user is now verified: let RLS admit their own memberships, which
+    # `get_current_tenant` reads before any tenant is chosen.
+    await set_rls_context(db, user_id=user.id)
     return user
 
 
@@ -104,6 +108,8 @@ async def get_current_tenant(
         )
         db.add(tenant)
         await db.flush()  # Flush to get tenant.id before using it
+        # The membership and policy rows below are tenant rows: scope first.
+        await set_rls_context(db, tenant_id=tenant.id)
 
         # Create owner relationship
         user_tenant = UserTenant(
@@ -155,11 +161,16 @@ async def get_current_tenant(
                 detail="Tenant not found or inactive",
             )
 
+        await set_rls_context(db, tenant_id=tenant.id)
         return tenant
 
     # Return user's first tenant (default)
     result = await db.execute(select(Tenant).where(Tenant.id == user_tenants[0].tenant_id))
-    return result.scalar_one()
+    tenant = result.scalar_one()
+    # Membership is established: scope the request's session to this tenant.
+    # Every dependency and handler on `get_db` in this request shares it.
+    await set_rls_context(db, tenant_id=tenant.id)
+    return tenant
 
 
 async def require_role(
@@ -292,53 +303,33 @@ async def get_platform_admin(
 PlatformAdmin = Annotated[User, Depends(get_platform_admin)]
 
 
-async def get_tenant_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
-    """
-    Get a database session with RLS tenant context set.
+async def get_tenant_db(
+    tenant: Annotated[Tenant, Depends(get_current_tenant)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AsyncSession:
+    """The request's database session, scoped by row-level security to its tenant.
 
-    This dependency should be used instead of get_db for routes that need
-    tenant isolation via Row-Level Security. It:
-    1. Gets tenant_id from request.state (set by TenantContextMiddleware)
-    2. Creates a new database session
-    3. Sets the PostgreSQL session variable app.current_tenant_id
-    4. Yields the session for use by the route handler
+    The tenant is the one `get_current_tenant` resolved and **validated** --
+    membership checked, `X-Tenant-ID` honoured only for a tenant the user
+    belongs to -- and that dependency has already scoped this same session
+    (`app.core.rls`). It used to open a second session scoped from
+    `request.state.tenant_id`, which `TenantContextMiddleware` copies from the
+    `X-Tenant-ID` header unvalidated: under RLS, a route taking `TenantDB`
+    without `CurrentTenant` would have served the header's tenant to anyone
+    (bug rls-unscoped-routes). One request now has one session, so a tenant
+    or user loaded by a dependency is attached to the session the handler
+    writes through.
 
     Usage:
         @router.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_tenant_db)):
+        async def get_items(db: TenantDB):
             # All queries automatically filtered by tenant_id
             result = await db.execute(select(Item))
             return result.scalars().all()
-
-    Note: If RLS is disabled (settings.rls_enabled=False) or tenant_id is not
-    available, the session is returned without setting the variable. This
-    allows gradual migration and public endpoints to work.
     """
-    async with async_session_maker() as session:
-        try:
-            # Get tenant_id from request state (set by TenantContextMiddleware)
-            tenant_id = getattr(request.state, "tenant_id", None)
-
-            # Set RLS context if enabled and tenant_id is available
-            if settings.rls_enabled and tenant_id:
-                # SET LOCAL ensures the variable is transaction-scoped
-                # It automatically clears when the transaction ends
-                await session.execute(
-                    text("SET LOCAL app.current_tenant_id = :tenant_id"),
-                    {"tenant_id": str(tenant_id)},
-                )
-                logger.debug(f"RLS context set: tenant_id={tenant_id}")
-
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+    return db
 
 
-# Type alias for RLS-enabled database session
 TenantDB = Annotated[AsyncSession, Depends(get_tenant_db)]
 
 
@@ -361,10 +352,10 @@ async def get_platform_admin_db(
     Note: The _admin parameter ensures platform admin access is validated
     before granting cross-tenant database access.
     """
-    async with async_session_maker() as session:
+    # Not setting a tenant is not a bypass under `app_user` -- it shows no rows.
+    # The privileged connection is the one RLS really does not filter.
+    async with privileged_session_maker()() as session:
         try:
-            # DO NOT set app.current_tenant_id - bypass RLS
-            # This allows cross-tenant queries for platform admins
             logger.debug("Platform admin DB session created (RLS bypassed)")
             yield session
             await session.commit()
@@ -411,6 +402,9 @@ async def get_shop_tenant(
     tenant = await resolve_tenant_by_custom_domain(db, hostname)
     if tenant:
         logger.info(f"Resolved shop tenant via custom domain: {tenant.slug}")
+        # Resolving is the cross-tenant step; what follows on this request's
+        # session belongs to this shop alone.
+        await set_rls_context(db, tenant_id=tenant.id)
         return tenant
 
     # Try subdomain extraction
@@ -419,6 +413,7 @@ async def get_shop_tenant(
         tenant = await resolve_tenant_by_slug(db, subdomain)
         if tenant:
             logger.info(f"Resolved shop tenant via subdomain: {tenant.slug}")
+            await set_rls_context(db, tenant_id=tenant.id)
             return tenant
 
     # No tenant found
@@ -458,13 +453,7 @@ async def get_shop_db(
     """
     async with async_session_maker() as session:
         try:
-            if settings.rls_enabled:
-                # SET LOCAL is transaction-scoped and clears itself at the end.
-                await session.execute(
-                    text("SET LOCAL app.current_tenant_id = :tenant_id"),
-                    {"tenant_id": str(shop_tenant.id)},
-                )
-                logger.debug(f"Shop RLS context set: tenant_id={shop_tenant.id}")
+            await set_rls_context(session, tenant_id=shop_tenant.id)
 
             yield session
             await session.commit()
@@ -497,6 +486,8 @@ async def get_shop_sales_channel(
     """
     from app.models.sales_channel import SalesChannel
 
+    # sales_channels is a tenant table: scope before reading it.
+    await set_rls_context(db, tenant_id=shop_tenant.id)
     # Find the tenant's online shop sales channel
     result = await db.execute(
         select(SalesChannel).where(

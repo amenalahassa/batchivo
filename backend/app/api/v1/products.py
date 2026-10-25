@@ -2400,6 +2400,7 @@ async def upload_product_image(
     product_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
     file: UploadFile = File(..., description="Image file (JPEG, PNG, or WebP)"),
     alt_text: str = Query("", max_length=255, description="Alt text for accessibility"),
@@ -2489,6 +2490,7 @@ async def import_product_image_from_url(
     body: ImportImageFromUrlRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
     image_storage: ImageStorage = Depends(get_image_storage),
 ) -> ProductImageResponse:
@@ -2580,6 +2582,7 @@ async def update_product_image(
     image_data: ProductImageUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductImageResponse:
     """
@@ -2617,6 +2620,7 @@ async def set_primary_image(
     image_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
 ) -> ProductImageResponse:
     """
@@ -2661,6 +2665,7 @@ async def delete_product_image(
     image_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: TenantDB,
     image_storage: ImageStorage = Depends(get_image_storage),
 ):
@@ -2716,6 +2721,7 @@ async def delete_product_image(
 async def rotate_product_image(
     product_id: UUID,
     image_id: UUID,
+    _member: RequireMember,
     db: TenantDB,
     degrees: int = Query(default=90, description="Rotation degrees (90, 180, or 270 clockwise)"),
     user: CurrentUser = None,

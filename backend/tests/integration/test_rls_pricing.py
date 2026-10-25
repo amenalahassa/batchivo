@@ -367,8 +367,8 @@ def test_the_shop_db_dependency_sets_the_rls_variable() -> None:
     from app.auth.dependencies import get_shop_db as dependency
 
     source = inspect.getsource(dependency)
-    assert "SET LOCAL app.current_tenant_id" in source, (
-        "get_shop_db must issue SET LOCAL app.current_tenant_id, or it is just "
+    assert "set_rls_context(session, tenant_id=" in source, (
+        "get_shop_db must scope its session with set_rls_context, or it is just "
         "another un-scoped session with a different name"
     )
     assert "shop_tenant.id" in source, (
@@ -670,13 +670,24 @@ def test_the_scoping_helper_issues_the_statement_rls_reads() -> None:
     from app.database import scope_session_to_tenant
 
     source = inspect.getsource(scope_session_to_tenant)
-    assert "SET LOCAL app.current_tenant_id" in source, (
-        "scope_session_to_tenant must issue SET LOCAL app.current_tenant_id, "
+    assert "set_rls_context(session, tenant_id=tenant_id)" in source, (
+        "scope_session_to_tenant must scope through set_rls_context, "
         "or it is a no-op with a reassuring name"
     )
-    assert "settings.rls_enabled" in source, (
-        "the helper must respect the RLS toggle, as both session dependencies do"
-    )
+
+
+def test_the_rls_context_sets_the_variables_the_policies_read() -> None:
+    """One mechanism sets both settings, respects the toggle, and survives commits."""
+    import inspect
+
+    import app.core.rls as rls
+
+    source = inspect.getsource(rls)
+    assert rls.TENANT_SETTING == "app.current_tenant_id"
+    assert rls.USER_SETTING == "app.current_user_id"
+    assert "set_config(:name, :value, true)" in source, "the setting must be transaction-local"
+    assert "rls_enabled" in source, "the context must respect the RLS toggle"
+    assert '"after_begin"' in source, "the context must be re-applied to every transaction"
 
 
 # ---------------------------------------------------------------------------
@@ -698,12 +709,12 @@ def test_the_scoping_helper_issues_the_statement_rls_reads() -> None:
 # * every router it names is imported and walked, because FastAPI mounts
 #   routers lazily and `app.routes` holds internal placeholders rather than
 #   the `APIRoute` objects whose dependency graph is the thing under test;
-# * each route must take one of the four scoped sessions, or be named below.
+# * each route must resolve a scoped session, or be named below.
 #
-# `NOT_YET_SCOPED` is the consequence: the 120 routes still on `get_db` that
-# are not deliberate exceptions, listed by module. It is asserted as an exact
-# set, so it can only shrink -- a route moved onto a scoped session and left
-# on the list fails here, and so does a new route added on `get_db`.
+# There used to be a `NOT_YET_SCOPED` list of 120 routes on `get_db`. Once the
+# request session itself became scoped by the dependency that validates the
+# tenant (bug rls-unscoped-routes), 96 were scoped and the rest touch no tenant
+# table; those are named below with their reasons, and the list is gone.
 
 MAIN_PY = Path(__file__).resolve().parents[2] / "app" / "main.py"
 
@@ -800,15 +811,41 @@ def _population() -> dict[tuple[str, str], tuple[APIRoute, str]]:
     return found
 
 
-def _scoped_sessions() -> set:
-    """The four dependencies that put a tenant on the session."""
-    from app.auth.customer_dependencies import get_customer_db
-    from app.auth.dependencies import get_platform_admin_db, get_shop_db, get_tenant_db
+def _request_session_scopers() -> set:
+    """Dependencies that scope the request's own `get_db` session.
 
-    # `get_platform_admin_db` is scoped in the other direction -- it serves a
-    # platform admin across tenants on purpose -- but it is a deliberate,
-    # role-gated session rather than a handler that forgot one, so it counts.
-    return {get_tenant_db, get_shop_db, get_customer_db, get_platform_admin_db}
+    FastAPI hands every dependency in one request the same `get_db` session.
+    Each of these resolves a tenant it has verified -- membership for
+    `get_current_tenant`, the hostname for `get_shop_tenant`, a signed customer
+    token for `get_current_customer` -- and scopes that shared session to it
+    (`app.core.rls`), so a handler on `get_db` that resolves one is under RLS.
+    `get_tenant_db` is that same session, returned once `get_current_tenant` has
+    scoped it (bug rls-unscoped-routes).
+    """
+    from app.auth.customer_dependencies import get_current_customer
+    from app.auth.dependencies import get_current_tenant, get_shop_tenant, get_tenant_db
+
+    return {get_current_tenant, get_shop_tenant, get_current_customer, get_tenant_db}
+
+
+def _own_session_scopers() -> set:
+    """Dependencies that open a session of their own and scope it.
+
+    A handler that takes one of these must not also take `get_db`: its own
+    queries would run on a second session the scoping never touched.
+    `get_platform_admin_db` is scoped in the other direction -- a privileged
+    connection serving a platform admin across tenants on purpose -- but it is
+    a deliberate, role-gated session rather than a handler that forgot one.
+    """
+    from app.auth.customer_dependencies import get_customer_db
+    from app.auth.dependencies import get_platform_admin_db, get_shop_db
+
+    return {get_shop_db, get_customer_db, get_platform_admin_db}
+
+
+def _scoped_sessions() -> set:
+    """Every dependency whose presence puts the handler's session under RLS."""
+    return _request_session_scopers() | _own_session_scopers()
 
 
 #: Routers with no tenant to scope to, by design.
@@ -823,6 +860,11 @@ UNSCOPED_ENTRY_POINT_MODULES: frozenset[str] = frozenset(
 )
 
 #: Individual routes with no tenant at the moment the session opens.
+_STATIC = "a fixed list from code, not from any table: there is no tenant row to scope"
+_GLOBAL = "reads shared reference data (SpoolmanDB, material types) that has no tenant_id"
+_CART = "the cart lives in Redis, keyed by session; no table is read"
+_SHIPPING = "quotes from the carrier's rules in code; no table is read"
+
 UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
     ("POST", f"{API}/payments/webhooks/square"): (
         "Square sends neither a token nor X-Shop-Hostname; the tenant is only "
@@ -840,6 +882,34 @@ UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
         "served straight to a browser from an <img src>, which cannot send "
         "the X-Shop-Hostname header a scoped session resolves its tenant from"
     ),
+    # Routes that touch no tenant table at all (bug rls-unscoped-routes). They
+    # were on NOT_YET_SCOPED until the request session itself became scoped;
+    # every other entry turned out to be scoped through get_current_tenant.
+    ("GET", f"{API}/audit/actions"): _STATIC,
+    ("GET", f"{API}/printers/models"): _STATIC,
+    ("GET", f"{API}/production-runs/failure-reasons"): _STATIC,
+    ("GET", f"{API}/webhooks/event-types"): _STATIC,
+    ("GET", f"{API}/spoolmandb/stats"): _GLOBAL,
+    ("GET", f"{API}/spoolmandb/manufacturers"): _GLOBAL,
+    ("GET", f"{API}/spoolmandb/filaments"): _GLOBAL,
+    ("GET", f"{API}/spoolmandb/filaments/{{filament_id}}"): _GLOBAL,
+    ("GET", f"{API}/spoolmandb/materials"): _GLOBAL,
+    ("GET", f"{API}/test/materials"): _GLOBAL,
+    ("GET", f"{API}/users/me"): (
+        "the user's own record and memberships across tenants: user_tenants admits "
+        "them through app.current_user_id, which get_current_user sets"
+    ),
+    ("POST", f"{API}/newsletter/subscribe"): "forwards an address to the email provider; no table",
+    ("POST", f"{API}/shop/contact"): "sends the shop an email; no table",
+    ("GET", f"{API}/shop/cart/{{session_id}}"): _CART,
+    ("POST", f"{API}/shop/cart"): _CART,
+    ("DELETE", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"): _CART,
+    ("PATCH", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"): _CART,
+    ("POST", f"{API}/shipping/rates"): _SHIPPING,
+    ("GET", f"{API}/shipping/validate-postcode/{{postcode}}"): _SHIPPING,
+    ("GET", f"{API}/shipping/methods"): _SHIPPING,
+    ("GET", f"{API}/payments/config"): "Square's public configuration; no table",
+    ("GET", f"{API}/payments/status/{{payment_id}}"): "asks Square for a payment's state; no table",
 }
 
 
@@ -857,149 +927,6 @@ UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
 #: session and forgetting to delete its line here fails
 #: `test_no_scoped_route_is_still_listed_as_unscoped`; adding a new route on
 #: `get_db` fails `test_every_route_is_scoped_or_named`.
-NOT_YET_SCOPED: set[tuple[str, str]] = {
-    # audit.py (5)
-    ("GET", f"{API}/audit"),
-    ("GET", f"{API}/audit/summary"),
-    ("GET", f"{API}/audit/entity/{{entity_type}}/{{entity_id}}"),
-    ("GET", f"{API}/audit/user/{{user_id}}"),
-    ("GET", f"{API}/audit/actions"),
-    # categories.py (8)
-    ("GET", f"{API}/categories"),
-    ("GET", f"{API}/categories/{{category_id}}"),
-    ("POST", f"{API}/categories"),
-    ("PATCH", f"{API}/categories/{{category_id}}"),
-    ("DELETE", f"{API}/categories/{{category_id}}"),
-    ("GET", f"{API}/categories/{{category_id}}/products"),
-    ("POST", f"{API}/categories/{{category_id}}/products/{{product_id}}"),
-    ("DELETE", f"{API}/categories/{{category_id}}/products/{{product_id}}"),
-    # dashboard.py (6)
-    ("GET", f"{API}/dashboard/summary"),
-    ("GET", f"{API}/dashboard/active-production"),
-    ("GET", f"{API}/dashboard/low-stock"),
-    ("GET", f"{API}/dashboard/recent-activity"),
-    ("GET", f"{API}/dashboard/performance-charts"),
-    ("GET", f"{API}/dashboard/failure-analytics"),
-    # designers.py (5)
-    ("GET", f"{API}/designers"),
-    ("GET", f"{API}/designers/{{designer_id}}"),
-    ("POST", f"{API}/designers"),
-    ("PATCH", f"{API}/designers/{{designer_id}}"),
-    ("DELETE", f"{API}/designers/{{designer_id}}"),
-    # forecasting.py (4)
-    ("GET", f"{API}/forecasting/demand/{{product_id}}"),
-    ("GET", f"{API}/forecasting/reorder/{{product_id}}"),
-    ("GET", f"{API}/forecasting/reorder-recommendations"),
-    ("GET", f"{API}/forecasting/stock-health"),
-    # model_files.py (10)
-    ("POST", f"{API}/models/{{model_id}}/files"),
-    ("POST", f"{API}/models/{{model_id}}/files/link-local"),
-    ("POST", f"{API}/models/validate-local-path"),
-    ("POST", f"{API}/models/files/parse-3mf"),
-    ("GET", f"{API}/models/{{model_id}}/files"),
-    ("GET", f"{API}/models/{{model_id}}/files/primary"),
-    ("GET", f"{API}/models/{{model_id}}/files/{{file_id}}"),
-    ("GET", f"{API}/models/{{model_id}}/files/{{file_id}}/download"),
-    ("PATCH", f"{API}/models/{{model_id}}/files/{{file_id}}"),
-    ("DELETE", f"{API}/models/{{model_id}}/files/{{file_id}}"),
-    # modules.py (2)
-    ("GET", f"{API}/modules"),
-    ("GET", f"{API}/modules/{{module_name}}"),
-    # newsletter.py (1)
-    ("POST", f"{API}/newsletter/subscribe"),
-    # pages.py (5)
-    ("GET", f"{API}/pages"),
-    ("GET", f"{API}/pages/{{page_id}}"),
-    ("POST", f"{API}/pages"),
-    ("PATCH", f"{API}/pages/{{page_id}}"),
-    ("DELETE", f"{API}/pages/{{page_id}}"),
-    # payments.py (2)
-    ("GET", f"{API}/payments/config"),
-    ("GET", f"{API}/payments/status/{{payment_id}}"),
-    # printer_bambu.py (12)
-    ("POST", f"{API}/printers/{{printer_id}}/connection"),
-    ("GET", f"{API}/printers/{{printer_id}}/connection"),
-    ("PUT", f"{API}/printers/{{printer_id}}/connection"),
-    ("DELETE", f"{API}/printers/{{printer_id}}/connection"),
-    ("POST", f"{API}/printers/{{printer_id}}/connection/connect"),
-    ("POST", f"{API}/printers/{{printer_id}}/connection/disconnect"),
-    ("GET", f"{API}/printers/{{printer_id}}/status"),
-    ("GET", f"{API}/printers/{{printer_id}}/ams"),
-    ("POST", f"{API}/printers/{{printer_id}}/ams/map"),
-    ("DELETE", f"{API}/printers/{{printer_id}}/ams/{{ams_id}}/{{tray_id}}"),
-    ("GET", f"{API}/printers/{{printer_id}}/ams/live"),
-    ("POST", f"{API}/printers/{{printer_id}}/ams/sync"),
-    # printers.py (1)
-    ("GET", f"{API}/printers/models"),
-    # production_runs.py (1)
-    ("GET", f"{API}/production-runs/failure-reasons"),
-    # reviews.py (6)
-    ("GET", f"{API}/reviews"),
-    ("GET", f"{API}/reviews/{{review_id}}"),
-    ("PUT", f"{API}/reviews/{{review_id}}"),
-    ("POST", f"{API}/reviews/{{review_id}}/approve"),
-    ("POST", f"{API}/reviews/{{review_id}}/reject"),
-    ("DELETE", f"{API}/reviews/{{review_id}}"),
-    # settings.py (16)
-    ("GET", f"{API}/settings/square"),
-    ("PUT", f"{API}/settings/square"),
-    ("POST", f"{API}/settings/square/test"),
-    ("GET", f"{API}/settings/etsy"),
-    ("PUT", f"{API}/settings/etsy"),
-    ("POST", f"{API}/settings/etsy/test"),
-    ("GET", f"{API}/settings/shop"),
-    ("PUT", f"{API}/settings/shop"),
-    ("GET", f"{API}/settings/branding"),
-    ("PUT", f"{API}/settings/branding"),
-    ("POST", f"{API}/settings/custom-domain"),
-    ("GET", f"{API}/settings/custom-domain/status"),
-    ("POST", f"{API}/settings/custom-domain/verify"),
-    ("DELETE", f"{API}/settings/custom-domain"),
-    # shipping.py (3)
-    ("POST", f"{API}/shipping/rates"),
-    ("GET", f"{API}/shipping/validate-postcode/{{postcode}}"),
-    ("GET", f"{API}/shipping/methods"),
-    # shop.py (5)
-    ("GET", f"{API}/shop/cart/{{session_id}}"),
-    ("POST", f"{API}/shop/cart"),
-    ("DELETE", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"),
-    ("PATCH", f"{API}/shop/cart/{{session_id}}/items/{{item_id}}"),
-    ("POST", f"{API}/shop/contact"),
-    # sku.py (2)
-    ("GET", f"{API}/sku/next/{{entity_type}}"),
-    ("GET", f"{API}/sku/check/{{entity_type}}/{{sku}}"),
-    # spoolmandb.py (6)
-    ("GET", f"{API}/spoolmandb/stats"),
-    ("POST", f"{API}/spoolmandb/sync"),
-    ("GET", f"{API}/spoolmandb/manufacturers"),
-    ("GET", f"{API}/spoolmandb/filaments"),
-    ("GET", f"{API}/spoolmandb/filaments/{{filament_id}}"),
-    ("GET", f"{API}/spoolmandb/materials"),
-    # tenant_members.py (4)
-    ("GET", f"{API}/tenant/members"),
-    ("POST", f"{API}/tenant/members/invite"),
-    ("PUT", f"{API}/tenant/members/{{member_id}}"),
-    ("DELETE", f"{API}/tenant/members/{{member_id}}"),
-    # test.py (4)
-    ("POST", f"{API}/test/email"),
-    ("GET", f"{API}/test/me"),
-    ("GET", f"{API}/test/materials"),
-    ("GET", f"{API}/test/admin-only"),
-    # users.py (1)
-    ("GET", f"{API}/users/me"),
-    # webhooks.py (11)
-    ("POST", f"{API}/webhooks/subscriptions"),
-    ("GET", f"{API}/webhooks/subscriptions"),
-    ("GET", f"{API}/webhooks/subscriptions/{{subscription_id}}"),
-    ("PUT", f"{API}/webhooks/subscriptions/{{subscription_id}}"),
-    ("DELETE", f"{API}/webhooks/subscriptions/{{subscription_id}}"),
-    ("POST", f"{API}/webhooks/subscriptions/{{subscription_id}}/regenerate-secret"),
-    ("POST", f"{API}/webhooks/subscriptions/{{subscription_id}}/test"),
-    ("GET", f"{API}/webhooks/deliveries"),
-    ("GET", f"{API}/webhooks/deliveries/{{delivery_id}}"),
-    ("POST", f"{API}/webhooks/deliveries/{{delivery_id}}/retry"),
-    ("GET", f"{API}/webhooks/event-types"),
-}
 
 
 def _population_ids() -> list[tuple[str, str]]:
@@ -1020,9 +947,8 @@ def test_every_route_is_scoped_or_named(method: str, path: str) -> None:
     moment it is registered -- it does not have to be remembered into a list
     first (Constitution I, II).
 
-    A route that is genuinely scoped must not also appear in
-    `NOT_YET_SCOPED`; that direction is checked by
-    :func:`TestTheUnscopedListOnlyShrinks`, so this one only has to allow it.
+    There is no "not yet" list any more (bug rls-unscoped-routes): a route is
+    scoped, or it is named by design with its reason.
     """
     route, module_name = _population()[(method, path)]
 
@@ -1032,21 +958,20 @@ def test_every_route_is_scoped_or_named(method: str, path: str) -> None:
         pytest.skip(UNSCOPED_ROUTES_BY_DESIGN[(method, path)])
 
     scoped = _scoped_sessions()
-    if not (_dependency_functions(route) & scoped):
-        assert (method, path) in NOT_YET_SCOPED, (
-            f"{method} {path} ({module_name}.py) queries on the un-scoped "
-            f"session, so row-level security never engages for it "
-            f"(Constitution I). Move it onto get_tenant_db -- or onto "
-            f"get_shop_db / get_customer_db if it is a storefront or customer "
-            f"surface -- or, if it genuinely has no tenant, name it in "
-            f"UNSCOPED_ROUTES_BY_DESIGN with the reason."
-        )
-        pytest.skip(f"{method} {path} is on the NOT_YET_SCOPED list")
-
-    assert get_db not in _handler_dependency_functions(route), (
-        f"{method} {path} ({module_name}.py) takes a scoped session *and* "
-        f"get_db; the handler's own queries must run on the scoped one"
+    assert _dependency_functions(route) & scoped, (
+        f"{method} {path} ({module_name}.py) queries on the un-scoped "
+        f"session, so row-level security never engages for it "
+        f"(Constitution I). Resolve CurrentTenant (or take TenantDB) -- or "
+        f"ShopTenant / get_shop_db / get_customer_db if it is a storefront or "
+        f"customer surface -- or, if it genuinely touches no tenant table, name "
+        f"it in UNSCOPED_ROUTES_BY_DESIGN with the reason."
     )
+
+    if not (_dependency_functions(route) & _request_session_scopers()):
+        assert get_db not in _handler_dependency_functions(route), (
+            f"{method} {path} ({module_name}.py) takes a separately scoped session "
+            f"*and* get_db; the handler's own queries must run on the scoped one"
+        )
 
 
 class TestTheDerivationCoversTheWholeApp:
@@ -1117,53 +1042,29 @@ class TestTheDerivationCoversTheWholeApp:
         )
 
 
-class TestTheUnscopedListOnlyShrinks:
-    """The remaining routes are a visible list, not a discovery each round."""
+class TestTheByDesignListStaysHonest:
+    """An exception is a claim about a route; hold each one to it."""
 
-    def test_no_scoped_route_is_still_listed_as_unscoped(self) -> None:
-        """Fixing a route means deleting its line, in the same change."""
+    def test_every_exception_is_a_route_the_app_serves(self) -> None:
+        population = set(_population())
+        stale = sorted(set(UNSCOPED_ROUTES_BY_DESIGN) - population)
+        assert stale == [], (
+            f"UNSCOPED_ROUTES_BY_DESIGN names routes the app does not serve: {stale}"
+        )
+
+    def test_no_exception_is_in_fact_scoped(self) -> None:
+        """A route that gained a scoped session no longer needs its excuse."""
         population = _population()
         scoped = _scoped_sessions()
-
-        fixed = sorted(
+        needless = sorted(
             entry
-            for entry in NOT_YET_SCOPED
+            for entry in UNSCOPED_ROUTES_BY_DESIGN
             if entry in population and (_dependency_functions(population[entry][0]) & scoped)
         )
-        assert fixed == [], (
-            f"these routes now take a scoped session but are still listed in "
-            f"NOT_YET_SCOPED; delete their lines: {fixed}"
-        )
+        assert needless == [], f"these exceptions are scoped now; delete them: {needless}"
 
-    def test_every_listed_route_is_one_the_app_serves(self) -> None:
-        """A stale entry excuses nothing and hides a real route."""
-        population = set(_population())
-        stale = sorted(NOT_YET_SCOPED - population)
-        assert stale == [], (
-            f"NOT_YET_SCOPED names routes the app does not serve, so the list "
-            f"has drifted from the app: {stale}"
-        )
-
-    def test_no_pricing_route_is_on_the_list(self) -> None:
-        """The list is for the rest of the app, never for a money path."""
+    def test_no_pricing_route_is_excused(self) -> None:
+        """A money path is never excused from Constitution I."""
         declared = {(m, p) for m, p, _ in FEATURE_ROUTES + SHOP_ROUTES}
-        excused = sorted(NOT_YET_SCOPED & declared)
-        assert excused == [], (
-            f"a route this feature declares is on the NOT_YET_SCOPED list; a "
-            f"pricing path is never excused from Constitution I: {excused}"
-        )
-
-    def test_the_list_is_not_empty_without_the_check_being_tightened(self) -> None:
-        """When it empties, the `pytest.skip` above becomes dead -- say so.
-
-        This is not a requirement that routes stay unscoped. It fails when the
-        list reaches zero so that the escape hatch in
-        `test_every_route_is_scoped_or_named` is removed in the same change,
-        rather than left behind as an allow-list with nothing in it.
-        """
-        assert NOT_YET_SCOPED, (
-            "NOT_YET_SCOPED is empty -- every route is scoped now. Delete the "
-            "list and the `assert ... in NOT_YET_SCOPED` branch in "
-            "test_every_route_is_scoped_or_named, so an unscoped route fails "
-            "outright instead of needing to be listed first."
-        )
+        excused = sorted(set(UNSCOPED_ROUTES_BY_DESIGN) & declared)
+        assert excused == [], f"a pricing route is excused from tenant scope: {excused}"

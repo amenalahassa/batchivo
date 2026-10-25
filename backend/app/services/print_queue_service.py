@@ -12,9 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.filament_type import FilamentType
 from app.models.model import Model
+from app.models.model_material import ModelMaterial
 from app.models.print_job import JobPriority, JobStatus, PrinterStatus, PrintJob
 from app.models.printer import Printer
+from app.models.spool import Spool
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.print_queue import (
@@ -643,12 +646,19 @@ class PrintQueueService:
         # This would require model dimensions to be stored
         # For now, assume compatibility if no specific config
 
-        # Check material compatibility from capabilities
+        # Check material compatibility from capabilities. Capability codes are
+        # typed by hand, so they are compared without regard to case.
         if printer.capabilities and model.materials:
-            printer_materials = printer.capabilities.get("materials", [])
+            printer_materials = {
+                str(code).upper() for code in printer.capabilities.get("materials", [])
+            }
             for material in model.materials:
-                if material.material_code not in printer_materials:
-                    # Material not supported
+                code = _material_code(material)
+                if code is None:
+                    # No spool, filament type or material type to read: unknown,
+                    # which is not the same as unsupported.
+                    continue
+                if code.upper() not in printer_materials:
                     return False
 
         return True
@@ -829,6 +839,12 @@ class PrintQueueService:
             .options(
                 selectinload(PrintJob.model).selectinload(Model.printer_configs),
                 with_landed_cost(selectinload(PrintJob.model).selectinload(Model.materials)),
+                # What the compatibility check reads: line -> spool -> filament type -> material.
+                selectinload(PrintJob.model)
+                .selectinload(Model.materials)
+                .selectinload(ModelMaterial.spool)
+                .selectinload(Spool.filament_type)
+                .selectinload(FilamentType.material_type),
             )
         )
         return list(result.scalars().all())
@@ -953,3 +969,15 @@ def _assigned_printer_for(product, printer: Optional[Printer]) -> Optional[dict]
             if child is not None:
                 pending.append(child)
     return mapping
+
+
+def _material_code(material: ModelMaterial) -> Optional[str]:
+    """The material code ("PLA") a bill-of-materials line prints in, if known.
+
+    The code lives on the material type, reached through the line's spool and
+    the spool's filament type; any link may be missing.
+    """
+    spool = material.spool
+    filament_type = spool.filament_type if spool else None
+    material_type = filament_type.material_type if filament_type else None
+    return material_type.code if material_type else None

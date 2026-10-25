@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember
 from app.database import get_db
 from app.models import AMSSlotMapping, Printer, PrinterConnection, Spool
 from app.models.filament_type import FilamentType
@@ -50,6 +50,7 @@ async def create_printer_connection(
     connection_data: PrinterConnectionCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> PrinterConnectionResponse:
     """
@@ -146,6 +147,7 @@ async def update_printer_connection(
     connection_data: PrinterConnectionUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ) -> PrinterConnectionResponse:
     """Update connection configuration for a printer."""
@@ -183,6 +185,7 @@ async def delete_printer_connection(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete connection configuration and disconnect from printer."""
@@ -222,6 +225,7 @@ async def connect_to_printer(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ) -> PrinterConnectionStatus:
     """
@@ -291,6 +295,7 @@ async def disconnect_from_printer(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ) -> PrinterConnectionStatus:
     """Disconnect MQTT connection from a Bambu printer."""
@@ -455,6 +460,7 @@ async def map_ams_slot(
     mapping_data: AMSSlotMappingCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ) -> AMSSlotMappingResponse:
     """
@@ -534,6 +540,7 @@ async def unmap_ams_slot(
     tray_id: int,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Remove spool mapping from an AMS slot."""
@@ -616,6 +623,7 @@ async def sync_ams_to_inventory(
     printer_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ) -> AMSSlotListResponse:
     """

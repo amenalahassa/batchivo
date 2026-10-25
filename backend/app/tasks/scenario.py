@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 
 async def _run(run_id: UUID, tenant_id: UUID) -> Optional[str]:
     """Execute one scenario in its own session, and report its final state."""
+    from app.core.rls import set_rls_context
     from app.database import async_session_maker
     from app.models.tenant import Tenant
     from app.services.scenario_service import execute_run
 
     async with async_session_maker() as db:
+        await set_rls_context(db, tenant_id=tenant_id)
         tenant = (
             await db.execute(select(Tenant).where(Tenant.id == tenant_id))
         ).scalar_one_or_none()

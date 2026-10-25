@@ -579,3 +579,81 @@ class TestQueueOverview:
         assert printer_stat["printer_name"] == test_printer.name
         assert "current_status" in printer_stat
         assert "jobs_in_queue" in printer_stat
+
+
+# ============================================
+# Material compatibility (bug print-queue-material-code)
+# ============================================
+
+
+@pytest.fixture
+async def job_with_bom(db_session: AsyncSession, test_tenant, test_model, test_spool):
+    """A pending job for a model whose bill of materials prints on test_spool."""
+    from decimal import Decimal
+
+    from app.models.model_material import ModelMaterial
+
+    db_session.add(
+        ModelMaterial(model_id=test_model.id, spool_id=test_spool.id, weight_grams=Decimal("20.00"))
+    )
+    job = PrintJob(
+        id=uuid4(),
+        tenant_id=test_tenant.id,
+        model_id=test_model.id,
+        quantity=1,
+        priority=JobPriority.NORMAL.value,
+        status=JobStatus.PENDING.value,
+    )
+    db_session.add(job)
+    await db_session.commit()
+    # The route shares this session, where test_model was loaded before its BOM
+    # line existed; a request's fresh session would see the line.
+    await db_session.refresh(test_model, attribute_names=["materials"])
+    return job
+
+
+async def _printer_with_materials(db_session: AsyncSession, tenant, materials: list[str]):
+    printer = Printer(
+        id=uuid4(),
+        tenant_id=tenant.id,
+        name="Capable Printer",
+        is_active=True,
+        current_status="idle",
+        capabilities={"materials": materials},
+    )
+    db_session.add(printer)
+    await db_session.commit()
+    return printer.id
+
+
+class TestAutoAssignReadsTheBillOfMaterials:
+    """Auto-assign used to raise AttributeError for any model with a BOM."""
+
+    async def test_a_printer_that_takes_the_material_is_assigned(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant,
+        job_with_bom,
+    ):
+        printer_id = await _printer_with_materials(
+            db_session,
+            test_tenant,
+            ["pla"],  # test_spool prints in PLA; lower case on purpose
+        )
+
+        response = await client.post("/api/v1/print-queue/auto-assign")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["assigned_count"] == 1
+        assert response.json()["assignments"][0]["printer_id"] == str(printer_id)
+
+    async def test_a_printer_that_does_not_take_it_is_skipped(
+        self, client: AsyncClient, db_session: AsyncSession, test_tenant, job_with_bom
+    ):
+        await _printer_with_materials(db_session, test_tenant, ["NOT-A-MATERIAL"])
+
+        response = await client.post("/api/v1/print-queue/auto-assign")
+
+        assert response.status_code == 200, response.text
+        assert response.json()["assigned_count"] == 0

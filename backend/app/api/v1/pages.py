@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
 from app.database import get_db
 from app.models.page import Page, PageType
 from app.schemas.page import (
@@ -85,6 +85,7 @@ async def create_page(
     page_data: PageCreate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new content page."""
@@ -125,6 +126,7 @@ async def update_page(
     page_data: PageUpdate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ):
     """Update a content page."""
@@ -174,6 +176,7 @@ async def delete_page(
     page_id: UUID,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
     hard_delete: bool = Query(False, description="Permanently delete (default: unpublish)"),
 ):

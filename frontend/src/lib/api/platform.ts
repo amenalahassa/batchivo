@@ -18,6 +18,8 @@ export interface Tenant {
   name: string
   slug: string
   tenant_type: string
+  /** ISO 4217 code of the tenant's books currency. */
+  currency_code: string
   is_active: boolean
   created_at: string
   settings: Record<string, unknown> | null

@@ -291,6 +291,20 @@ class TestPlatformAdminEndpoints:
         assert "product_count" in data
         assert "order_count" in data
         assert "total_revenue" in data
+        # The screen labels revenue in the tenant's own currency (bug hardcoded-gbp-outside-pricing)
+        assert data["currency_code"] == test_tenant.currency_code
+
+    @pytest.mark.asyncio
+    async def test_tenant_list_carries_each_tenants_currency(
+        self,
+        platform_admin_client: AsyncClient,
+        test_tenant: Tenant,
+    ):
+        response = await platform_admin_client.get("/api/v1/platform/tenants")
+
+        assert response.status_code == 200
+        row = next(t for t in response.json()["items"] if t["id"] == str(test_tenant.id))
+        assert row["currency_code"] == test_tenant.currency_code
 
     @pytest.mark.asyncio
     async def test_get_tenant_detail_not_found(

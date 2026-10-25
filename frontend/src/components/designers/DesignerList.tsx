@@ -61,6 +61,7 @@ import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 import { formatMoney } from '@/lib/money'
+import { useCurrency } from '@/hooks/useCurrency'
 
 interface EditingDesigner {
   id: string
@@ -76,6 +77,7 @@ interface EditingDesigner {
 
 export function DesignerList() {
   const queryClient = useQueryClient()
+  const { currency } = useCurrency()
   const [search, setSearch] = useState('')
   const [showInactive, setShowInactive] = useState(false)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
@@ -409,7 +411,7 @@ export function DesignerList() {
                       <TableCell>
                         {designer.membership_cost ? (
                           <span className="tabular-nums">
-                            {formatMoney(designer.membership_cost, '£')}
+                            {formatMoney(designer.membership_cost, currency.symbol)}
                           </span>
                         ) : (
                           <span className="text-muted-foreground">—</span>

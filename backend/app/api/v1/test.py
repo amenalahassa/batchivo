@@ -6,7 +6,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, require_role
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, require_role
 from app.database import get_db
 from app.models.material import MaterialType
 from app.services.email_service import get_email_service
@@ -25,6 +25,7 @@ async def send_test_email(
     request: TestEmailRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
 ) -> dict:
     """
     Send a test email to verify Brevo configuration.

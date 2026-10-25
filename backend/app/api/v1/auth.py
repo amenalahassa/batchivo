@@ -18,6 +18,7 @@ from app.core.security import (
     decode_token,
     verify_token_type,
 )
+from app.core.rls import set_rls_context
 from app.database import get_db
 from app.models.tenant import Tenant
 from app.models.user import User, UserTenant, UserRole
@@ -76,6 +77,8 @@ async def register(
     new_tenant = Tenant(name=tenant_name, slug=tenant_slug, is_active=True, settings={})
     db.add(new_tenant)
     await db.flush()  # Get tenant ID
+    # The membership and policy rows are tenant rows: scope before writing them.
+    await set_rls_context(db, tenant_id=new_tenant.id, user_id=new_user.id)
 
     # Link user to tenant with OWNER role
     user_tenant = UserTenant(user_id=new_user.id, tenant_id=new_tenant.id, role=UserRole.OWNER)
@@ -124,6 +127,9 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
         )
+
+    # The password is verified: RLS may now show this user their memberships.
+    await set_rls_context(db, user_id=user.id)
 
     # Get user's primary tenant (first one, or could be configurable)
     result = await db.execute(select(UserTenant).where(UserTenant.user_id == user.id).limit(1))

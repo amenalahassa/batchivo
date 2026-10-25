@@ -4,6 +4,7 @@
 
 import { api } from '@/lib/api'
 import type { Money } from '@/types/pricing'
+import type { TenantType } from '@/types/modules'
 
 const API_V1_PREFIX = '/api/v1'
 
@@ -12,7 +13,7 @@ export interface TenantRegistrationRequest {
   password: string
   full_name: string
   business_name: string
-  tenant_type?: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING'
+  tenant_type?: TenantType
 }
 
 export interface TenantRegistrationResponse {
@@ -100,7 +101,7 @@ export async function updateOnboardingStep1(data: {
  * Update onboarding step 2 - Business type
  */
 export async function updateOnboardingStep2(data: {
-  tenant_type: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING'
+  tenant_type: TenantType
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {
   const response = await api.put(`${API_V1_PREFIX}/onboarding/wizard/step/2`, data)
   return response.data
@@ -112,6 +113,7 @@ export async function updateOnboardingStep2(data: {
 export async function updateOnboardingStep3(data: {
   shop_display_name?: string
   currency?: string
+  currency_symbol?: string
   timezone?: string
   primary_color?: string
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {

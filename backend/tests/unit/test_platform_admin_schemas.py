@@ -41,6 +41,7 @@ class TestTenantResponse:
             "name": "Test Tenant",
             "slug": "test-tenant",
             "tenant_type": "three_d_print",
+            "currency_code": "GBP",
             "is_active": True,
             "created_at": _now(),
         }
@@ -68,6 +69,7 @@ class TestTenantDetailResponse:
             "name": "Big Shop",
             "slug": "big-shop",
             "tenant_type": "three_d_print",
+            "currency_code": "GBP",
             "is_active": True,
             "created_at": _now(),
         }
@@ -324,3 +326,18 @@ class TestTenantModulesResetResponse:
             message="Reset complete",
         )
         assert r.modules_reset == 5
+
+
+class TestTenantCurrency:
+    """A platform screen labels a tenant's money in its own currency (bug hardcoded-gbp-outside-pricing)."""
+
+    def test_the_currency_is_required(self):
+        with pytest.raises(ValidationError):
+            TenantResponse(
+                id=uuid4(),
+                name="T",
+                slug="t",
+                tenant_type="three_d_print",
+                is_active=True,
+                created_at=_now(),
+            )

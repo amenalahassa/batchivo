@@ -16,6 +16,9 @@ class TenantResponse(BaseModel):
     name: str
     slug: str
     tenant_type: str
+    #: The currency the tenant keeps its books in, so a platform screen labels
+    #: the tenant's money in it rather than in pounds.
+    currency_code: str
     is_active: bool
     created_at: datetime
     settings: dict[str, Any] | None = None

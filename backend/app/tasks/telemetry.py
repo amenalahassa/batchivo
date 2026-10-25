@@ -765,6 +765,7 @@ async def _resolved_policy(db: AsyncSession, tenant: "Tenant") -> "CostPolicy":
 
 async def _learn_all(tenant_id: Optional[uuid.UUID] = None) -> int:
     """Sweep one tenant, or every active one. Returns the decision count."""
+    from app.core.rls import set_rls_context
     from app.database import async_session_maker
     from app.models.tenant import Tenant
 
@@ -777,6 +778,8 @@ async def _learn_all(tenant_id: Optional[uuid.UUID] = None) -> int:
             query = query.where(Tenant.is_active.is_(True))
 
         for tenant in (await db.execute(query)).scalars().all():
+            # tenants is not a tenant table; everything read after this is.
+            await set_rls_context(db, tenant_id=tenant.id)
             try:
                 decisions = await learn_for_tenant(db, tenant)
                 # One commit per tenant: a sweep that fell over on tenant four
