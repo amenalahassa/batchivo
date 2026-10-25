@@ -150,10 +150,14 @@ class Spool(Base, UUIDMixin, TimestampMixin):
         lazy="select",
     )
 
+    # Loaded with the spool, because its landed per-gram cost needs the
+    # purchase's shipping and tax and the sibling spools they are shared with
+    # (T254). Left lazy, every synchronous cost read silently dropped the
+    # allocation and costed the filament cheaper than it was.
     filament_purchase: Mapped[Optional["FilamentPurchase"]] = relationship(
         "FilamentPurchase",
         back_populates="spools",
-        lazy="select",
+        lazy="selectin",
     )
 
     __table_args__ = (

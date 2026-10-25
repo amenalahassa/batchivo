@@ -13,7 +13,7 @@ import { HelpCircle, Info, Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { addModelMaterial, removeModelMaterial, type ModelMaterial } from '@/lib/api/models'
 import { spoolsApi } from '@/lib/api/spools'
-import { divideMoney, formatMoney, multiplyMoney } from '@/lib/money'
+import { formatMoney } from '@/lib/money'
 import type { Money } from '@/types/pricing'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -55,7 +55,12 @@ import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 const materialFormSchema = z.object({
   spool_id: z.string().uuid('Must select a spool'),
   weight_grams: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Must be a valid number'),
-  cost_per_gram: z.string().regex(/^\d+(\.\d{1,4})?$/, 'Must be a valid number'),
+  // Empty costs the line at the spool's landed per-gram figure, which the
+  // server derives with the purchase's shipping and tax (T254). A figure here
+  // is an override the operator owns.
+  cost_per_gram: z
+    .string()
+    .regex(/^(\d+(\.\d{1,4})?)?$/, 'Must be a valid number'),
 })
 
 type MaterialFormValues = z.infer<typeof materialFormSchema>
@@ -111,7 +116,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
       addModelMaterial(modelId, {
         spool_id: data.spool_id,
         weight_grams: data.weight_grams,
-        cost_per_gram: data.cost_per_gram,
+        ...(data.cost_per_gram ? { cost_per_gram: data.cost_per_gram } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['model', modelId] })
@@ -127,24 +132,13 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
     },
   })
 
+  // The spool's landed figure, as the server derived it, shown as the
+  // placeholder so the operator sees what an empty override means.
+  const selectedSpool = spoolsData?.spools.find((s) => s.id === form.watch('spool_id'))
+  const selectedLandedHint = selectedSpool?.cost_per_gram ?? '0.0000'
+
   const onSubmit = (values: MaterialFormValues) => {
     addMutation.mutate(values)
-  }
-
-  // When a spool is selected, auto-fill cost_per_gram from spool data
-  const handleSpoolSelect = (spoolId: string) => {
-    const spool = spoolsData?.spools.find((s) => s.id === spoolId)
-    if (spool) {
-      // Cost per gram, prefilled from what the spool cost. Divided in
-      // decimal: the figure the operator accepts here becomes the material
-      // line, and `parseFloat(a) / b` is the conversion T151 took out of the
-      // display two dozen lines below (Constitution IV, task T158).
-      const initialWeight = spool.initial_weight || 0
-      if (initialWeight > 0) {
-        const costPerGram = divideMoney(spool.purchase_price, initialWeight, 4)
-        if (costPerGram !== null) form.setValue('cost_per_gram', costPerGram)
-      }
-    }
   }
 
   // Four places, because a per-gram filament cost is fractions of a penny. It
@@ -193,7 +187,6 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                           value={field.value}
                           onValueChange={(value) => {
                             field.onChange(value)
-                            handleSpoolSelect(value)
                           }}
                           placeholder="Search for a spool..."
                         />
@@ -247,11 +240,14 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                   name="cost_per_gram"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Cost per Gram (£)</FormLabel>
+                      <FormLabel>Cost per Gram override (£)</FormLabel>
                       <FormControl>
-                        <Input type="number" step="0.0001" placeholder="0.0000" {...field} />
+                        <Input type="number" step="0.0001" placeholder={selectedLandedHint} {...field} />
                       </FormControl>
-                      <FormDescription>Auto-filled from spool cost</FormDescription>
+                      <FormDescription>
+                        Leave empty to use the spool's landed cost per usable gram, which follows
+                        its price, purchase shipping and remainder.
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -289,20 +285,18 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
               <div className="space-y-1">
                 <div className="font-medium">{spoolDisplay}</div>
                 <div className="text-sm text-muted-foreground">
-                  {parseFloat(material.weight_grams).toFixed(2)}g @ {formatCurrency(material.cost_per_gram)}/g
+                  {parseFloat(material.weight_grams).toFixed(2)}g @{' '}
+                  {material.resolved_cost_per_gram === null
+                    ? 'cost unknown'
+                    : `${formatCurrency(material.resolved_cost_per_gram)}/g`}
+                  {material.cost_per_gram !== null ? ' (override)' : ' (from spool)'}
                 </div>
               </div>
               <div className="flex items-center gap-4">
                 <div className="text-right">
                   <div className="font-semibold">
-                    {/*
-                      Weight times a per-gram cost -- the engine's own material
-                      line (`costing.py`). As two `parseFloat`s and a `*` the
-                      two can differ in the fourth place while reporting the
-                      same inputs; multiplied exactly they cannot (FR-047,
-                      FR-048, task T151).
-                    */}
-                    {formatCurrency(multiplyMoney(material.cost_per_gram, material.weight_grams))}
+                    {/* The server's figure: weight times the resolved per-gram cost (T254). */}
+                    {material.line_cost === null ? '—' : formatCurrency(material.line_cost)}
                   </div>
                 </div>
                 <AlertDialog>

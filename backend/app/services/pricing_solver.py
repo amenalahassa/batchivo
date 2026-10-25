@@ -470,8 +470,15 @@ def _context_at(
     extras: Decimal,
     quantity: int,
 ) -> OrderContext:
+    """The order line at a **unit** price: ``quantity`` units of it (T258).
+
+    The line is what fees are charged on -- a percentage on its subtotal, a
+    per-unit fee once per unit, a per-order fee once -- so pricing a quantity
+    means pricing the whole line. Charging a per-unit fee ``quantity`` times
+    against one unit's revenue made every tiered margin wrong.
+    """
     return OrderContext(
-        item_subtotal=price,
+        item_subtotal=price * Decimal(quantity),
         shipping_revenue=shipping_revenue,
         extras=extras,
         quantity=quantity,
@@ -520,6 +527,10 @@ def solve(
     postage = Decimal(str(postage_paid))
     shipping = Decimal(str(shipping_revenue))
     other = Decimal(str(extras))
+    # The closed form solves for the line's subtotal, against the line's
+    # make-cost; the unit price is that over the quantity (T258).
+    units = Decimal(max(quantity, 1))
+    line_cost = cost * units
 
     # The reserves, the rounding rule and the threshold are effective-dated
     # (FR-003, task T136): an input resolved by the caller for the date that
@@ -570,12 +581,13 @@ def solve(
         )
         coefficients = _coefficients(
             fees,
-            make_cost=cost,
+            make_cost=line_cost,
             postage_paid=postage,
             shipping_revenue=shipping,
             deduction_rate=deduction_rate,
         )
-        price, constraint = _solve_closed_form(coefficients, basis=basis, target=target)
+        line_price, constraint = _solve_closed_form(coefficients, basis=basis, target=target)
+        price = None if line_price is None else line_price / units
         if price is None:
             break
 
@@ -625,7 +637,9 @@ def solve(
     else:
         final = final.quantize(CENT)
 
-    snap = _apply_free_shipping_snap(final, threshold)
+    # The threshold is on the order, so it can only be met by a unit price
+    # when the order is one unit.
+    snap = _apply_free_shipping_snap(final, threshold) if quantity <= 1 else None
     if snap is not None:
         adjustments.append(snap)
         final = snap.to_price
@@ -694,9 +708,13 @@ def margin_at(
         quantity=quantity,
     )
     stack: FeeStack = fee_engine.compute(channel, context, reference, rules=source)
+    # ``price``, ``make_cost`` and ``machine_hours`` are per unit; the margin is
+    # the line's, so each is taken ``quantity`` times (T258). ``postage_paid``
+    # is already the one parcel the line ships in.
+    units = Decimal(max(quantity, 1))
     return CostingService.margin(
         context=context,
-        make_cost=Decimal(str(make_cost)),
+        make_cost=Decimal(str(make_cost)) * units,
         channel=channel,
         fees=stack,
         policy=policy,
@@ -704,7 +722,7 @@ def margin_at(
         tax=TaxTreatment(),
         postage_paid=Decimal(str(postage_paid)),
         margin_basis=margin_basis,
-        machine_hours=machine_hours,
+        machine_hours=Decimal(str(machine_hours)) * units if machine_hours is not None else None,
     )
 
 

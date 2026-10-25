@@ -162,7 +162,12 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   //: The channel whose price history is open, or null for closed.
   const [historyChannelId, setHistoryChannelId] = useState<string | null>(null)
   // The channel whose full margin is open: fees, postage, reserves (T244).
-  const [marginChannelId, setMarginChannelId] = useState<string | null>(null)
+  // Which row's breakdown is open: its channel and its tier's quantity, so a
+  // tier row's margin is the margin at that tier (T258).
+  const [marginTarget, setMarginTarget] = useState<{
+    channelId: string
+    quantity: number
+  } | null>(null)
   //: The row whose price finder is open, or null for closed.
   const [finderPricing, setFinderPricing] = useState<ProductPricing | null>(null)
   const queryClient = useQueryClient()
@@ -677,7 +682,12 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                         variant="ghost"
                         size="sm"
                         aria-label={`Margin breakdown for ${pricingItem.channel_name || 'this channel'}`}
-                        onClick={() => setMarginChannelId(pricingItem.sales_channel_id)}
+                        onClick={() =>
+                          setMarginTarget({
+                            channelId: pricingItem.sales_channel_id,
+                            quantity: pricingItem.min_quantity,
+                          })
+                        }
                       >
                         <Receipt className="h-4 w-4" />
                       </Button>
@@ -758,21 +768,28 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
           clamp and incidence, postage against shipping charged, reserves, and
           how much of the make-cost is evidence (FR-018, FR-024, FR-029). */}
       <Dialog
-        open={marginChannelId !== null}
-        onOpenChange={(open) => !open && setMarginChannelId(null)}
+        open={marginTarget !== null}
+        onOpenChange={(open) => !open && setMarginTarget(null)}
       >
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Margin breakdown</DialogTitle>
             <DialogDescription>
-              What one unit earns on{' '}
-              {pricing.find((row) => row.sales_channel_id === marginChannelId)?.channel_name ??
-                'this channel'}{' '}
+              What {marginTarget && marginTarget.quantity > 1
+                ? `an order of ${marginTarget.quantity}`
+                : 'one unit'}{' '}
+              earns on{' '}
+              {pricing.find((row) => row.sales_channel_id === marginTarget?.channelId)
+                ?.channel_name ?? 'this channel'}{' '}
               at the price in effect today.
             </DialogDescription>
           </DialogHeader>
-          {marginChannelId && (
-            <ProductMarginBreakdown productId={productId} channelId={marginChannelId} />
+          {marginTarget && (
+            <ProductMarginBreakdown
+              productId={productId}
+              channelId={marginTarget.channelId}
+              quantity={marginTarget.quantity}
+            />
           )}
         </DialogContent>
       </Dialog>

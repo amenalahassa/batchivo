@@ -108,7 +108,7 @@ describe('BOMEditor - 3MF weight suggestion hand-off', () => {
     await userEvent.clear(weightField)
     await userEvent.type(weightField, '22.75')
 
-    await userEvent.type(screen.getByLabelText('Cost per Gram (£)'), '0.02')
+    await userEvent.type(screen.getByLabelText('Cost per Gram override (£)'), '0.02')
 
     // spool_id is required by the schema; without a real spool to select,
     // just confirm the weight value itself is what's tracked in form state

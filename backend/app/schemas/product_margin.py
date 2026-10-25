@@ -34,7 +34,12 @@ class RevenueDeductionResponse(BaseModel):
 
 
 class ProductMarginResponse(BaseModel):
-    """What one unit earns on one channel at the price in effect.
+    """What a line of ``quantity`` units earns on one channel at the price in effect.
+
+    Every amount is the line's (T258): ``list_price`` is the line subtotal,
+    ``unit_price`` the price per unit, and the make-cost and postage are the
+    line's -- ``quantity`` units and the one parcel they ship in. At quantity
+    one the line is the unit.
 
     The margin percentage always arrives with the basis that produced it
     (FR-031b), and ``margin_pct`` is null rather than zero where the basis is
@@ -44,6 +49,10 @@ class ProductMarginResponse(BaseModel):
     product_id: UUID
     sales_channel_id: UUID
     as_of: date
+    quantity: int = Field(1, description="Units on the line every amount here is for")
+    unit_price: Optional[Decimal] = Field(
+        None, description="The price per unit at this quantity's tier"
+    )
 
     list_price: Decimal
     shipping_revenue: Decimal

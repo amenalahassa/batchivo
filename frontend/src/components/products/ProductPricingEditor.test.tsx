@@ -757,6 +757,8 @@ describe('margin breakdown (T244)', () => {
     expect(breakdownProps.at(-1)).toEqual({
       productId: expect.any(String),
       channelId: priceRow().sales_channel_id,
+      // The row's tier quantity, so a tier row's margin is at its tier (T258).
+      quantity: priceRow().min_quantity,
     })
   })
 })

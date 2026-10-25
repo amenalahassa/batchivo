@@ -673,6 +673,23 @@ class ProductionRunMaterialBase(BaseModel):
 class ProductionRunMaterialCreate(ProductionRunMaterialBase):
     """Schema for creating a production run material."""
 
+    # Empty means "the spool's landed cost per usable gram", resolved by the
+    # server with the purchase's shipping and tax (T254). The browser used to
+    # work it out from nominal weight, which left those out.
+    cost_per_gram: Optional[Decimal] = Field(  # type: ignore[assignment]
+        None,
+        gt=0,
+        description="Cost per gram; empty takes the spool's landed cost per usable gram",
+    )
+
+    @field_validator("estimated_model_weight_grams", "cost_per_gram")
+    @classmethod
+    def validate_positive_decimals(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        """Ensure weight and cost values are positive when given."""
+        if v is not None and v <= 0:
+            raise ValueError("Value must be greater than 0")
+        return v
+
     # Optional: Spool weighing (can be provided if known at creation)
     spool_weight_before_grams: Optional[Decimal] = Field(None, ge=0)
     spool_weight_after_grams: Optional[Decimal] = Field(None, ge=0)

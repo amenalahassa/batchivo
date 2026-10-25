@@ -2,7 +2,7 @@
 
 import uuid
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import ForeignKey, Numeric
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -20,7 +20,14 @@ class ModelMaterial(Base, UUIDMixin, TimestampMixin):
     Bill of Materials (BOM) entry linking models to filament spools.
 
     Tracks which materials (spools) are used in a model and how much.
-    Stores a snapshot of cost_per_gram at time of adding for historical accuracy.
+
+    ``cost_per_gram`` is an operator override and is normally empty: the line
+    then costs at its spool's landed per-gram figure, derived on read
+    (task T254, FR-008, FR-049). It used to hold a figure the browser computed
+    from nominal weight when the line was added, which left out the remainder,
+    the purchase's shipping and its tax, and never followed a later price
+    change. Consumed material is frozen on ``ProductionRunMaterial`` and a sale
+    on its snapshot, so nothing historical depends on this column.
     """
 
     __tablename__ = "model_materials"
@@ -47,10 +54,10 @@ class ModelMaterial(Base, UUIDMixin, TimestampMixin):
         comment="Weight of this material used in model (grams)",
     )
 
-    cost_per_gram: Mapped[Decimal] = mapped_column(
+    cost_per_gram: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
-        nullable=False,
-        comment="Cost per gram at time of adding (snapshot for historical accuracy)",
+        nullable=True,
+        comment="Operator override of the per-gram cost; NULL derives it from the spool",
     )
 
     # Relationships
@@ -68,6 +75,16 @@ class ModelMaterial(Base, UUIDMixin, TimestampMixin):
         return f"<ModelMaterial(model_id={self.model_id}, spool_id={self.spool_id}, weight={self.weight_grams}g)>"
 
     @property
-    def total_cost(self) -> Decimal:
-        """Calculate total cost for this material in the model."""
-        return Decimal(str(self.weight_grams)) * Decimal(str(self.cost_per_gram))
+    def resolved_cost_per_gram(self) -> Optional[Decimal]:
+        """The per-gram figure this line costs at: the override, else the spool's."""
+        from app.services.landed_cost import material_cost_per_gram
+
+        return material_cost_per_gram(self).cost_per_gram
+
+    @property
+    def line_cost(self) -> Optional[Decimal]:
+        """Weight times the resolved per-gram figure, unrounded, for display."""
+        per_gram = self.resolved_cost_per_gram
+        if per_gram is None:
+            return None
+        return Decimal(str(self.weight_grams)) * per_gram

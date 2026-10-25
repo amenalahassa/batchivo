@@ -51,7 +51,6 @@ def make_model_ns(
     labor_rate_override=None,
     labor_hours=None,
     overhead_percentage=None,
-    actual_production_cost=None,
 ):
     """Build a minimal Model-like SimpleNamespace."""
     return SimpleNamespace(
@@ -62,7 +61,6 @@ def make_model_ns(
         labor_rate_override=labor_rate_override,
         labor_hours=labor_hours,
         overhead_percentage=overhead_percentage,
-        actual_production_cost=actual_production_cost,
     )
 
 
@@ -366,7 +364,7 @@ class TestMaxDepth:
 
 class TestActualCostTracking:
     def test_actual_cost_none_when_no_actual_data(self):
-        model = make_model_ns(actual_production_cost=None)
+        model = make_model_ns()
         pm = make_product_model_ns(model)
         product = make_product(product_models=[pm])
         result = CostingService.calculate_product_cost(product, labor_rate=RATE)
@@ -376,10 +374,12 @@ class TestActualCostTracking:
 
     def test_actual_cost_set_when_all_models_have_data(self):
         material = SimpleNamespace(weight_grams=Decimal("10"), cost_per_gram=Decimal("0.10"))
-        model = make_model_ns(materials=[material], actual_production_cost=Decimal("1.50"))
+        model = make_model_ns(materials=[material])
         pm = make_product_model_ns(model, quantity=1)
         product = make_product(product_models=[pm])
-        result = CostingService.calculate_product_cost(product, labor_rate=RATE)
+        result = CostingService.calculate_product_cost(
+            product, labor_rate=RATE, realised_unit_costs={model.id: Decimal("1.50")}
+        )
         # theoretical cost = 1.00, actual = 1.50
         assert result.total_actual_cost is not None
         assert result.models_actual_cost == Decimal("1.50")
@@ -387,12 +387,14 @@ class TestActualCostTracking:
 
     def test_actual_cost_none_when_only_partial_models_have_data(self):
         # Two models, only one has actual cost -> total_actual_cost should be None
-        model_a = make_model_ns(actual_production_cost=Decimal("2.00"))
-        model_b = make_model_ns(actual_production_cost=None)
+        model_a = make_model_ns()
+        model_b = make_model_ns()
         pm_a = make_product_model_ns(model_a, quantity=1)
         pm_b = make_product_model_ns(model_b, quantity=1)
         product = make_product(product_models=[pm_a, pm_b])
-        result = CostingService.calculate_product_cost(product, labor_rate=RATE)
+        result = CostingService.calculate_product_cost(
+            product, labor_rate=RATE, realised_unit_costs={model_a.id: Decimal("2.00")}
+        )
         assert result.total_actual_cost is None
         assert result.models_with_actual_cost == 1
         assert result.models_total == 2
@@ -400,10 +402,12 @@ class TestActualCostTracking:
     def test_variance_percentage_calculated_correctly(self):
         grams, per_gram, actual = Decimal("10"), Decimal("0.10"), Decimal("1.50")
         material = SimpleNamespace(weight_grams=grams, cost_per_gram=per_gram)
-        model = make_model_ns(materials=[material], actual_production_cost=actual)
+        model = make_model_ns(materials=[material])
         pm = make_product_model_ns(model, quantity=1)
         product = make_product(product_models=[pm])
-        result = CostingService.calculate_product_cost(product, labor_rate=RATE)
+        result = CostingService.calculate_product_cost(
+            product, labor_rate=RATE, realised_unit_costs={model.id: actual}
+        )
 
         theoretical = grams * per_gram
         expected = (actual - theoretical) / theoretical * Decimal("100")
@@ -412,10 +416,12 @@ class TestActualCostTracking:
     def test_negative_variance_when_actual_less_than_theoretical(self):
         grams, per_gram, actual = Decimal("10"), Decimal("0.10"), Decimal("0.80")
         material = SimpleNamespace(weight_grams=grams, cost_per_gram=per_gram)
-        model = make_model_ns(materials=[material], actual_production_cost=actual)
+        model = make_model_ns(materials=[material])
         pm = make_product_model_ns(model, quantity=1)
         product = make_product(product_models=[pm])
-        result = CostingService.calculate_product_cost(product, labor_rate=RATE)
+        result = CostingService.calculate_product_cost(
+            product, labor_rate=RATE, realised_unit_costs={model.id: actual}
+        )
 
         theoretical = grams * per_gram
         expected = (actual - theoretical) / theoretical * Decimal("100")

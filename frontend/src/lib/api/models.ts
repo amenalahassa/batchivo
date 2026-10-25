@@ -66,7 +66,12 @@ export interface ModelMaterial {
   id: string
   spool_id: string
   weight_grams: string
-  cost_per_gram: string
+  /** The operator's override; null costs the line from the spool. */
+  cost_per_gram: string | null
+  /** What the line is costed at: the override, else the spool's landed figure. */
+  resolved_cost_per_gram: string | null
+  /** Weight times the resolved per-gram figure, as the server computed it. */
+  line_cost: string | null
   created_at: string
   updated_at: string
 }
@@ -228,7 +233,8 @@ export interface ModelUpdateRequest {
 export interface ModelMaterialCreateRequest {
   spool_id: string
   weight_grams: string
-  cost_per_gram: string
+  /** Omit to cost the line at the spool's landed per-gram figure (T254). */
+  cost_per_gram?: string
 }
 
 export interface ModelComponentCreateRequest {
@@ -255,7 +261,7 @@ export interface BOMSpoolSuggestion {
   color: string
   color_hex?: string
   weight_grams: string
-  cost_per_gram: string
+  cost_per_gram: string | null
   current_weight: string
   is_active: boolean
 }

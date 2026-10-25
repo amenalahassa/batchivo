@@ -236,6 +236,15 @@ def spool_landed_cost(
     recoverable = False
     even_split = False
 
+    if purchase is not None and allocation is None and not _relationship_loaded(purchase, "spools"):
+        # The allocation spreads over every spool on the purchase; without them
+        # it cannot be computed, and a lazy load here would raise.
+        incomplete.append(
+            "this spool's purchase was loaded without its other spools, so its "
+            "allocated shipping and tax are not included"
+        )
+        purchase = None
+
     if purchase is not None:
         recoverable = bool(purchase.tax_recoverable)
         if allocation is None:
@@ -293,6 +302,59 @@ def spool_landed_cost(
         even_split_fallback=even_split,
         incomplete_reasons=tuple(incomplete),
         derivation=tuple(derivation),
+    )
+
+
+@dataclass(frozen=True)
+class MaterialPerGram:
+    """The per-gram figure one bill-of-materials line is costed at (task T254).
+
+    ``overridden`` says the operator typed the figure on the line, which then
+    wins over the spool's landed cost and carries its own provenance. Otherwise
+    the figure is the spool's landed cost, derived on read so a change to the
+    spool's price, its purchase's shipping or its remainder reaches every
+    make-cost that uses it (FR-049, Constitution V).
+
+    ``cost_per_gram`` is ``None`` when nothing can be derived; the reasons say
+    why, and the engine reports the line as incomplete rather than as zero
+    (FR-019).
+    """
+
+    cost_per_gram: Optional[Decimal]
+    overridden: bool
+    spool: Optional["Spool"] = None
+    incomplete_reasons: tuple[str, ...] = ()
+
+
+def material_cost_per_gram(material: object) -> MaterialPerGram:
+    """Resolve what one gram of a bill-of-materials line costs.
+
+    The line's own ``cost_per_gram`` is an operator override and is used as
+    typed. A line without one costs at its spool's landed per-gram figure,
+    with the parent purchase's allocated shipping and tax and the unusable
+    remainder taken into account (FR-008 to FR-008d).
+    """
+    override = _as_decimal(getattr(material, "cost_per_gram", None))
+    if override is not None:
+        return MaterialPerGram(cost_per_gram=override, overridden=True)
+
+    spool = getattr(material, "spool", None) if _relationship_loaded(material, "spool") else None
+    if spool is None:
+        return MaterialPerGram(
+            cost_per_gram=None,
+            overridden=False,
+            incomplete_reasons=(
+                "a bill-of-materials line has no spool loaded, so its filament "
+                "cost cannot be derived",
+            ),
+        )
+
+    landed = spool_landed_cost(spool)
+    return MaterialPerGram(
+        cost_per_gram=landed.cost_per_gram,
+        overridden=False,
+        spool=spool,
+        incomplete_reasons=landed.incomplete_reasons,
     )
 
 

@@ -35,6 +35,9 @@ def spool_to_response(spool: Spool) -> dict:
         **spool.__dict__,
         "remaining_weight": spool.remaining_weight,
         "remaining_percentage": spool.remaining_percentage,
+        # The landed figure the engine costs a bill-of-materials line at, so a
+        # screen shows it rather than dividing price by nominal weight (T254).
+        "cost_per_gram": spool.cost_per_gram,
         "filament_type": _filament_type_dict(spool.filament_type) if spool.filament_type else None,
     }
 

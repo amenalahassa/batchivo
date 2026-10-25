@@ -54,6 +54,131 @@ class MaterialCostSummary:
     variance_percent: Optional[Decimal]
 
 
+class MaterialCostUnderivable(ValueError):
+    """A run material names no cost, and its spool cannot supply one (FR-019).
+
+    Consumed material is history (Constitution VI): a zero written here would
+    be a settled run costed as free filament forever. Refusing lets the
+    operator fix the spool's price or weight, or type the figure.
+    """
+
+
+def run_material_cost_per_gram(spool: Spool, given: Optional[Decimal]) -> Decimal:
+    """The per-gram figure a run material is frozen at.
+
+    ``given`` is what the operator typed and wins. Otherwise it is the spool's
+    landed cost per usable gram, with the purchase's shipping and tax, which
+    the spool loads with it (T254).
+    """
+    if given is not None:
+        return given
+    from app.services.landed_cost import spool_landed_cost
+
+    landed = spool_landed_cost(spool)
+    if landed.cost_per_gram is None or landed.cost_per_gram <= Decimal("0"):
+        reasons = "; ".join(landed.incomplete_reasons) or "it derives to zero"
+        raise MaterialCostUnderivable(
+            f"no cost per gram was given for spool {spool.spool_id}, and none can be "
+            f"derived from it: {reasons}"
+        )
+    return landed.cost_per_gram
+
+
+@dataclass(frozen=True)
+class RealisedUnitCost:
+    """What one unit of a model actually cost, averaged over completed runs (T255).
+
+    Derived on read from each run's immutable ``actual_cost_per_unit`` and the
+    units that succeeded, in one unrounded chain (Constitution IV). Nothing is
+    stored, so a run recorded late is weighted by its units like any other and
+    no rounded average is ever fed back into the next one (Constitution V).
+    """
+
+    average: Decimal
+    units: int
+    last_completed_at: Optional[datetime]
+
+
+def average_unit_cost(outcomes: list[tuple[Decimal, int]]) -> Optional[Decimal]:
+    """Units-weighted mean of per-run unit costs, unrounded; ``None`` if none."""
+    units = sum(quantity for _, quantity in outcomes if quantity > 0)
+    if units <= 0:
+        return None
+    total = sum(
+        (Decimal(str(cost)) * Decimal(quantity) for cost, quantity in outcomes if quantity > 0),
+        Decimal("0"),
+    )
+    return total / Decimal(units)
+
+
+async def realised_unit_costs(
+    db: AsyncSession, tenant_id: UUID, model_ids: list[UUID]
+) -> dict[UUID, RealisedUnitCost]:
+    """The realised unit cost of each model, from its completed runs.
+
+    A single-plate run records its unit cost per item, a multi-plate run per
+    plate; each run is read from the one it used, so no unit counts twice.
+    """
+    from app.models.production_run_plate import ProductionRunPlate
+
+    if not model_ids:
+        return {}
+
+    item_rows = await db.execute(
+        select(
+            ProductionRunItem.model_id,
+            ProductionRunItem.actual_cost_per_unit,
+            ProductionRunItem.successful_quantity,
+            ProductionRun.completed_at,
+        )
+        .join(ProductionRun, ProductionRunItem.production_run_id == ProductionRun.id)
+        .where(
+            ProductionRun.tenant_id == tenant_id,
+            ProductionRun.status == COMPLETED,
+            ProductionRun.total_plates == 0,
+            ProductionRunItem.model_id.in_(model_ids),
+            ProductionRunItem.actual_cost_per_unit.is_not(None),
+            ProductionRunItem.successful_quantity > 0,
+        )
+    )
+    plate_rows = await db.execute(
+        select(
+            ProductionRunPlate.model_id,
+            ProductionRunPlate.actual_cost_per_unit,
+            ProductionRunPlate.successful_prints,
+            ProductionRun.completed_at,
+        )
+        .join(ProductionRun, ProductionRunPlate.production_run_id == ProductionRun.id)
+        .where(
+            ProductionRun.tenant_id == tenant_id,
+            ProductionRun.status == COMPLETED,
+            ProductionRun.total_plates > 0,
+            ProductionRunPlate.model_id.in_(model_ids),
+            ProductionRunPlate.actual_cost_per_unit.is_not(None),
+            ProductionRunPlate.successful_prints > 0,
+        )
+    )
+
+    outcomes: dict[UUID, list[tuple[Decimal, int]]] = {}
+    latest: dict[UUID, Optional[datetime]] = {}
+    for model_id, cost, quantity, completed_at in [*item_rows.all(), *plate_rows.all()]:
+        outcomes.setdefault(model_id, []).append((Decimal(str(cost)), int(quantity)))
+        seen = latest.get(model_id)
+        if completed_at is not None and (seen is None or completed_at > seen):
+            latest[model_id] = completed_at
+
+    result: dict[UUID, RealisedUnitCost] = {}
+    for model_id, rows in outcomes.items():
+        average = average_unit_cost(rows)
+        if average is not None:
+            result[model_id] = RealisedUnitCost(
+                average=average,
+                units=sum(quantity for _, quantity in rows),
+                last_completed_at=latest.get(model_id),
+            )
+    return result
+
+
 # OpenTelemetry tracer for production run operations
 tracer = trace.get_tracer(__name__)
 
@@ -211,26 +336,25 @@ class ProductionRunService:
 
         # Add materials if provided
         if materials:
-            # Pre-fetch all spools that need cost_per_gram lookup in one query
-            needs_cost = [m for m in materials if m.cost_per_gram == Decimal("0")]
-            if needs_cost:
-                spool_ids = [m.spool_id for m in needs_cost]
-                spools_result = await self.db.execute(select(Spool).where(Spool.id.in_(spool_ids)))
+            # Every spool in one query; each material without a typed figure
+            # is frozen at its spool's landed cost.
+            spool_ids = [m.spool_id for m in materials if m.cost_per_gram is None]
+            spools_by_id: dict[UUID, Spool] = {}
+            if spool_ids:
+                spools_result = await self.db.execute(
+                    select(Spool).where(Spool.id.in_(spool_ids), Spool.tenant_id == self.tenant.id)
+                )
                 spools_by_id = {s.id: s for s in spools_result.scalars().all()}
-            else:
-                spools_by_id = {}
 
             for material_data in materials:
-                # Get cost_per_gram from spool if not provided
-                if (
-                    material_data.cost_per_gram == Decimal("0")
-                    and material_data.spool_id in spools_by_id
-                ):
-                    spool = spools_by_id[material_data.spool_id]
-                    # `Spool.cost_per_gram` returns Optional[Decimal], so no
-                    # round-trip through str is needed to get back to exact
-                    # arithmetic -- it never left it.
-                    material_data.cost_per_gram = spool.cost_per_gram or Decimal("0")
+                if material_data.cost_per_gram is None:
+                    spool = spools_by_id.get(material_data.spool_id)
+                    if spool is None:
+                        raise MaterialCostUnderivable(
+                            f"spool {material_data.spool_id} was not found, so no cost "
+                            "per gram can be derived"
+                        )
+                    material_data.cost_per_gram = run_material_cost_per_gram(spool, None)
 
                 material = ProductionRunMaterial(
                     production_run_id=production_run.id,
@@ -498,13 +622,14 @@ class ProductionRunService:
         if not production_run:
             return None
 
-        # Get cost_per_gram from spool if not provided
-        if material_data.cost_per_gram == Decimal("0"):
+        if material_data.cost_per_gram is None:
             spool_result = await self.db.execute(
-                select(Spool).where(Spool.id == material_data.spool_id)
+                select(Spool).where(
+                    Spool.id == material_data.spool_id, Spool.tenant_id == self.tenant.id
+                )
             )
             spool = spool_result.scalar_one()
-            material_data.cost_per_gram = spool.cost_per_gram or Decimal("0")
+            material_data.cost_per_gram = run_material_cost_per_gram(spool, None)
 
         material = ProductionRunMaterial(
             production_run_id=run_id,
@@ -606,7 +731,7 @@ class ProductionRunService:
           deduction of nothing;
         * this method's audit trail: an `InventoryTransaction` per material
           and an atomic `UPDATE` of the spool, which the route skipped;
-        * this method's telemetry dispatch and rolling-average update, which
+        * this method's telemetry dispatch, which
           the route never reached -- so a run completed from the console
           never asked the printer what it used;
         * the route's exact cost: `record_actual_unit_costs`, rounded once to
@@ -1507,9 +1632,9 @@ class ProductionRunService:
         For ``scripts/backfill_cost_analysis.py``, which had its own copy of
         the weight-times-rate arithmetic. The material cost is each
         material's own ``total_cost``, and the unit costs are
-        :meth:`record_actual_unit_costs`'s. Rolling averages are left alone:
-        the run was completed long ago, and feeding it in now would weight an
-        old outcome as a new one. Returns whether anything was recorded.
+        :meth:`record_actual_unit_costs`'s. Once recorded, the run counts in
+        its models' realised averages by its units like any other, since those
+        are derived on read (T255). Returns whether anything was recorded.
         """
         total_material_cost = sum(
             (
@@ -1521,22 +1646,21 @@ class ProductionRunService:
         )
         if total_material_cost == Decimal("0"):
             return False
-        await self._record_run_actuals(production_run, total_material_cost, update_averages=False)
+        await self._record_run_actuals(production_run, total_material_cost)
         return production_run.cost_per_gram_actual is not None
 
     async def _record_run_actuals(
         self,
         production_run: ProductionRun,
         total_material_cost: Decimal,
-        *,
-        update_averages: bool = True,
     ) -> None:
-        """Weigh the successful output, record its unit costs, update averages.
+        """Weigh the successful output and record its unit costs.
 
         The successful weight is each successful unit's BOM weight. The unit
         costs themselves are `record_actual_unit_costs`'s -- the exact,
-        once-rounded figures -- so this method decides only which units count
-        and feeds each model's rolling average from what was recorded.
+        once-rounded figures -- so this method decides only which units count.
+        A model's realised average is derived from those records on read
+        (:func:`realised_unit_costs`), never stored (T255).
         """
         successful_weight = Decimal("0")
         if production_run.is_multi_plate and production_run.plates:
@@ -1568,14 +1692,6 @@ class ProductionRunService:
             )
             return
 
-        for unit, quantity in units if update_averages else []:
-            if unit.model_id and getattr(unit, "actual_cost_per_unit", None) is not None:
-                await self._update_model_rolling_average(
-                    model_id=unit.model_id,
-                    actual_cost_per_unit=unit.actual_cost_per_unit,
-                    successful_quantity=quantity,
-                )
-
         logger.info(
             f"Recorded run actuals for {production_run.run_number}: "
             f"cost_per_gram={production_run.cost_per_gram_actual}, "
@@ -1599,68 +1715,6 @@ class ProductionRunService:
         )
         total_weight = result.scalar()
         return Decimal(str(total_weight)) if total_weight else Decimal("0")
-
-    async def _update_model_rolling_average(
-        self,
-        model_id: UUID,
-        actual_cost_per_unit: Decimal,
-        successful_quantity: int,
-    ) -> None:
-        """
-        Update the model's rolling average production cost.
-
-        Uses weighted rolling average formula:
-        new_avg = (old_avg × old_count + new_cost × new_quantity) / (old_count + new_quantity)
-
-        Args:
-            model_id: UUID of the model to update
-            actual_cost_per_unit: Actual cost per unit from this production run
-            successful_quantity: Number of successful units in this run
-        """
-        from app.models.model import Model
-
-        # Get current model state
-        result = await self.db.execute(select(Model).where(Model.id == model_id))
-        model = result.scalar_one_or_none()
-
-        if not model:
-            logger.warning(f"Model {model_id} not found for rolling average update")
-            return
-
-        if successful_quantity <= 0:
-            logger.debug(
-                f"Skipping rolling average update for model {model_id}: no successful units"
-            )
-            return
-
-        # Calculate new rolling average
-        old_avg = (
-            Decimal(str(model.actual_production_cost))
-            if model.actual_production_cost
-            else Decimal("0")
-        )
-        old_count = model.production_cost_count or 0
-
-        if old_count == 0:
-            # First production run - use the new cost directly
-            new_avg = actual_cost_per_unit
-        else:
-            # Weighted rolling average
-            total_weight = old_count + successful_quantity
-            new_avg = (
-                old_avg * Decimal(str(old_count))
-                + actual_cost_per_unit * Decimal(str(successful_quantity))
-            ) / Decimal(str(total_weight))
-
-        # Update model
-        model.actual_production_cost = new_avg.quantize(Decimal("0.0001"))
-        model.production_cost_count = old_count + successful_quantity
-        model.production_cost_updated_at = datetime.now(timezone.utc)
-
-        logger.info(
-            f"Updated model {model.sku} rolling average: "
-            f"cost={new_avg:.4f}, count={model.production_cost_count}"
-        )
 
     async def _load_relationships(self, production_run: ProductionRun) -> None:
         """

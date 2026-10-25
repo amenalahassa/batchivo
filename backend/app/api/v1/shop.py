@@ -37,7 +37,7 @@ from app.services.cart import CartItem, CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
 from app.services.channel_economics import resolve_channel_economics
 from app.services.commerce_handover import legacy_product_write_guard, legacy_shop_write_guard
-from app.services.postage import postage_for_product
+from app.services.postage import freeze_order_postage
 from app.services.sale_snapshot import write_sale_snapshot
 from app.services.search_service import SearchService, get_search_service
 from app.services.shipping_service import ShippingService
@@ -1569,30 +1569,28 @@ async def complete_checkout(
         )
         db.add(db_item)
 
-    # Deduct inventory for each item, and total what posting this order costs.
+    # Deduct inventory for each item, and record what posting this order costs.
     #
     # `shipping_cost` above is what the customer was charged. `postage_paid` is
-    # the other side of it, read from the operator's shipping profiles by the
-    # weight of each product in the cart -- a parcel per line, which is what
-    # the profiles are keyed on. Where no profile covers a weight the figure
-    # stays zero rather than being guessed at (FR-024, task T157).
-    postage_total = Decimal("0")
+    # the other side of it: one parcel, weighed as the whole cart, priced from
+    # the operator's shipping profiles in the one place every storefront path
+    # uses (T257). A gap leaves it unrecorded rather than zero (FR-019).
+    lines: list[tuple[Optional[Product], int]] = []
     for item in cart.items:
+        product = None
         if item.product_id:
             product_result = await db.execute(
                 select(Product).where(Product.id == UUID(item.product_id))
             )
             product = product_result.scalar_one_or_none()
-            if product:
-                postage_total += await postage_for_product(db, shop_tenant, product) * item.quantity
-                if product.units_in_stock is not None:
-                    product.units_in_stock = max(0, product.units_in_stock - item.quantity)
+            if product and product.units_in_stock is not None:
+                product.units_in_stock = max(0, product.units_in_stock - item.quantity)
+        lines.append((product, item.quantity))
 
-    db_order.postage_paid = postage_total
-    # The shop's checkout adds no tax to its total: a recorded zero (task T230).
+    await freeze_order_postage(db, shop_tenant, db_order, lines)
+    # The shop's checkout adds no tax to its total: a recorded zero (task T230),
+    # derived rather than entered by anyone (T241, FR-041e).
     db_order.sales_tax_collected = Decimal("0")
-    # Both come from the operator's own shipping profiles, not from a person or
-    # a feed (T241, FR-041e).
     db_order.actuals_source = "derived"
 
     # Freeze what each line earned, as it stands (FR-036, task T157).

@@ -411,6 +411,54 @@ class TestProductionRunMaterialsEndpoints:
         assert Decimal(data["estimated_model_weight_grams"]) == Decimal("150.0")
         assert Decimal(data["cost_per_gram"]) == Decimal("0.025")
 
+    async def test_a_material_without_a_cost_is_frozen_at_the_spools_landed_figure(
+        self, async_client: AsyncClient, db_session, test_tenant, test_spool
+    ):
+        """T254: the server freezes the landed cost; the browser no longer derives one."""
+        test_spool.unusable_remainder_grams = Decimal("250")
+        await db_session.commit()
+        run = ProductionRun(
+            tenant_id=test_tenant.id,
+            run_number="TEST-LANDED-001",
+            started_at=datetime.now(timezone.utc),
+            status="in_progress",
+        )
+        db_session.add(run)
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/production-runs/{run.id}/materials",
+            json={"spool_id": str(test_spool.id), "estimated_model_weight_grams": 50.0},
+        )
+
+        assert response.status_code == 201, response.text
+        # 25.00 over 750 usable grams, not over the nominal 1000.
+        stored = Decimal(response.json()["cost_per_gram"]).quantize(Decimal("0.0001"))
+        assert stored == Decimal("0.0333")
+
+    async def test_a_material_whose_cost_cannot_be_derived_is_refused_not_zero(
+        self, async_client: AsyncClient, db_session, test_tenant, test_spool
+    ):
+        """FR-019: consumed filament is never frozen as free."""
+        test_spool.purchase_price = None
+        await db_session.commit()
+        run = ProductionRun(
+            tenant_id=test_tenant.id,
+            run_number="TEST-LANDED-002",
+            started_at=datetime.now(timezone.utc),
+            status="in_progress",
+        )
+        db_session.add(run)
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/production-runs/{run.id}/materials",
+            json={"spool_id": str(test_spool.id), "estimated_model_weight_grams": 50.0},
+        )
+
+        assert response.status_code == 422
+        assert "no purchase price" in response.json()["detail"]
+
     async def test_add_material_insufficient_inventory(
         self, async_client: AsyncClient, db_session, test_tenant, test_spool
     ):

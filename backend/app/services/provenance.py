@@ -391,6 +391,43 @@ async def origins_for_entity(
 # ---------------------------------------------------------------------------
 
 
+async def revert_to_assumed(
+    db: AsyncSession,
+    tenant: "Tenant",
+    *,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    field_name: str,
+    as_of: date,
+) -> None:
+    """Withdraw a figure's claim to be evidence, whatever its origin was.
+
+    For one case only: an item's failure mode changed, so a yield observed
+    under the old mode is no longer an observation of anything (FR-015d). The
+    figure stays in use -- pricing cannot stop -- but is labelled assumed until
+    runs under the new mode accumulate. This is not an operator typing over an
+    observed figure (FR-004 still refuses that); it is the system saying the
+    evidence no longer applies.
+    """
+    registry_entry(entity_type, field_name)
+    existing = (
+        await db.execute(
+            select(PricingInputProvenance).where(
+                PricingInputProvenance.tenant_id == tenant.id,
+                PricingInputProvenance.entity_type == entity_type,
+                PricingInputProvenance.entity_id == entity_id,
+                PricingInputProvenance.field_name == field_name,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        return
+    existing.source = "assumed"
+    existing.as_of = as_of
+    existing.confidence = None
+    await db.flush()
+
+
 async def record_origin(
     db: AsyncSession,
     tenant: "Tenant",

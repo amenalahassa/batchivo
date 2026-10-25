@@ -81,7 +81,11 @@ from app.schemas.product_image import (
 from app.services.currency_edge import CostConversion, books_to_channel
 from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
-from app.services.cost_resolution import cost_load_options, product_cost_breakdown
+from app.services.cost_resolution import (
+    cost_load_options,
+    product_cost_breakdown,
+    with_landed_cost,
+)
 from app.services.costing import (
     MARGIN_BASIS_LABELS,
     CircularReferenceError,
@@ -89,7 +93,7 @@ from app.services.costing import (
     MaxDepthExceededError,
     resolve_margin_basis,
 )
-from app.services.postage import postage_for_product
+from app.services.postage import Postage, postage_for_product
 from app.services.pricing_policy import CostPolicy, resolve_cost_policy
 from app.services.etsy_sync import EtsySyncService, EtsySyncError
 from app.services.shopify_sync import (
@@ -132,6 +136,21 @@ def _get_product_load_options():
     ]
 
 
+async def _realised_costs_for(
+    db: AsyncSession, tenant: Tenant, products: list[Product]
+) -> dict[UUID, Decimal]:
+    """Each model's realised unit cost, for the products a response shows (T255).
+
+    Derived from completed runs in two queries for the whole page, then handed
+    to the engine, which does not query.
+    """
+    from app.services.production_run import realised_unit_costs
+
+    model_ids = {pm.model_id for product in products for pm in (product.product_models or [])}
+    realised = await realised_unit_costs(db, tenant.id, list(model_ids))
+    return {model_id: cost.average for model_id, cost in realised.items()}
+
+
 # Helper function to calculate and attach cost breakdown
 async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) -> dict:
     """Convert Product model to response dict with cost breakdown.
@@ -141,8 +160,11 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
     the same snapshot `GET /products/{id}/cost` itemises (Constitution III).
     """
     policy = await resolve_cost_policy(db, tenant)
+    realised = await _realised_costs_for(db, tenant, [product])
 
-    cost_breakdown = CostingService.calculate_product_cost(product, policy=policy)
+    cost_breakdown = CostingService.calculate_product_cost(
+        product, policy=policy, realised_unit_costs=realised
+    )
 
     # Build model responses with details
     model_responses = []
@@ -436,6 +458,7 @@ async def list_products(
         # rejected setting would otherwise log a warning for every product, and
         # two rows in one list must never be costed at two different rates.
         policy = await resolve_cost_policy(db, tenant)
+        realised = await _realised_costs_for(db, tenant, list(products))
 
         # Build response with calculated costs
         product_responses = []
@@ -443,6 +466,7 @@ async def list_products(
             cost_breakdown = CostingService.calculate_product_cost(
                 product,
                 policy=policy,
+                realised_unit_costs=realised,
             )
             total_make_cost = cost_breakdown.total_make_cost
 
@@ -525,6 +549,7 @@ async def list_products(
     # rejected setting would otherwise log a warning for every product, and two
     # rows in one list must never be costed at two different rates.
     policy = await resolve_cost_policy(db, tenant)
+    realised = await _realised_costs_for(db, tenant, list(products))
 
     # Build response with calculated costs
     product_responses = []
@@ -533,6 +558,7 @@ async def list_products(
         cost_breakdown = CostingService.calculate_product_cost(
             product,
             policy=policy,
+            realised_unit_costs=realised,
         )
         total_make_cost = cost_breakdown.total_make_cost
 
@@ -792,34 +818,48 @@ async def get_product_margin(
     # order exists there is none to read, so a planned margin is computed at
     # zero shipping revenue -- which is the free-shipping case FR-024 exists
     # for, and the case the acceptance scenario uses.
+    #
+    # The margin is the whole line's at ``quantity``: its subtotal, its
+    # make-cost and the one parcel it ships in, so a per-unit fee charged once
+    # per unit meets the revenue of every unit (T258).
+    units = Decimal(quantity)
     context, treatment = fee_engine.exclusive_context(
-        item_subtotal=Decimal(str(pricing.list_price)),
+        item_subtotal=Decimal(str(pricing.list_price)) * units,
         quantity=quantity,
     )
     stack = fee_engine.compute(channel, context, reference, rules=rules)
 
     conversion = await _costs_in_channel_currency(db, tenant, channel, reference)
-    postage = conversion.apply(await _postage_for(db, tenant, product))
+    postage_found = await _postage_for(db, tenant, product, as_of=reference, quantity=quantity)
+    postage = conversion.apply(postage_found.or_zero())
 
     result = CostingService.margin(
         context=context,
-        make_cost=conversion.apply(breakdown.total_make_cost),
+        make_cost=conversion.apply(breakdown.total_make_cost) * units,
         channel=channel,
         fees=stack,
         policy=policy,
         economics=await resolve_channel_economics(db, channel, reference),
         tax=treatment,
         postage_paid=postage,
-        machine_hours=breakdown.machine_hours,
+        machine_hours=(
+            breakdown.machine_hours * units if breakdown.machine_hours is not None else None
+        ),
         observed_share=breakdown.observed_share,
         assumed_share=breakdown.assumed_share,
-        incomplete_reasons=[*breakdown.incomplete_reasons, *conversion.reasons],
+        incomplete_reasons=[
+            *breakdown.incomplete_reasons,
+            *conversion.reasons,
+            *postage_found.incomplete_reasons,
+        ],
     )
 
     return ProductMarginResponse(
         product_id=product.id,
         sales_channel_id=channel.id,
         as_of=reference,
+        quantity=quantity,
+        unit_price=Decimal(str(pricing.list_price)),
         list_price=result.list_price,
         shipping_revenue=result.shipping_revenue,
         postage_paid=result.postage_paid,
@@ -879,15 +919,19 @@ async def _postage_for(
     db: AsyncSession,
     tenant: Tenant,
     product: Product,
-) -> Decimal:
-    """Postage for one parcel of this product.
+    *,
+    as_of: Optional[date] = None,
+    quantity: int = 1,
+) -> Postage:
+    """Postage for one parcel of this product, on ``as_of``.
 
     Delegates to :func:`app.services.postage.postage_for_product`, which the
-    storefront checkout reads too (task T157). A route keeping its own copy
+    storefront checkouts read too (task T157). A route keeping its own copy
     would let the margin this screen reports and the postage frozen onto a
-    settled order disagree about one parcel (Constitution III).
+    settled order disagree about one parcel (Constitution III). A gap comes
+    back unknown with its reason, for the caller to report (T257).
     """
-    return await postage_for_product(db, tenant, product)
+    return await postage_for_product(db, tenant, product, quantity=quantity, as_of=as_of)
 
 
 async def _planned_profit(
@@ -952,7 +996,9 @@ async def _planned_profit(
         policy=policy if policy is not None else await resolve_cost_policy(db, tenant),
         economics=await resolve_channel_economics(db, channel, reference),
         tax=treatment,
-        postage_paid=conversion.apply(await _postage_for(db, tenant, product)),
+        postage_paid=conversion.apply(
+            (await _postage_for(db, tenant, product, as_of=reference)).or_zero()
+        ),
         machine_hours=machine_hours,
     )
 
@@ -1039,8 +1085,12 @@ async def _pricing_context(
     product_id: UUID,
     channel_id: UUID,
     reference: date,
+    quantity: int = 1,
 ) -> _PricingContext:
     """Load and cost one product on one channel, or raise the right error.
+
+    ``quantity`` sizes the parcel: a line of three units ships as one parcel
+    of three, not three parcels (T257, T258).
 
     A missing product or channel is a ``404``, and so is a product the operator
     has not listed on that channel: every route under
@@ -1134,13 +1184,23 @@ async def _pricing_context(
     # The solver and the ladder are handed costs already in the channel's
     # currency, so a solved price is a price there (task T231).
     conversion = await _costs_in_channel_currency(db, tenant, channel, reference)
-    postage = conversion.apply(await _postage_for(db, tenant, product))
+    postage_found = await _postage_for(db, tenant, product, as_of=reference, quantity=quantity)
+    postage = conversion.apply(postage_found.or_zero())
     economics = await resolve_channel_economics(db, channel, reference)
     if conversion.rate != 1:
         breakdown = breakdown.model_copy(
             update={
                 "total_make_cost": conversion.apply(breakdown.total_make_cost),
                 "incomplete_reasons": [*breakdown.incomplete_reasons, *conversion.reasons],
+            }
+        )
+    if postage_found.incomplete_reasons:
+        breakdown = breakdown.model_copy(
+            update={
+                "incomplete_reasons": [
+                    *breakdown.incomplete_reasons,
+                    *postage_found.incomplete_reasons,
+                ]
             }
         )
     return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage, economics)
@@ -1210,7 +1270,9 @@ async def solve_product_price(
     anything: it writes nothing at all.
     """
     reference = request.as_of or clock.today()
-    ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
+    ctx = await _pricing_context(
+        db, tenant, product_id, channel_id, reference, quantity=request.quantity
+    )
 
     result = pricing_solver.solve(
         channel=ctx.channel,
@@ -1325,7 +1387,7 @@ async def get_product_price_ladder(
     empty ladder would read as "no price works".
     """
     reference = as_of or clock.today()
-    ctx = await _pricing_context(db, tenant, product_id, channel_id, reference)
+    ctx = await _pricing_context(db, tenant, product_id, channel_id, reference, quantity=quantity)
 
     try:
         rungs = pricing_solver.ladder(
@@ -1726,9 +1788,11 @@ async def add_product_pricing(
             Product.tenant_id == tenant.id,
         )
         .options(
-            selectinload(Product.product_models)
-            .selectinload(ProductModel.model)
-            .selectinload(Model.materials),
+            with_landed_cost(
+                selectinload(Product.product_models)
+                .selectinload(ProductModel.model)
+                .selectinload(Model.materials)
+            ),
             selectinload(Product.product_models)
             .selectinload(ProductModel.model)
             .selectinload(Model.components),

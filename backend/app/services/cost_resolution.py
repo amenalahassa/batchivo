@@ -69,10 +69,13 @@ def cost_load_options() -> list:
     """
     from sqlalchemy.orm import selectinload
 
+    from app.models.filament_purchase import FilamentPurchase
     from app.models.model import Model
+    from app.models.model_material import ModelMaterial
     from app.models.product import Product
     from app.models.product_component import ProductComponent
     from app.models.product_model import ProductModel
+    from app.models.spool import Spool
 
     def chain(prefix: Optional[Any], *path: Any) -> Any:
         """Extend `prefix` (or start fresh when it is None) along `path`."""
@@ -86,7 +89,17 @@ def cost_load_options() -> list:
     def cost_inputs(prefix: Optional[Any]) -> list:
         """What one product level costs from, whatever path reached it."""
         return [
-            chain(prefix, Product.product_models, ProductModel.model, Model.materials),
+            # The spool's purchase and that purchase's other spools, which its
+            # landed per-gram cost is allocated across (T254).
+            chain(
+                prefix,
+                Product.product_models,
+                ProductModel.model,
+                Model.materials,
+                ModelMaterial.spool,
+                Spool.filament_purchase,
+                FilamentPurchase.spools,
+            ),
             chain(prefix, Product.product_models, ProductModel.model, Model.components),
             chain(prefix, Product.product_models, ProductModel.model, Model.printer_configs),
             chain(prefix, Product.packaging_consumable),
@@ -105,6 +118,26 @@ def cost_load_options() -> list:
     return options
 
 
+def with_landed_cost(materials_loader: Any) -> Any:
+    """Extend a loader that reaches `Model.materials` to what landed cost reads.
+
+    A bill-of-materials line costs at its spool's landed per-gram figure,
+    allocated across every spool on the spool's purchase (T254). Eager loading
+    does not follow that cycle back from the purchase on its own, so a caller
+    that costs a model names it with this, and the engine never meets an
+    unloaded purchase.
+    """
+    from app.models.filament_purchase import FilamentPurchase
+    from app.models.model_material import ModelMaterial
+    from app.models.spool import Spool
+
+    return (
+        materials_loader.selectinload(ModelMaterial.spool)
+        .selectinload(Spool.filament_purchase)
+        .selectinload(FilamentPurchase.spools)
+    )
+
+
 def _model_entities(model: "Model") -> set[tuple[str, uuid.UUID]]:
     """Every entity whose recorded origins bear on this item's cost.
 
@@ -119,6 +152,12 @@ def _model_entities(model: "Model") -> set[tuple[str, uuid.UUID]]:
         spool_id = getattr(material, "spool_id", None)
         if spool_id is not None:
             entities.add(("spool", spool_id))
+        # A derived per-gram figure stands on the purchase's shipping and tax
+        # too (T254), so their origins are gathered with the spool's.
+        spool = getattr(material, "__dict__", {}).get("spool")
+        purchase_id = getattr(spool, "filament_purchase_id", None)
+        if purchase_id is not None:
+            entities.add(("filament_purchase", purchase_id))
 
     for component in getattr(model, "components", None) or []:
         entities.add(("model_component", component.id))

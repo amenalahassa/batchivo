@@ -94,7 +94,7 @@ const mockSpool = {
   is_active: true,
   initial_weight_grams: 1000,
   current_weight_grams: 800,
-  cost_per_gram: 0.025,
+  cost_per_gram: '0.025',
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
 }

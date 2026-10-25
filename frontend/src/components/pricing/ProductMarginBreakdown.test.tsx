@@ -98,6 +98,15 @@ describe('ProductMarginBreakdown', () => {
     expect(screen.getByTestId('fee-expected-offsite ads')).toHaveTextContent('Expected')
   })
 
+  it('asks for a tier row margin at that tier quantity (T258)', async () => {
+    renderPanel(
+      <ProductMarginBreakdown productId="product-1" channelId="channel-1" quantity={3} />,
+    )
+
+    expect(await screen.findByText('transaction')).toBeInTheDocument()
+    expect(api.getMargin).toHaveBeenCalledWith('product-1', 'channel-1', { quantity: 3 })
+  })
+
   it('sets postage paid against shipping charged as its own, negative, line', async () => {
     renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)
 

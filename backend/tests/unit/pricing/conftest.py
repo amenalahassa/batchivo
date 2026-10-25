@@ -122,7 +122,6 @@ def make_model(**overrides) -> Model:
         labor_hours_per_item=golden.AT_RISK_LABOR_MINUTES / MINUTES_PER_HOUR,
         finishing_hours_per_item=Decimal("0"),
         packing_hours_per_item=golden.PACKING_LABOR_MINUTES / MINUTES_PER_HOUR,
-        actual_production_cost=None,
         is_active=True,
     )
     defaults.update(overrides)

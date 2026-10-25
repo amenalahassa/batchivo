@@ -47,7 +47,8 @@ from app.schemas.model import (
     ModelUpdate,
 )
 from app.core import clock
-from app.services.cost_resolution import model_cost_breakdown
+from app.services.cost_resolution import model_cost_breakdown, with_landed_cost
+from app.services.production_run import realised_unit_costs
 from app.services.costing import CostingService
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.provenance import (
@@ -57,6 +58,7 @@ from app.services.provenance import (
     record_operator_write,
     record_origin,
     refuse_overwriting_observed,
+    revert_to_assumed,
 )
 from app.utils.csv_handler import (
     IGNORED_COLUMNS,
@@ -83,10 +85,16 @@ async def model_with_cost(model: Model, tenant: Tenant, db: AsyncSession) -> dic
     """
     policy = await resolve_cost_policy(db, tenant)
     cost_breakdown = CostingService.calculate_model_cost(model, policy=policy)
+    # The realised unit cost is derived from completed runs on read, never
+    # stored on the model (T255).
+    realised = (await realised_unit_costs(db, tenant.id, [model.id])).get(model.id)
 
     return {
         **model.__dict__,
         "cost_breakdown": cost_breakdown,
+        "actual_production_cost": realised.average if realised else None,
+        "production_cost_count": realised.units if realised else 0,
+        "production_cost_updated_at": realised.last_completed_at if realised else None,
     }
 
 
@@ -228,7 +236,7 @@ async def list_models(
     # Apply pagination and fetch with materials/components for cost calculation
     query = (
         query.options(
-            selectinload(Model.materials),
+            with_landed_cost(selectinload(Model.materials)),
             selectinload(Model.components),
         )
         .order_by(Model.created_at.desc())
@@ -283,7 +291,7 @@ async def export_models_csv(
             Model.is_active.is_(True),
         )
         .options(
-            selectinload(Model.materials).selectinload(ModelMaterial.spool),
+            with_landed_cost(selectinload(Model.materials)),
         )
         .order_by(Model.created_at.desc())
     )
@@ -331,7 +339,7 @@ async def get_model(
             Model.tenant_id == tenant.id,
         )
         .options(
-            selectinload(Model.materials).selectinload(ModelMaterial.spool),
+            with_landed_cost(selectinload(Model.materials)),
             selectinload(Model.components),
         )
     )
@@ -373,7 +381,7 @@ async def get_model_cost(
         select(Model)
         .where(Model.id == model_id, Model.tenant_id == tenant.id)
         .options(
-            selectinload(Model.materials).selectinload(ModelMaterial.spool),
+            with_landed_cost(selectinload(Model.materials)),
             selectinload(Model.components),
             selectinload(Model.printer_configs),
         )
@@ -585,27 +593,18 @@ async def update_model_cost_profile(
     # FR-015d: the same yield figure means different things under each failure
     # mode, so a mode change must not carry an observation made under the other
     # one over as if it applied. The figure stays in use -- pricing cannot stop
-    # because a mode changed -- but it stops claiming to be evidence for a mode
-    # it was never measured under.
-    if mode_changed and "expected_yield" not in changes:
-        try:
-            await record_origin(
+    # because a mode changed -- but it reverts to assumed, observed or not, and
+    # the learning sweep reads only runs completed from today (T256).
+    if mode_changed:
+        model.failure_mode_since = today
+        if "expected_yield" not in changes:
+            await revert_to_assumed(
                 db,
                 tenant,
                 entity_type="model",
                 entity_id=model.id,
                 field_name="expected_yield",
-                source="assumed",
                 as_of=today,
-                measured_by_user_id=user.id,
-            )
-        except ProvenanceNotEditable:
-            # An observed yield is its source's to revise, and refusing the
-            # whole mode change over the label would be the worse outcome.
-            logger.warning(
-                f"Model {model.id} changed failure mode while expected_yield is "
-                f"observed; the figure now applies to a mode it was not measured "
-                f"under (FR-015d)"
             )
 
     db.add(model)
@@ -683,7 +682,7 @@ async def get_model_production_defaults(
             color=ft.color if ft else "Unknown",
             color_hex=ft.color_hex if ft else None,
             weight_grams=model_material.weight_grams,
-            cost_per_gram=model_material.cost_per_gram,
+            cost_per_gram=model_material.resolved_cost_per_gram,
             current_weight=spool.current_weight,
             is_active=spool.is_active,
         )
@@ -726,7 +725,7 @@ async def update_model(
             Model.tenant_id == tenant.id,
         )
         .options(
-            selectinload(Model.materials),
+            with_landed_cost(selectinload(Model.materials)),
             selectinload(Model.components),
         )
     )
@@ -850,7 +849,9 @@ async def add_model_material(
 
     db.add(material)
     await db.flush()
-    # The weight and the cost per gram are what this person entered (T229).
+    # The weight, and the cost per gram when they overrode the spool's, are
+    # what this person entered (T229, T254). An empty override is not a
+    # figure, so it records no origin.
     await record_operator_origins(
         db,
         tenant,
@@ -861,7 +862,7 @@ async def add_model_material(
             tenant,
             entity_type="model_material",
             entity=None,
-            changes=material_data.model_dump(),
+            changes=material_data.model_dump(exclude_none=True),
         ),
         user=user,
     )

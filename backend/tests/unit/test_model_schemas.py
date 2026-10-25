@@ -57,13 +57,19 @@ class TestModelMaterialBase:
                 cost_per_gram=Decimal("0.02"),
             )
 
-    def test_cost_per_gram_zero_accepted(self):
-        m = ModelMaterialBase(
-            spool_id=uuid4(),
-            weight_grams=Decimal("5"),
-            cost_per_gram=Decimal("0"),
-        )
-        assert m.cost_per_gram == Decimal("0")
+    def test_a_zero_override_is_refused(self):
+        # A zero per-gram override would cost the filament as free; leaving it
+        # empty is how a line takes the spool's landed cost (T254, FR-019).
+        with pytest.raises(ValidationError):
+            ModelMaterialBase(
+                spool_id=uuid4(),
+                weight_grams=Decimal("5"),
+                cost_per_gram=Decimal("0"),
+            )
+
+    def test_cost_per_gram_may_be_left_empty(self):
+        m = ModelMaterialBase(spool_id=uuid4(), weight_grams=Decimal("5"))
+        assert m.cost_per_gram is None
 
     def test_cost_per_gram_negative_raises(self):
         with pytest.raises(ValidationError):

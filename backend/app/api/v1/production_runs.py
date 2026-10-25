@@ -45,10 +45,24 @@ from app.schemas.production_run_plate import (
     ProductionRunPlateListResponse,
     MarkPlateCompleteRequest,
 )
-from app.services.production_run import ProductionRunService
+from app.services.production_run import (
+    MaterialCostUnderivable,
+    ProductionRunService,
+    run_material_cost_per_gram,
+)
 from app.services.production_run_plate_service import ProductionRunPlateService
 
 router = APIRouter(tags=["production-runs"])
+
+
+def _frozen_cost_per_gram(spool: Spool, given: Optional[Decimal]) -> Decimal:
+    """The per-gram figure a run material is frozen at, or 422 (T254, FR-019)."""
+    try:
+        return run_material_cost_per_gram(spool, given)
+    except MaterialCostUnderivable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
 
 @router.post("", response_model=ProductionRunDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -146,6 +160,7 @@ async def create_production_run(
                 detail=f"Insufficient inventory in spool {spool.spool_id}. Available: {spool.current_weight}g, Required: {estimated_usage}g",
             )
 
+        material_data.cost_per_gram = _frozen_cost_per_gram(spool, material_data.cost_per_gram)
         db_material = ProductionRunMaterial(
             production_run_id=db_production_run.id, **material_data.model_dump()
         )
@@ -654,6 +669,7 @@ async def add_production_run_material(
         )
 
     # Create material
+    material.cost_per_gram = _frozen_cost_per_gram(spool, material.cost_per_gram)
     db_material = ProductionRunMaterial(production_run_id=run_id, **material.model_dump())
     db.add(db_material)
     await db.commit()

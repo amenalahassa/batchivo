@@ -496,6 +496,10 @@ export interface ProductMargin {
   product_id: string
   sales_channel_id: string
   as_of: string
+  /** Units on the line every amount is for (T258); one when not asked. */
+  quantity?: number
+  /** The price per unit at this quantity's tier. */
+  unit_price?: Money | null
 
   list_price: Money
   shipping_revenue: Money

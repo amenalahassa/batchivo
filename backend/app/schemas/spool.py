@@ -92,6 +92,13 @@ class SpoolResponse(SpoolBase):
     # Computed fields
     remaining_weight: float = Field(..., description="Remaining weight in grams")
     remaining_percentage: float = Field(..., description="Remaining percentage")
+    cost_per_gram: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Landed cost per usable gram (price, allocated shipping and tax, over usable "
+            "weight); empty when it cannot be derived"
+        ),
+    )
 
     # FilamentType info (nested)
     filament_type: Optional[FilamentTypeResponse] = None

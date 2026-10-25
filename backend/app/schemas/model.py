@@ -151,7 +151,14 @@ class ModelMaterialBase(BaseModel):
 
     spool_id: UUID = Field(..., description="Spool ID (material type + color + brand)")
     weight_grams: Decimal = Field(..., gt=0, description="Weight of material used in grams")
-    cost_per_gram: Decimal = Field(..., ge=0, description="Cost per gram (snapshot)")
+    cost_per_gram: Optional[Decimal] = Field(
+        None,
+        gt=0,
+        description=(
+            "Operator override of the per-gram cost. Leave empty to cost the line at "
+            "the spool's landed per-gram figure, derived on read (T254)"
+        ),
+    )
 
 
 class ModelMaterialCreate(ModelMaterialBase):
@@ -166,6 +173,16 @@ class ModelMaterialResponse(ModelMaterialBase):
     id: UUID
     model_id: UUID
     created_at: datetime
+    resolved_cost_per_gram: Optional[Decimal] = Field(
+        None,
+        description=(
+            "What the line is costed at: the override if set, else the spool's landed "
+            "per-gram cost; empty when neither can be derived"
+        ),
+    )
+    line_cost: Optional[Decimal] = Field(
+        None, description="Weight times the resolved per-gram cost; empty when underivable"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -282,15 +299,19 @@ class ModelResponse(ModelBase):
         default_factory=list,
         description="What the engine could not cost; non-empty means the cost is a floor (FR-019)",
     )
-    # Production cost tracking (Phase 2)
+    # Realised production cost, derived from completed runs on read (T255)
     actual_production_cost: Optional[Decimal] = Field(
-        None, description="Rolling average actual production cost per unit from completed runs"
+        None,
+        description=(
+            "Actual cost per unit, averaged over completed runs by successful units; "
+            "derived on read, unrounded"
+        ),
     )
     production_cost_count: int = Field(
-        0, description="Number of completed production runs included in rolling average"
+        0, description="Successful units from completed runs the average is taken over"
     )
     production_cost_updated_at: Optional[datetime] = Field(
-        None, description="Last time actual_production_cost was updated"
+        None, description="When the latest completed run in the average finished"
     )
 
     model_config = ConfigDict(from_attributes=True)
@@ -320,7 +341,10 @@ class BOMSpoolSuggestion(BaseModel):
     color: str = Field(..., description="Spool color name")
     color_hex: Optional[str] = Field(None, description="Hex color code")
     weight_grams: Decimal = Field(..., description="Weight from model BOM (grams)")
-    cost_per_gram: Decimal = Field(..., description="Cost per gram snapshot")
+    cost_per_gram: Optional[Decimal] = Field(
+        None,
+        description="Per-gram cost the line is costed at (override, else spool landed cost)",
+    )
     current_weight: Decimal = Field(..., description="Current spool weight available (grams)")
     is_active: bool = Field(..., description="Whether spool is active")
 

@@ -164,20 +164,23 @@ class TestModelComponentDerivesNothing:
 # ---------------------------------------------------------------------------
 
 
-class TestModelMaterialTotalCost:
-    def test_basic_calculation(self):
-        # This figure feeds every make-cost in the system, so it is exact and
+class TestModelMaterialLineCost:
+    """Weight times the per-gram figure the line resolves to (T254)."""
+
+    def test_an_override_is_multiplied_exactly(self):
+        # This figure is shown beside every BOM line, so it is exact and
         # asserted exactly (Constitution IV).
-        obj = make_model_material(weight_grams=100, cost_per_gram=Decimal("0.03"))
-        assert ModelMaterial.total_cost.fget(obj) == Decimal("3.00")
+        line = ModelMaterial(weight_grams=Decimal("100"), cost_per_gram=Decimal("0.03"))
+        assert line.line_cost == Decimal("3.00")
 
-    def test_zero_weight(self):
-        obj = make_model_material(weight_grams=0, cost_per_gram=Decimal("0.05"))
-        assert ModelMaterial.total_cost.fget(obj) == 0.0
+    def test_zero_weight_costs_nothing(self):
+        line = ModelMaterial(weight_grams=Decimal("0"), cost_per_gram=Decimal("0.05"))
+        assert line.line_cost == Decimal("0")
 
-    def test_zero_cost(self):
-        obj = make_model_material(weight_grams=50, cost_per_gram=Decimal("0.00"))
-        assert ModelMaterial.total_cost.fget(obj) == 0.0
+    def test_no_override_and_no_spool_is_unknown_not_zero(self):
+        line = ModelMaterial(weight_grams=Decimal("50"), cost_per_gram=None)
+        assert line.resolved_cost_per_gram is None
+        assert line.line_cost is None
 
 
 # ---------------------------------------------------------------------------

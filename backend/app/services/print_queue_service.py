@@ -819,6 +819,8 @@ class PrintQueueService:
 
     async def _get_pending_jobs(self) -> list[PrintJob]:
         """Get pending jobs ordered by priority."""
+        from app.services.cost_resolution import with_landed_cost
+
         result = await self.db.execute(
             select(PrintJob)
             .where(PrintJob.tenant_id == self.tenant.id)
@@ -826,7 +828,7 @@ class PrintQueueService:
             .order_by(PrintJob.priority.desc(), PrintJob.created_at.asc())
             .options(
                 selectinload(PrintJob.model).selectinload(Model.printer_configs),
-                selectinload(PrintJob.model).selectinload(Model.materials),
+                with_landed_cost(selectinload(PrintJob.model).selectinload(Model.materials)),
             )
         )
         return list(result.scalars().all())

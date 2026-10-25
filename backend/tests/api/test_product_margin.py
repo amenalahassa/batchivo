@@ -117,6 +117,31 @@ class TestTheMarginResponse:
         assert Decimal(charges["transaction"]["amount"]) == Decimal("4.22")
         assert Decimal(charges["payment_processing"]["amount"]) == Decimal("2.25")
 
+    async def test_a_quantity_is_priced_as_the_whole_line(
+        self, client: AsyncClient, test_product: Product, channel: SalesChannel, priced
+    ) -> None:
+        """T258: three units are three units' revenue and cost, with one fixed fee."""
+        one = (await client.get(_url(test_product, channel))).json()
+        three = (await client.get(_url(test_product, channel), params={"quantity": 3})).json()
+
+        assert three["quantity"] == 3
+        assert Decimal(three["unit_price"]) == LIST_PRICE
+        assert Decimal(three["list_price"]) == LIST_PRICE * 3
+        assert Decimal(three["make_cost"]) == Decimal(one["make_cost"]) * 3
+        processing = {c["name"]: Decimal(c["amount"]) for c in three["fees"]}
+        # 3% of three units' subtotal plus one 0.30, not three of them.
+        assert processing["payment_processing"] == (
+            LIST_PRICE * 3 * Decimal("0.03") + Decimal("0.30")
+        ).quantize(Decimal("0.01"))
+
+    async def test_a_parcel_no_profile_covers_is_reported_not_free(
+        self, client: AsyncClient, test_product: Product, channel: SalesChannel, priced
+    ) -> None:
+        """T257: unknown postage is an incomplete reason, not a silent zero."""
+        body = (await client.get(_url(test_product, channel))).json()
+
+        assert any("postage" in reason for reason in body["incomplete_reasons"])
+
     async def test_a_periodic_fee_is_not_charged_on_the_unit(
         self, client: AsyncClient, test_product: Product, channel: SalesChannel, priced
     ) -> None:

@@ -95,9 +95,10 @@ describe('the model screens derive no price of their own', () => {
     expect(sourceOf('ComponentsEditor.tsx')).toContain(
       'multiplyMoney(component.unit_cost, component.quantity)',
     )
-    expect(sourceOf('BOMEditor.tsx')).toContain(
-      'multiplyMoney(material.cost_per_gram, material.weight_grams)',
-    )
+    // The BOM line is now the server's own `line_cost` (T254): the browser
+    // neither derives a per-gram figure nor multiplies one.
+    expect(sourceOf('BOMEditor.tsx')).toContain('formatCurrency(material.line_cost)')
+    expect(sourceOf('BOMEditor.tsx')).not.toContain('divideMoney(')
   })
 
   it('compares actual against theoretical exactly, so the arrow points the right way', () => {

@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core import clock
 from app.tasks.celery_app import celery_app
@@ -277,17 +278,252 @@ def _waste_grams_per_plate(run: "ProductionRun") -> Optional[Decimal]:
     return total / _plates(run)
 
 
-#: What a production run can move, and nothing else.
+#: The model fields a run's own columns bear witness to.
 #:
-#: Part weight is deliberately absent. It belongs to ``model_material``, one
-#: row per filament the item uses, and a run's total weight cannot be
-#: attributed across several materials without the per-material actuals that
-#: ``ProductionRunMaterial`` carries. Guessing the split here would move a
-#: figure on evidence that does not bear on it.
+#: Expected yield and part weight are learned too, but not from run columns:
+#: yield from the parts each run attempted and lost for this model, and part
+#: weight from a run's per-spool actuals where they attribute to one bill-of-
+#: materials line. See :func:`_learn_yield` and :func:`_learn_part_weight`.
 LEARNABLE_FROM_RUNS: tuple[_LearnableField, ...] = (
     _LearnableField("print_time_minutes", _print_minutes_per_plate, "machine occupancy"),
     _LearnableField("waste_grams", _waste_grams_per_plate, "purge and priming filament"),
 )
+
+
+# ---------------------------------------------------------------------------
+# Yield and part weight (task T256, FR-015d, SC-010)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class YieldEvidence:
+    """What one run says about one model's failures, in parts and in plates."""
+
+    parts_attempted: int
+    parts_succeeded: int
+    plates_attempted: int
+    plates_succeeded: int
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return -(-numerator // denominator)
+
+
+def _tally(ok: int, lost: int, size: int) -> tuple[int, int, int, int]:
+    """Parts and plates for one printed group; a failure condemns its plate."""
+    loads = _ceil_div(ok + lost, size)
+    return ok + lost, ok, loads, loads - min(loads, _ceil_div(lost, size))
+
+
+def yield_evidence(run: "ProductionRun", model: "Model") -> Optional[YieldEvidence]:
+    """This run's parts and plates for this model, or ``None`` if it printed none.
+
+    A multi-plate run records each plate; an item run records parts, and its
+    plates are the parts over the model's prints per plate. Under the per-plate
+    mode a failure condemns its plate (research D3), so the plates lost are the
+    failed parts over the plate size, rounded up.
+    """
+    per_plate = int(_positive(getattr(model, "prints_per_plate", None)) or 1)
+    totals = [0, 0, 0, 0]
+
+    if (getattr(run, "total_plates", 0) or 0) > 0:
+        groups = [
+            (
+                int(plate.successful_prints or 0),
+                int(plate.failed_prints or 0),
+                int(plate.prints_per_plate or per_plate) or 1,
+            )
+            for plate in getattr(run, "plates", None) or []
+            if plate.model_id == model.id
+        ]
+    else:
+        groups = [
+            (int(item.successful_quantity or 0), int(item.failed_quantity or 0), per_plate)
+            for item in getattr(run, "items", None) or []
+            if item.model_id == model.id
+        ]
+
+    for ok, lost, size in groups:
+        if ok + lost <= 0:
+            continue
+        for index, value in enumerate(_tally(ok, lost, size)):
+            totals[index] += value
+
+    if totals[0] <= 0:
+        return None
+    return YieldEvidence(*totals)
+
+
+def pooled_yield(
+    evidence: Sequence[YieldEvidence], mode: str, prints_per_plate: int
+) -> Optional[Decimal]:
+    """The per-part yield the evidence supports, under one failure mode (research D3).
+
+    ``per_part``: parts succeeded over parts attempted, pooled across runs so a
+    run of one part does not weigh as much as a run of forty. ``per_plate``:
+    the pooled plate success rate, and the per-part figure is its N-th root.
+    ``None`` when nothing succeeded: a yield of zero is a configuration error
+    (spec edge case), never something to learn.
+    """
+    if mode == "per_plate":
+        attempted = sum(e.plates_attempted for e in evidence)
+        succeeded = sum(e.plates_succeeded for e in evidence)
+    else:
+        attempted = sum(e.parts_attempted for e in evidence)
+        succeeded = sum(e.parts_succeeded for e in evidence)
+    if attempted <= 0 or succeeded <= 0:
+        return None
+    rate = Decimal(succeeded) / Decimal(attempted)
+    size = max(prints_per_plate, 1)
+    if mode != "per_plate" or size == 1:
+        return rate
+    return rate ** (Decimal(1) / Decimal(size))
+
+
+def runs_under_current_mode(model: "Model", runs: Sequence["ProductionRun"]) -> list:
+    """Only the runs completed since the item's failure mode last changed (FR-015d)."""
+    since = getattr(model, "failure_mode_since", None)
+    if since is None:
+        return list(runs)
+    kept = []
+    for run in runs:
+        completed = getattr(run, "completed_at", None)
+        if completed is not None and completed.date() >= since:
+            kept.append(run)
+    return kept
+
+
+def _observed_on(run: "ProductionRun") -> date:
+    when = getattr(run, "completed_at", None) or getattr(run, "started_at", None)
+    return when.date() if when else clock.today()
+
+
+async def _learn_yield(
+    db: AsyncSession,
+    tenant: "Tenant",
+    model: "Model",
+    runs: Sequence["ProductionRun"],
+    *,
+    min_outcomes: int,
+    divergence_threshold_pct: Decimal,
+    user: Optional["User"],
+) -> VarianceDecision:
+    """Learn expected yield from the runs printed under the item's current mode."""
+    mode = getattr(model, "failure_mode", None) or "per_part"
+    per_plate = int(_positive(getattr(model, "prints_per_plate", None)) or 1)
+    evidence: list[YieldEvidence] = []
+    outcomes: list[Outcome] = []
+    for run in runs_under_current_mode(model, runs):
+        found = yield_evidence(run, model)
+        if found is None:
+            continue
+        evidence.append(found)
+        outcomes.append(
+            Outcome(
+                run_id=str(run.id),
+                value=pooled_yield([found], mode, per_plate) or ZERO,
+                observed_on=_observed_on(run),
+            )
+        )
+    observed = pooled_yield(evidence, mode, per_plate)
+    if outcomes and observed is None:
+        return VarianceDecision(
+            applied=False,
+            reason="no part succeeded in these runs, and a yield of zero is not learned",
+            run_ids=frozenset(outcome.run_id for outcome in outcomes),
+        )
+    return await consider_outcomes(
+        db,
+        tenant,
+        model,
+        entity_type="model",
+        field_name="expected_yield",
+        outcomes=outcomes,
+        min_outcomes=min_outcomes,
+        divergence_threshold_pct=divergence_threshold_pct,
+        user=user,
+        observed=observed,
+    )
+
+
+def part_weight_outcome(run: "ProductionRun", model: "Model", material: Any) -> Optional[Decimal]:
+    """Grams of this line's filament per part, where the run attributes it unambiguously.
+
+    Only a run that printed this model alone, with one actual for this line's
+    spool, and no failed part: a failed part used an unknown share of its
+    filament, so dividing by every part attempted would understate the weight.
+    """
+    if (getattr(run, "total_plates", 0) or 0) > 0:
+        units = [
+            (plate.model_id, int(plate.successful_prints or 0), int(plate.failed_prints or 0))
+            for plate in getattr(run, "plates", None) or []
+        ]
+    else:
+        units = [
+            (item.model_id, int(item.successful_quantity or 0), int(item.failed_quantity or 0))
+            for item in getattr(run, "items", None) or []
+        ]
+    if not units or any(model_id != model.id or lost > 0 for model_id, _, lost in units):
+        return None
+    parts = sum(ok for _, ok, _ in units)
+    if parts <= 0:
+        return None
+
+    matching = [
+        used for used in getattr(run, "materials", None) or [] if used.spool_id == material.spool_id
+    ]
+    if len(matching) != 1:
+        return None
+    grams = _positive(matching[0].actual_model_weight_grams)
+    if grams is None:
+        return None
+    return grams / Decimal(parts)
+
+
+async def _learn_part_weight(
+    db: AsyncSession,
+    tenant: "Tenant",
+    model: "Model",
+    runs: Sequence["ProductionRun"],
+    *,
+    min_outcomes: int,
+    divergence_threshold_pct: Decimal,
+    user: Optional["User"],
+) -> dict[str, VarianceDecision]:
+    """Learn each bill-of-materials line's weight where a spool names one line."""
+    decisions: dict[str, VarianceDecision] = {}
+    materials = list(getattr(model, "materials", None) or [])
+    for material in materials:
+        if sum(1 for other in materials if other.spool_id == material.spool_id) != 1:
+            # Two lines on one spool cannot be told apart by the spool's actual.
+            continue
+        outcomes = []
+        for run in runs:
+            value = part_weight_outcome(run, model, material)
+            if value is not None:
+                outcomes.append(
+                    Outcome(run_id=str(run.id), value=value, observed_on=_observed_on(run))
+                )
+        key = f"model_material.{material.id}.weight_grams"
+        try:
+            decisions[key] = await consider_outcomes(
+                db,
+                tenant,
+                material,
+                entity_type="model_material",
+                field_name="weight_grams",
+                outcomes=outcomes,
+                min_outcomes=min_outcomes,
+                divergence_threshold_pct=divergence_threshold_pct,
+                user=user,
+            )
+        except NotLearnable as exc:
+            decisions[key] = VarianceDecision(
+                applied=False,
+                reason=str(exc),
+                run_ids=frozenset(outcome.run_id for outcome in outcomes),
+            )
+    return decisions
 
 
 async def learn_from_runs(
@@ -361,6 +597,31 @@ async def learn_from_runs(
             )
         except UnknownProvenanceField as exc:  # pragma: no cover - registry drift
             logger.error(f"Telemetry names an unregistered field: {exc}")
+
+    try:
+        decisions["expected_yield"] = await _learn_yield(
+            db,
+            tenant,
+            model,
+            runs,
+            min_outcomes=min_outcomes,
+            divergence_threshold_pct=divergence_threshold_pct,
+            user=user,
+        )
+    except NotLearnable as exc:
+        decisions["expected_yield"] = VarianceDecision(applied=False, reason=str(exc))
+
+    decisions.update(
+        await _learn_part_weight(
+            db,
+            tenant,
+            model,
+            runs,
+            min_outcomes=min_outcomes,
+            divergence_threshold_pct=divergence_threshold_pct,
+            user=user,
+        )
+    )
 
     return decisions
 
@@ -443,12 +704,28 @@ async def learn_for_tenant(
     decisions: dict[str, VarianceDecision] = {}
 
     for model_id, run_ids in by_model.items():
-        model = (await db.execute(select(Model).where(Model.id == model_id))).scalar_one_or_none()
+        model = (
+            await db.execute(
+                select(Model).where(Model.id == model_id).options(selectinload(Model.materials))
+            )
+        ).scalar_one_or_none()
         if model is None:  # pragma: no cover - a run cannot outlive its model
             continue
 
+        # Items, plates and per-spool actuals are what yield and part weight
+        # are learned from (T256).
         runs = (
-            (await db.execute(select(ProductionRun).where(ProductionRun.id.in_(run_ids))))
+            (
+                await db.execute(
+                    select(ProductionRun)
+                    .where(ProductionRun.id.in_(run_ids))
+                    .options(
+                        selectinload(ProductionRun.items),
+                        selectinload(ProductionRun.plates),
+                        selectinload(ProductionRun.materials),
+                    )
+                )
+            )
             .scalars()
             .all()
         )

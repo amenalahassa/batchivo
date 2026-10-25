@@ -4,10 +4,11 @@ import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -141,6 +142,15 @@ class Model(Base, UUIDMixin, TimestampMixin):
         ),
     )
 
+    # When the failure mode last changed. A yield learned from runs is read only
+    # from runs completed since, because the same figure means something
+    # different under each mode (FR-015d, T256). Null: never changed.
+    failure_mode_since: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment="Date the failure mode last changed; yield is learned only from runs since",
+    )
+
     labor_hours_per_plate: Mapped[Decimal] = mapped_column(
         Numeric(8, 3),
         nullable=False,
@@ -251,26 +261,9 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Number of printed units in inventory",
     )
 
-    # Production Cost Tracking (Phase 2: Rolling average from actual runs)
-    actual_production_cost: Mapped[Optional[Decimal]] = mapped_column(
-        Numeric(10, 4),
-        nullable=True,
-        comment="Rolling average actual production cost per unit from completed runs",
-    )
-
-    production_cost_count: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        default=0,
-        server_default="0",
-        comment="Number of completed production runs included in rolling average",
-    )
-
-    production_cost_updated_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        comment="Last time actual_production_cost was updated",
-    )
+    # A realised production cost is not stored here: it is derived from the
+    # completed runs' unit costs on read (`production_run.realised_unit_costs`,
+    # T255). The rolling average this held was re-rounded at every run.
 
     # Relationships
     materials: Mapped[list["ModelMaterial"]] = relationship(

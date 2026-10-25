@@ -226,7 +226,8 @@ export interface ProductionRunMaterialBase {
   estimated_model_weight_grams: number;
   estimated_flushed_grams: number;
   estimated_tower_grams: number;
-  cost_per_gram: Money;
+  /** Omit on create to freeze the spool's landed cost per usable gram (T254). */
+  cost_per_gram?: Money;
 }
 
 /**

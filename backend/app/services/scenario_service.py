@@ -41,12 +41,14 @@ from sqlalchemy.orm import selectinload
 
 from app.core import clock
 from app.models.fee_rule import FeeRule
+from app.models.filament_purchase import FilamentPurchase
 from app.models.model import Model
 from app.models.model_material import ModelMaterial
 from app.models.product import Product
 from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.models.scenario_run import ScenarioRun
+from app.models.spool import Spool
 from app.services.currency_edge import books_to_channel
 from app.services import fee_engine
 from app.services.cost_resolution import cost_load_options, product_cost_breakdown
@@ -249,17 +251,37 @@ def _shocked_policy(policy: "CostPolicy", shock: Shock) -> "CostPolicy":
 
 
 async def _apply_material_shock(db: AsyncSession, tenant: "Tenant", shock: Shock) -> int:
-    """Move every material's cost per gram, inside the caller's savepoint.
+    """Move what every gram of filament cost, inside the caller's savepoint.
 
-    Written to the rows the engine reads, so a shocked cost flows through the
-    at-risk subtotal and the failure premium exactly as a real price rise
-    would. The caller discards the savepoint, so none of it is ever committed.
+    A bill-of-materials line costs at its spool's landed per-gram figure unless
+    the operator overrode it (T254), so the shock is written where those
+    figures come from: each spool's price, each purchase's shipping and tax,
+    and each override. Scaling all three scales the landed cost by exactly the
+    factor, and the shocked cost then flows through the at-risk subtotal and
+    the failure premium as a real price rise would. The caller discards the
+    savepoint, so none of it is ever committed.
     """
     factor = shock.factor("material_cost_pct")
     if factor == Decimal("1"):
         return 0
 
-    rows = (
+    spools = (await db.execute(select(Spool).where(Spool.tenant_id == tenant.id))).scalars().all()
+    for spool in spools:
+        if spool.purchase_price is not None:
+            spool.purchase_price = Decimal(str(spool.purchase_price)) * factor
+
+    purchases = (
+        (await db.execute(select(FilamentPurchase).where(FilamentPurchase.tenant_id == tenant.id)))
+        .scalars()
+        .all()
+    )
+    for purchase in purchases:
+        if purchase.inbound_shipping_cost is not None:
+            purchase.inbound_shipping_cost = Decimal(str(purchase.inbound_shipping_cost)) * factor
+        if purchase.tax_amount is not None:
+            purchase.tax_amount = Decimal(str(purchase.tax_amount)) * factor
+
+    overrides = (
         (
             await db.execute(
                 select(ModelMaterial)
@@ -278,9 +300,9 @@ async def _apply_material_shock(db: AsyncSession, tenant: "Tenant", shock: Shock
         .scalars()
         .all()
     )
-    for row in rows:
+    for row in overrides:
         row.cost_per_gram = Decimal(str(row.cost_per_gram)) * factor
-    return len(rows)
+    return len(spools) + len(overrides)
 
 
 async def _apply_fee_shock(db: AsyncSession, tenant: "Tenant", shock: Shock) -> int:

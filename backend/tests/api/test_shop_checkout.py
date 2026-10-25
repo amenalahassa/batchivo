@@ -1789,12 +1789,14 @@ class TestStorefrontSaleSnapshot:
         await db_session.refresh(profile)
         return profile
 
-    async def _complete_a_sale(self, shop_client: AsyncClient, product: Product) -> str:
-        """Put one unit through the cart, payment and completion, return the order number."""
+    async def _complete_a_sale(
+        self, shop_client: AsyncClient, product: Product, quantity: int = 1
+    ) -> str:
+        """Put units through the cart, payment and completion, return the order number."""
         session_id = str(uuid4())
         await shop_client.post(
             f"/api/v1/shop/cart/{session_id}/items",
-            json={"product_id": str(product.id), "quantity": 1},
+            json={"product_id": str(product.id), "quantity": quantity},
         )
         checkout_response = await shop_client.post(
             "/api/v1/shop/checkout/create-payment",
@@ -1905,14 +1907,17 @@ class TestStorefrontSaleSnapshot:
         assert order.sales_tax_collected == Decimal("0.00")
 
     @patch("app.services.square_payment.get_payment_service")
-    async def test_postage_is_zero_when_no_profile_covers_the_parcel(
+    async def test_postage_is_unrecorded_when_no_profile_covers_the_parcel(
         self,
         mock_payment_service,
         shop_client: AsyncClient,
         db_session: AsyncSession,
         shop_product: Product,
     ):
-        """A weightless product with no profile is a gap, not a guessed figure."""
+        """No profile covering the parcel is a gap, not a zero (FR-019, T257).
+
+        This used to assert zero, which a margin then read as free postage.
+        """
         from sqlalchemy import select as sa_select
 
         from app.models.order import Order as OrderRow
@@ -1926,7 +1931,50 @@ class TestStorefrontSaleSnapshot:
             )
         ).scalar_one()
 
-        assert order.postage_paid == Decimal("0.00")
+        assert order.postage_paid is None
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_an_order_is_posted_as_one_parcel(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Two 300 g units are one 600 g parcel, not two 300 g parcels (T257)."""
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+        from app.models.shipping_profile import ShippingProfile
+
+        db_session.add(
+            ShippingProfile(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                name="Domestic 500-1000 g",
+                destination_zone="domestic",
+                weight_bracket_min_grams=500,
+                weight_bracket_max_grams=1000,
+                postage_cost=Decimal("5.10"),
+                effective_from=date(2020, 1, 1),
+            )
+        )
+        await db_session.commit()
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product, quantity=2)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid == Decimal("5.10"), (
+            "a two-unit order was charged per line rather than as one parcel"
+        )
 
 
 # ============================================

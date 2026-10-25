@@ -104,6 +104,8 @@ export interface SpoolResponse extends SpoolBase {
   // Computed fields
   remaining_weight: number
   remaining_percentage: number
+  /** Landed cost per usable gram, derived by the server; null when underivable. */
+  cost_per_gram?: string | null
 
   // Material type info
   material_type_code: string

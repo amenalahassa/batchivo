@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Annotated
+from typing import Annotated, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -28,6 +28,7 @@ from app.schemas.payment import (
 )
 from app.services.commerce_handover import legacy_shop_write_guard
 from app.services.email_service import get_email_service
+from app.services.postage import freeze_order_postage
 from app.services.sale_snapshot import write_sale_snapshot
 from app.services.square_payment import SquarePaymentService, get_payment_service
 
@@ -146,14 +147,15 @@ async def _create_order_record(
         payment_id=payment_id,
         payment_status=payment_status,
         # The shop's checkout adds no tax to its total, so none was collected
-        # -- a recorded zero. What posting it costs is not known until the
-        # label is bought, so it is unrecorded rather than zero (task T230).
+        # -- a recorded zero. Postage is set from the shipping profiles once
+        # the lines are known, below (T257).
         sales_tax_collected=Decimal("0"),
         postage_paid=None,
     )
     db.add(db_order)
     await db.flush()
 
+    lines: list[tuple[Optional[Product], int]] = []
     for item in request.items:
         product_result = await db.execute(
             select(Product).where(
@@ -162,6 +164,7 @@ async def _create_order_record(
             )
         )
         product = product_result.scalar_one_or_none()
+        lines.append((product, item.quantity))
         db.add(
             OrderItemModel(
                 tenant_id=shop_tenant.id,
@@ -174,6 +177,10 @@ async def _create_order_record(
                 total_price=pence_to_pounds(item.price * item.quantity),
             )
         )
+
+    # One parcel for the order, priced where every storefront path prices it
+    # (T257); unrecorded when it cannot be (FR-019).
+    await freeze_order_postage(db, shop_tenant, db_order, lines)
 
     # Freeze what each line earned, as it stands (FR-036, FR-037, task T180).
     #
@@ -434,7 +441,7 @@ async def process_payment(
             payment_provider="square_sandbox" if payment_environment == "sandbox" else "square",
             payment_id=result.payment_id,
             payment_status=result.status,
-            # As above: no tax on the shop's total, postage not yet known (T230).
+            # As above: no tax on the shop's total; postage set below (T257).
             sales_tax_collected=Decimal("0"),
             postage_paid=None,
         )
@@ -443,6 +450,7 @@ async def process_payment(
 
         # Create order items
         # Look up each product to get its real SKU and link properly
+        lines: list[tuple[Optional[Product], int]] = []
         for item in request.items:
             # Try to find product in Batchivo DB by product ID
             # SECURITY: Must filter by tenant_id to prevent cross-tenant data leakage
@@ -453,6 +461,7 @@ async def process_payment(
                 )
             )
             product = product_result.scalar_one_or_none()
+            lines.append((product, item.quantity))
 
             if product:
                 # Product exists in Batchivo - use real SKU and link
@@ -479,6 +488,8 @@ async def process_payment(
                     total_price=pence_to_pounds(item.price * item.quantity),
                 )
             db.add(db_item)
+
+        await freeze_order_postage(db, shop_tenant, db_order, lines)
 
         # Freeze what each line earned, before the commit (FR-036, task T180).
         # See `_create_order_record` for why both Square paths need this and

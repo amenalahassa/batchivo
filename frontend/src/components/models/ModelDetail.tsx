@@ -315,7 +315,7 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
                     <div className="rounded-lg border bg-card p-4">
                       <div className="text-sm text-muted-foreground">Actual Cost</div>
                       <div className="text-2xl font-bold mt-1">{formatCurrency(actualCost)}</div>
-                      <div className="text-xs text-muted-foreground mt-1">Rolling average</div>
+                      <div className="text-xs text-muted-foreground mt-1">Average over completed runs</div>
                     </div>
                     <div className={`rounded-lg border p-4 ${isOverBudget ? 'bg-destructive/10 border-destructive/20' : isUnderBudget ? 'bg-green-500/10 border-green-500/20' : 'bg-card'}`}>
                       <div className="text-sm text-muted-foreground">Variance</div>
@@ -336,7 +336,7 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
                   </div>
                   {model.production_cost_updated_at && (
                     <div className="text-xs text-muted-foreground">
-                      Last updated: {new Date(model.production_cost_updated_at).toLocaleDateString()} at {new Date(model.production_cost_updated_at).toLocaleTimeString()}
+                      Latest completed run: {new Date(model.production_cost_updated_at).toLocaleDateString()} at {new Date(model.production_cost_updated_at).toLocaleTimeString()}
                     </div>
                   )}
                 </div>

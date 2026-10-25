@@ -57,6 +57,7 @@ from app.services.fee_engine import (
     OrderContext,
     TaxTreatment,
 )
+from app.services.landed_cost import MaterialPerGram, material_cost_per_gram
 from app.services.pricing_policy import CostPolicy
 
 logger = logging.getLogger(__name__)
@@ -370,19 +371,57 @@ def _printer_config_for(
     return None
 
 
+def _material_origins(
+    material: Any,
+    resolved: MaterialPerGram,
+    origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]],
+    pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]],
+) -> list[_Origin]:
+    """The inputs one bill-of-materials line's per-gram figure stands on.
+
+    An override is one figure the operator typed. A derived figure is the
+    spool's landed cost, so it is as trustworthy as the spool's price, weight
+    and remainder and, where it has one, its purchase's shipping and tax.
+    """
+    if resolved.overridden:
+        return [
+            _origin_of(
+                origins, pending, "model_material", getattr(material, "id", None), "cost_per_gram"
+            )
+        ]
+    spool = resolved.spool
+    if spool is None:
+        return []
+    spool_id = getattr(spool, "id", None)
+    found = [
+        _origin_of(origins, pending, "spool", spool_id, field_name)
+        for field_name in ("purchase_price", "initial_weight", "unusable_remainder_grams")
+    ]
+    purchase_id = getattr(spool, "filament_purchase_id", None)
+    if purchase_id is not None:
+        found.extend(
+            _origin_of(origins, pending, "filament_purchase", purchase_id, field_name)
+            for field_name in ("inbound_shipping_cost", "tax_amount")
+        )
+    return found
+
+
 def _average_cost_per_gram(model: "Model") -> Optional[Decimal]:
     """Weighted average landed cost per gram across the bill of materials.
 
     Used for purge, which is filament consumed off the part: it has no bill-of
     materials row of its own, and charging it at the average of what the part
-    is actually printed in is the closest honest figure.
+    is actually printed in is the closest honest figure. A line whose cost
+    cannot be derived is left out; the material line reports it.
     """
     materials = getattr(model, "materials", None) or []
     total_weight = ZERO
     total_cost = ZERO
     for material in materials:
+        per_gram = material_cost_per_gram(material).cost_per_gram
+        if per_gram is None:
+            continue
         weight = _as_decimal(getattr(material, "weight_grams", None), ZERO) or ZERO
-        per_gram = _as_decimal(getattr(material, "cost_per_gram", None), ZERO) or ZERO
         total_weight += weight
         total_cost += weight * per_gram
     if total_weight <= ZERO:
@@ -479,6 +518,12 @@ def _item_lines(
         # The per-printer row records the weight for ONE item, measured on that
         # machine, so it is not divided by the plate count.
         material_cost = config_weight * average_per_gram
+        for material in getattr(model, "materials", None) or []:
+            resolved = material_cost_per_gram(material)
+            result.incomplete_reasons.extend(
+                f"material: {reason}" for reason in resolved.incomplete_reasons
+            )
+            material_origins.extend(_material_origins(material, resolved, origins, pending))
         material_origins.append(
             _origin_of(
                 origins,
@@ -491,16 +536,20 @@ def _item_lines(
     else:
         material_cost = ZERO
         for material in getattr(model, "materials", None) or []:
+            resolved = material_cost_per_gram(material)
+            for reason in resolved.incomplete_reasons:
+                result.incomplete_reasons.append(f"material: {reason}")
+            if resolved.cost_per_gram is None:
+                # Not costed as zero (FR-019): the reason above makes the total
+                # a floor, and the line carries what could be derived.
+                continue
             weight = _as_decimal(getattr(material, "weight_grams", None), ZERO) or ZERO
-            per_gram = _as_decimal(getattr(material, "cost_per_gram", None), ZERO) or ZERO
-            material_cost += weight * per_gram
+            material_cost += weight * resolved.cost_per_gram
             material_id = getattr(material, "id", None)
             material_origins.append(
                 _origin_of(origins, pending, "model_material", material_id, "weight_grams")
             )
-            material_origins.append(
-                _origin_of(origins, pending, "model_material", material_id, "cost_per_gram")
-            )
+            material_origins.extend(_material_origins(material, resolved, origins, pending))
         material_cost = material_cost / prints_per_plate
 
     if material_cost != ZERO:
@@ -1349,6 +1398,7 @@ class CostingService:
         *,
         policy: Optional[CostPolicy] = None,
         printer_for_model: Optional[Mapping[uuid.UUID, "Printer"]] = None,
+        realised_unit_costs: Optional[Mapping[uuid.UUID, Decimal]] = None,
     ) -> ProductCostBreakdown:
         """
         Calculate total product (sellable item) cost with breakdown.
@@ -1368,6 +1418,11 @@ class CostingService:
             _depth: Internal recursion depth counter (do not pass manually)
             policy: A resolved policy snapshot, forwarded unchanged.
             printer_for_model: Which machine each model is planned on (FR-011).
+            realised_unit_costs: Each model's realised unit cost, averaged over
+                its completed runs and derived on read by
+                ``production_run.realised_unit_costs`` (T255). The engine does
+                not query, so a caller that shows actual costs resolves these
+                first; without them no actual cost is reported.
 
         Returns:
             ProductCostBreakdown with models cost, child products cost, packaging,
@@ -1415,7 +1470,7 @@ class CostingService:
             models_cost += quantity * item.total_make_cost
 
             # Phase 3: actual production cost, where the model records one
-            actual = _as_decimal(getattr(model, "actual_production_cost", None), None)
+            actual = (realised_unit_costs or {}).get(model.id)
             if model.id not in seen_model_ids:
                 seen_model_ids.add(model.id)
                 models_total += 1

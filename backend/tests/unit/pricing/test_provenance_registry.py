@@ -80,8 +80,6 @@ NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
     },
     "model": {
         "units_in_stock": "inventory, not a cost input",
-        "actual_production_cost": "an outcome recorded from production, not an estimate",
-        "production_cost_count": "how many runs fed the rolling average",
     },
     "model_printer_config": {
         "bed_temperature": "a slicer setting, not money or time",

@@ -66,7 +66,6 @@ def _model(**overrides) -> SimpleNamespace:
         "labor_hours": None,
         "labor_rate_override": None,
         "overhead_percentage": None,
-        "actual_production_cost": None,
     }
     defaults.update(overrides)
     return SimpleNamespace(**defaults)

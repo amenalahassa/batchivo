@@ -382,8 +382,16 @@ async def consider_outcomes(
     min_outcomes: int,
     divergence_threshold_pct: Decimal,
     user: Optional["User"] = None,
+    observed: Optional[Decimal] = None,
 ) -> VarianceDecision:
     """Apply, hold or refuse an update to one estimated figure.
+
+    ``observed`` is the estimate the outcomes support, for a figure whose
+    estimator is not their plain mean: a yield is parts succeeded over parts
+    attempted across every run, and under the per-plate mode the root of a
+    pooled plate success rate (research D3, T256). Without it the outcomes'
+    rolling average is the estimate. The outcomes still decide the minimum
+    count and the evidence a rejection is remembered against (FR-042d).
 
     ``min_outcomes`` and ``divergence_threshold_pct`` are the operator's
     settings (FR-042a, FR-042b) and are required rather than defaulted: a
@@ -426,7 +434,8 @@ async def consider_outcomes(
             run_ids=run_ids,
         )
 
-    observed = rolling_average(outcomes)
+    if observed is None:
+        observed = rolling_average(outcomes)
     current = _as_decimal(getattr(entity, field_name, None))
 
     if observed is None:  # pragma: no cover - guarded by the minimum above

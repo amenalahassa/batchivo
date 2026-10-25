@@ -43,7 +43,7 @@ import type {
 import type { SpoolResponse } from '@/types/spool'
 import type { Money } from '@/types/pricing'
 import { useCurrency } from '@/hooks/useCurrency'
-import { divideMoney, formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
+import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -121,9 +121,9 @@ interface WizardFormData {
     estimated_flushed_grams: number
     estimated_tower_grams: number
     // A per-gram filament price is money, and fractions of a penny at that.
-    // It is a decimal string from the spool through the estimate to the
-    // payload, so nothing in this wizard rounds it (task T163).
-    cost_per_gram: Money
+    // It is a decimal string from the server through the estimate to the
+    // payload, so nothing in this wizard rounds or derives it (T163, T254).
+    cost_per_gram: Money | null
     current_weight: number
   }>
 }
@@ -195,7 +195,8 @@ export function CreateRunWizard() {
         estimated_model_weight_grams: mat.estimated_model_weight_grams,
         estimated_flushed_grams: mat.estimated_flushed_grams,
         estimated_tower_grams: mat.estimated_tower_grams,
-        cost_per_gram: mat.cost_per_gram,
+        // Omitted when unknown, so the server derives it or says why not.
+        ...(mat.cost_per_gram !== null ? { cost_per_gram: mat.cost_per_gram } : {}),
       }))
 
       return createProductionRun(runData, items, materials)
@@ -240,7 +241,7 @@ export function CreateRunWizard() {
       color: string
       color_hex?: string
       total_weight_grams: number
-      cost_per_gram: Money
+      cost_per_gram: Money | null
       current_weight: number
       is_active: boolean
       models: Array<{ model_name: string; model_sku: string; quantity: number; weight_grams: number }>
@@ -387,14 +388,11 @@ export function CreateRunWizard() {
   const addMaterial = (spool: SpoolResponse) => {
     if (formData.materials.some((mat) => mat.spool_id === spool.id)) return
 
-    // Cost per gram from what the spool cost, divided in decimal. Where the
-    // spool carries no price there is no figure to show: the operator enters
-    // one rather than being handed a constant nobody configured, which is the
-    // hardcoded default Constitution IV rules out (task T163).
-    const costPerGram =
-      (spool.purchase_price && spool.initial_weight
-        ? divideMoney(spool.purchase_price, spool.initial_weight, 4)
-        : null) ?? '0'
+    // The spool's landed cost per usable gram, as the server derived it with
+    // the purchase's shipping and tax (T254). Null when it cannot be derived:
+    // the run is then refused with the reason rather than costed as free
+    // filament (FR-019).
+    const costPerGram = spool.cost_per_gram ?? null
 
     setFormData({
       ...formData,
@@ -1151,7 +1149,7 @@ function Step3Materials({
     color: string
     color_hex?: string
     total_weight_grams: number
-    cost_per_gram: Money
+    cost_per_gram: Money | null
     current_weight: number
     is_active: boolean
     models: Array<{ model_name: string; model_sku: string; quantity: number; weight_grams: number }>

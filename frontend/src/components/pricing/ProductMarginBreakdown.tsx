@@ -27,16 +27,26 @@ interface ProductMarginBreakdownProps {
   channelId: string
   /** The channel's display symbol; the margin is served in its currency. */
   currencySymbol?: string
+  /**
+   * Units on the line, so a quantity tier's row shows the margin at its tier
+   * -- the whole line's revenue, cost, fees and one parcel (T258).
+   */
+  quantity?: number
 }
 
 export function ProductMarginBreakdown({
   productId,
   channelId,
   currencySymbol,
+  quantity = 1,
 }: ProductMarginBreakdownProps) {
   const { currency } = useCurrency()
   const symbol = currencySymbol ?? currency.symbol
-  const { margin, isLoading, error } = useProductMargin(productId, channelId)
+  const { margin, isLoading, error } = useProductMargin(
+    productId,
+    channelId,
+    quantity > 1 ? { quantity } : undefined,
+  )
 
   if (isLoading) {
     return (

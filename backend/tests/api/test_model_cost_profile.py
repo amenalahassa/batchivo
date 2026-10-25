@@ -289,6 +289,39 @@ class TestWritingTheProfile:
             "an observation made under per-part must not read as evidence for per-plate"
         )
 
+    async def test_a_mode_change_reverts_an_observed_yield_to_assumed(
+        self, client: AsyncClient, db_session: AsyncSession, test_model: Model, test_tenant
+    ) -> None:
+        """The "yield observed under one failure mode" edge case (T256).
+
+        An observed yield is read-only to the operator (FR-004), which used to
+        mean the mode change logged a warning and left it claiming to be
+        evidence. It reverts, and the learning sweep reads only runs completed
+        from the day of the change.
+        """
+        from app.core import clock
+        from app.services.provenance import record_origin
+
+        await record_origin(
+            db_session,
+            test_tenant,
+            entity_type="model",
+            entity_id=test_model.id,
+            field_name="expected_yield",
+            source="observed",
+            automated=True,
+        )
+        await db_session.commit()
+
+        response = await client.put(_url(test_model), json={"failure_mode": "per_plate"})
+
+        assert response.status_code == 200
+        await db_session.refresh(test_model)
+        assert test_model.failure_mode_since == clock.today()
+        origin = await _origin(db_session, test_model, "expected_yield")
+        await db_session.refresh(origin)
+        assert origin.source == "assumed"
+
     async def test_a_mode_change_with_a_new_yield_keeps_that_yield_measured(
         self, client: AsyncClient, db_session: AsyncSession, test_model: Model
     ) -> None:
