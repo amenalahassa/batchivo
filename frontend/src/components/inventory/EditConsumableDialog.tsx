@@ -25,6 +25,7 @@ import { Switch } from '@/components/ui/switch'
 import { Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { useCurrency } from '@/hooks/useCurrency'
 
 interface EditConsumableDialogProps {
   open: boolean
@@ -48,6 +49,8 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
 
   // Form state
   const [formData, setFormData] = useState<ConsumableTypeUpdate>({})
+  const pricedByPurchase = consumable?.priced_by_purchase_id != null
+  const { currency } = useCurrency()
 
   // Populate form when consumable is loaded
   useEffect(() => {
@@ -90,6 +93,14 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
       return
     }
 
+    // A purchase prices the unit, so the cost is not this form's to send: the
+    // backend refuses a typed figure it would otherwise ignore (task T277).
+    if (pricedByPurchase) {
+      const { current_cost_per_unit: _priced, ...rest } = formData
+      void _priced
+      updateMutation.mutate(rest)
+      return
+    }
     updateMutation.mutate(formData)
   }
 
@@ -215,13 +226,17 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="current_cost_per_unit">Cost per Unit</Label>
+                  <Label htmlFor="current_cost_per_unit">
+                    Cost per Unit ({currency.symbol})
+                  </Label>
                   <Input
                     id="current_cost_per_unit"
                     type="number"
                     step="0.0001"
                     min="0"
                     placeholder="0.00"
+                    readOnly={pricedByPurchase}
+                    disabled={pricedByPurchase}
                     value={formData.current_cost_per_unit ?? ''}
                     onChange={(e) =>
                       // The typed string, not a double: the costing engine
@@ -230,6 +245,12 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
                       handleInputChange('current_cost_per_unit', e.target.value || null)
                     }
                   />
+                  {pricedByPurchase && (
+                    <p className="text-xs text-muted-foreground" data-testid="unit-cost-from-purchase">
+                      From the purchase of {consumable.priced_by_purchase_date ?? 'an undated day'}.
+                      Record a new purchase to change it.
+                    </p>
+                  )}
                 </div>
               </div>
 

@@ -10,6 +10,8 @@ import { Package, Clock, X } from 'lucide-react'
 
 import { consumablesApi } from '@/lib/api/consumables'
 import { formatMoney, multiplyMoney } from '@/lib/money'
+import { useCurrency } from '@/hooks/useCurrency'
+import { AssemblyRateNote } from '@/components/pricing/AssemblyRateNote'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
@@ -42,6 +44,8 @@ export function WizardPackaging({
   assemblyMinutes,
   onPackagingChange,
 }: WizardPackagingProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   // Fetch packaging consumables
   const { data: packagingConsumables } = useQuery({
     queryKey: ['consumables', 'packaging'],
@@ -98,7 +102,7 @@ export function WizardPackaging({
                       {consumable.name}
                       {consumable.current_cost_per_unit && (
                         <span className="ml-2 text-muted-foreground">
-                          ({formatMoney(consumable.current_cost_per_unit, '£')}/ea)
+                          ({formatMoney(consumable.current_cost_per_unit, currency.symbol)}/ea)
                         </span>
                       )}
                     </SelectItem>
@@ -141,7 +145,7 @@ export function WizardPackaging({
             </div>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="packagingCost">Manual Packaging Cost (£)</Label>
+              <Label htmlFor="packagingCost">Manual Packaging Cost ({currency.symbol})</Label>
               <Input
                 id="packagingCost"
                 type="number"
@@ -183,7 +187,7 @@ export function WizardPackaging({
               }
             />
             <p className="text-sm text-muted-foreground">
-              Time to assemble/package (calculated at £10/hr)
+              <AssemblyRateNote />
             </p>
           </div>
         </CardContent>
@@ -196,7 +200,7 @@ export function WizardPackaging({
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Packaging Cost:</span>
-              <span className="font-medium">{formatMoney(estimatedCost, '£')}</span>
+              <span className="font-medium">{formatMoney(estimatedCost, currency.symbol)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Assembly Time:</span>

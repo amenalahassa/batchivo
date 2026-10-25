@@ -115,6 +115,14 @@ class ConsumableTypeResponse(ConsumableTypeBase):
     # Computed fields
     is_low_stock: bool = Field(..., description="Whether stock is below reorder point")
     stock_value: Decimal = Field(..., description="Total value of stock on hand")
+    # The purchase that prices the unit, when one does (T273, T277): the unit
+    # cost is then read-only here and changes with a new purchase.
+    priced_by_purchase_id: Optional[UUID] = Field(
+        None, description="Purchase whose total and quantity price the unit, if any"
+    )
+    priced_by_purchase_date: Optional[date] = Field(
+        None, description="Date of the purchase that prices the unit"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

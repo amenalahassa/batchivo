@@ -78,6 +78,10 @@ export interface ConsumableTypeResponse extends ConsumableTypeBase {
 
   // Computed fields
   is_low_stock: boolean // Whether stock is below reorder point
+  // The purchase that prices the unit, when one does (T273, T277): the unit
+  // cost is then read-only and changes only with a new purchase.
+  priced_by_purchase_id?: string | null
+  priced_by_purchase_date?: string | null
   stock_value: Money // Total value of stock on hand
 }
 

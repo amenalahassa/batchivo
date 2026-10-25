@@ -17,6 +17,7 @@
  * Three paths, the ones the sibling's test covers: load, edit-and-save, and
  * the empty-to-null mapping.
  */
+import { symbolForCurrency } from '@/lib/money'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@/test/test-utils'
 import userEvent from '@testing-library/user-event'
@@ -74,7 +75,7 @@ beforeEach(() => {
 })
 
 /** The exact string a numeric field holds, trailing zeros and all. */
-function valueOf(label: string): string {
+function valueOf(label: string | RegExp): string {
   return (screen.getByLabelText(label) as HTMLInputElement).value
 }
 
@@ -113,11 +114,13 @@ describe('SalesChannelForm', () => {
 
       // The exact strings, not the numbers they parse to: "2.2500" and 2.25
       // are one number and two different figures on the wire.
-      expect(valueOf('Monthly Cost (£)')).toBe('12.50')
+      expect(valueOf(/Monthly Cost/)).toBe('12.50')
       expect(valueOf('Expected discount (%)')).toBe('7.5000')
       expect(valueOf('Refund reserve (%)')).toBe('2.2500')
       expect(valueOf('Free shipping above')).toBe('35.00')
       expect(screen.getByLabelText('Currency')).toHaveValue('USD')
+      // The monthly cost is in the channel's own currency, not pounds (T276).
+      expect(screen.getByLabelText(`Monthly Cost (${symbolForCurrency('USD', '?')})`)).toBeInTheDocument()
 
       // The two selects render their chosen option rather than the default,
       // read off the trigger rather than the hidden native <option> Radix
@@ -416,7 +419,7 @@ describe('SalesChannelForm by role', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Etsy UK'))
     expect(screen.getByLabelText('Name')).toBeEnabled()
-    expect(screen.getByLabelText('Monthly Cost (£)')).toBeDisabled()
+    expect(screen.getByLabelText(/Monthly Cost/)).toBeDisabled()
     expect(screen.getByTestId('channel-levers')).toBeDisabled()
     expect(screen.getByTestId('levers-read-only-notice')).toBeInTheDocument()
   })
@@ -425,7 +428,7 @@ describe('SalesChannelForm by role', () => {
     render(<SalesChannelForm channel={channel()} mode="edit" />)
 
     await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Etsy UK'))
-    expect(screen.getByLabelText('Monthly Cost (£)')).toBeEnabled()
+    expect(screen.getByLabelText(/Monthly Cost/)).toBeEnabled()
     expect(screen.queryByTestId('levers-read-only-notice')).not.toBeInTheDocument()
   })
 })

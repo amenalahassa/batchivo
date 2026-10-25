@@ -6,6 +6,7 @@
  * Model composition and pricing are managed on the detail page.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
 import { useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -25,6 +26,7 @@ import {
 } from '@/lib/api/products'
 import { consumablesApi } from '@/lib/api/consumables'
 import { formatMoney } from '@/lib/money'
+import { AssemblyRateNote } from '@/components/pricing/AssemblyRateNote'
 import { listDesigners } from '@/lib/api/designers'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -108,6 +110,8 @@ interface ProductFormProps {
 }
 
 export function ProductForm({ product, mode }: ProductFormProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -345,7 +349,7 @@ export function ProductForm({ product, mode }: ProductFormProps) {
                                 {consumable.name}
                                 {consumable.current_cost_per_unit && (
                                   <span className="ml-2 text-muted-foreground">
-                                    ({formatMoney(consumable.current_cost_per_unit, '£')}/ea)
+                                    ({formatMoney(consumable.current_cost_per_unit, currency.symbol)}/ea)
                                   </span>
                                 )}
                               </SelectItem>
@@ -393,7 +397,7 @@ export function ProductForm({ product, mode }: ProductFormProps) {
                     name="packaging_cost"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Manual Packaging Cost (£)</FormLabel>
+                        <FormLabel>Manual Packaging Cost ({currency.symbol})</FormLabel>
                         <FormControl>
                           <Input type="number" step="0.01" min="0" placeholder="0.00" {...field} />
                         </FormControl>
@@ -417,7 +421,9 @@ export function ProductForm({ product, mode }: ProductFormProps) {
                     <FormControl>
                       <Input type="number" min="0" placeholder="0" {...field} />
                     </FormControl>
-                    <FormDescription>Time to assemble/package (@ £10/hr)</FormDescription>
+                    <FormDescription>
+                      <AssemblyRateNote />
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}

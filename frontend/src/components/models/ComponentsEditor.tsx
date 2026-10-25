@@ -5,6 +5,7 @@
  * Supports both selecting from consumables inventory and manual entry.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -81,6 +82,8 @@ interface ComponentsEditorProps {
 }
 
 export function ComponentsEditor({ modelId, components }: ComponentsEditorProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   // A viewer sees the bill of materials with its controls disabled (T238).
   const { user } = useAuth()
   const canEdit = canEditOperationalFigures(user)
@@ -162,7 +165,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
   // penny. It renders the decimal string the API sent and never becomes a
   // double (Constitution IV, task T151).
   const formatCurrency = (value: Money | null | undefined) =>
-    formatMoney(value, '£', { places: 4 })
+    formatMoney(value, currency.symbol, { places: 4 })
 
   return (
     <div className="space-y-4">
@@ -205,7 +208,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                             <SelectContent>
                               {consumablesData?.consumables.map((c) => (
                                 <SelectItem key={c.id} value={c.id}>
-                                  {c.sku} - {c.name} ({formatMoney(c.current_cost_per_unit, '£')}/ea)
+                                  {c.sku} - {c.name} ({formatMoney(c.current_cost_per_unit, currency.symbol)}/ea)
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -282,7 +285,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                         name="unit_cost"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Unit Cost (£)</FormLabel>
+                            <FormLabel>Unit Cost ({currency.symbol})</FormLabel>
                             <FormControl>
                               <Input type="number" step="0.0001" placeholder="0.00" {...field} />
                             </FormControl>

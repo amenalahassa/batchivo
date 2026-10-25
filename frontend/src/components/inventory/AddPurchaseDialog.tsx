@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useCurrency } from '@/hooks/useCurrency'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { consumablesApi } from '@/lib/api/consumables'
 import { divideMoney, formatMoney } from '@/lib/money'
@@ -30,6 +31,8 @@ interface AddPurchaseDialogProps {
 }
 
 export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurchaseDialogProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   const queryClient = useQueryClient()
 
   // Fetch consumable details if ID provided
@@ -178,7 +181,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
 
             <div className="space-y-2">
               <Label htmlFor="total_cost">
-                Total Cost (£) <span className="text-destructive">*</span>
+                Total Cost ({currency.symbol}) <span className="text-destructive">*</span>
               </Label>
               <Input
                 id="total_cost"
@@ -195,7 +198,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
           </div>
 
           <div className="text-sm text-muted-foreground">
-            Cost per unit: <span className="font-mono">{formatMoney(costPerUnit, '£')}</span>
+            Cost per unit: <span className="font-mono">{formatMoney(costPerUnit, currency.symbol)}</span>
           </div>
 
           <div className="space-y-2">

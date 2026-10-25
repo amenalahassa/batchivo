@@ -335,6 +335,12 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   // prices -- one per quantity tier. Only the *tier* is unique, and the API
   // refuses a duplicate with a 409 naming the tier that already exists.
   const selectableChannels = salesChannelsData?.channels ?? []
+  // A list price is in the currency of the channel it is listed on (T276).
+  const formChannelId = form.watch('sales_channel_id')
+  const formChannelSymbol = symbolForCurrency(
+    selectableChannels.find((channel) => channel.id === formChannelId)?.currency_code,
+    currency.symbol,
+  )
 
   // Grouped by channel, tiers ascending, so a channel's 1+/10+/50+ rows read
   // as one ladder rather than being scattered by insertion order.
@@ -463,7 +469,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                   name="list_price"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>List Price (£)</FormLabel>
+                      <FormLabel>List Price ({formChannelSymbol})</FormLabel>
                       <FormControl>
                         <Input type="number" step="0.01" min="0" placeholder="19.99" {...field} />
                       </FormControl>

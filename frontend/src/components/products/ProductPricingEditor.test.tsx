@@ -159,7 +159,7 @@ beforeEach(() => {
   vi.mocked(listSalesChannels).mockResolvedValue({
     channels: [
       { id: ETSY, name: 'Golden Marketplace', platform_type: 'etsy' },
-      { id: SHOPIFY, name: 'Own Shop', platform_type: 'shopify' },
+      { id: SHOPIFY, name: 'Own Shop', platform_type: 'shopify', currency_code: 'USD' },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any,
     total: 2,
@@ -263,6 +263,16 @@ describe('quantity tiers', () => {
         expect.objectContaining({ min_quantity: 10, list_price: '59.99' })
       )
     })
+  })
+
+  it("labels the list price in the chosen channel's currency (T276)", async () => {
+    const user = userEvent.setup({ delay: null })
+    renderEditor([])
+
+    await user.click(screen.getByRole('button', { name: /add pricing/i }))
+    await chooseOption(user, /Own Shop/)
+
+    expect(await screen.findByText('List Price ($)')).toBeInTheDocument()
   })
 
   it('defaults a new price to the base tier', async () => {

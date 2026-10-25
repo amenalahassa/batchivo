@@ -4,6 +4,8 @@
  * Form for creating and editing sales channels.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
+import { symbolForCurrency } from '@/lib/money'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -124,6 +126,9 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
       offsite_ads_opt_in: channel?.offsite_ads_opt_in ?? false,
     },
   })
+  // The channel's amounts are in the channel's own currency (T276).
+  const { currency } = useCurrency()
+  const channelSymbol = symbolForCurrency(form.watch('currency_code'), currency.symbol)
 
   const createMutation = useMutation({
     mutationFn: (data: SalesChannelCreateRequest) => createSalesChannel(data),
@@ -248,7 +253,7 @@ export function SalesChannelForm({ channel, mode }: SalesChannelFormProps) {
                 name="monthly_cost"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Monthly Cost (£)</FormLabel>
+                    <FormLabel>Monthly Cost ({channelSymbol})</FormLabel>
                     <FormControl>
                       <Input type="number" step="0.01" min="0" placeholder="0.00" {...field} />
                     </FormControl>

@@ -72,3 +72,35 @@ class TestWithoutAPurchaseTheTypedFigureStands:
 
     def test_no_figure_at_all_is_zero(self) -> None:
         assert consumable_unit_cost(_consumable(None)) == Decimal("0")
+
+
+class TestThePackagingLineIsDatedByItsPurchase:
+    """Task T277: a deleted purchase's date does not outlive it on the line."""
+
+    def test_the_line_takes_the_date_of_the_purchase_that_prices_it(self) -> None:
+        from app.services.costing import _packaging_cost
+
+        consumable = _consumable(
+            "0.50",
+            _purchase("10.00", 10, date(2026, 6, 1)),
+            _purchase("12.00", 10, date(2026, 3, 1)),
+        )
+        consumable.id = None
+        product = SimpleNamespace(id=None, packaging_consumable=consumable, packaging_quantity=2)
+
+        amount, origin = _packaging_cost(product, None)
+
+        assert amount == Decimal("2")
+        assert origin.as_of == date(2026, 6, 1)
+
+    def test_without_a_purchase_the_typed_figures_origin_stands(self) -> None:
+        from app.services.costing import _packaging_cost
+
+        consumable = _consumable("0.50")
+        consumable.id = None
+        product = SimpleNamespace(id=None, packaging_consumable=consumable, packaging_quantity=2)
+
+        amount, origin = _packaging_cost(product, None)
+
+        assert amount == Decimal("1.00")
+        assert origin.as_of is None

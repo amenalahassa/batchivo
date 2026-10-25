@@ -4,6 +4,7 @@
  * Editor for managing model Bill of Materials (filament materials).
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -71,6 +72,8 @@ interface BOMEditorProps {
 }
 
 export function BOMEditor({ modelId, materials }: BOMEditorProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   // A viewer sees the bill of materials with its controls disabled (T238).
   const { user } = useAuth()
   const canEdit = canEditOperationalFigures(user)
@@ -145,7 +148,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
   // renders the decimal string the API sent and never becomes a double
   // (Constitution IV, task T151).
   const formatCurrency = (value: Money | null | undefined) =>
-    formatMoney(value, '£', { places: 4 })
+    formatMoney(value, currency.symbol, { places: 4 })
 
   return (
     <div className="space-y-4">
@@ -240,7 +243,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                   name="cost_per_gram"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Cost per Gram override (£)</FormLabel>
+                      <FormLabel>Cost per Gram override ({currency.symbol})</FormLabel>
                       <FormControl>
                         <Input type="number" step="0.0001" placeholder={selectedLandedHint} {...field} />
                       </FormControl>

@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
-from app.services.costing import consumable_unit_cost
+from app.services.costing import consumable_unit_cost, pricing_purchase
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
     ConsumablePurchaseListResponse,
@@ -47,9 +47,12 @@ def consumable_type_to_response(consumable: ConsumableType) -> dict:
     `purchases` first (`_load_purchases`).
     """
     unit_cost = consumable_unit_cost(consumable)
+    purchase = pricing_purchase(consumable)
     return {
         **{k: v for k, v in consumable.__dict__.items() if not k.startswith("_")},
         "current_cost_per_unit": unit_cost,
+        "priced_by_purchase_id": purchase.id if purchase is not None else None,
+        "priced_by_purchase_date": purchase.purchase_date if purchase is not None else None,
         "is_low_stock": consumable.is_low_stock,
         "stock_value": Decimal(consumable.quantity_on_hand or 0) * unit_cost,
     }
@@ -250,6 +253,22 @@ async def update_consumable_type(
 
     # Update fields
     update_data = consumable_data.model_dump(exclude_unset=True)
+    if "current_cost_per_unit" in update_data:
+        # A purchase on record prices the unit (T273), so a typed figure would
+        # be stored and ignored. Refuse it and say which purchase to change
+        # (task T277).
+        await _load_purchases(db, consumable)
+        purchase = pricing_purchase(consumable)
+        if purchase is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "The unit cost comes from the purchase of "
+                    f"{purchase.purchase_date or 'an undated day'} "
+                    f"({purchase.quantity_purchased} for {purchase.total_cost}); "
+                    "record a new purchase or delete that one to change it"
+                ),
+            )
     fields = await refuse_observed_or_409(
         db, tenant, entity_type="consumable_type", entity=consumable, changes=update_data
     )

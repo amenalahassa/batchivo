@@ -70,13 +70,17 @@ function renderDialog(node: ReactNode) {
 }
 
 // The role the signed-in user holds; each test starts as an admin (T238).
-const auth = vi.hoisted(() => ({ role: 'admin' }))
+const auth = vi.hoisted(() => ({ role: 'admin', symbol: '£' }))
 vi.mock('@/contexts/AuthContext', () => {
-  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  const session = () => ({
+    user: { email: 'operator@example.com', role: auth.role, currency_symbol: auth.symbol },
+    logout: vi.fn(),
+  })
   return { useAuth: session, useOptionalAuth: session }
 })
 beforeEach(() => {
   auth.role = 'admin'
+  auth.symbol = '£'
 })
 
 describe('EditConsumableDialog cost per unit', () => {
@@ -90,7 +94,7 @@ describe('EditConsumableDialog cost per unit', () => {
   it('sends the typed cost as a decimal string, never a number', async () => {
     renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
 
-    const cost = await screen.findByLabelText('Cost per Unit')
+    const cost = await screen.findByLabelText(/Cost per Unit/)
     await waitFor(() => expect(cost).toHaveValue(0.045))
     fireEvent.change(cost, { target: { value: '0.1000' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -104,7 +108,7 @@ describe('EditConsumableDialog cost per unit', () => {
   it('keeps an untouched stored cost exactly as the server sent it', async () => {
     renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
 
-    await waitFor(() => expect(screen.getByLabelText('Cost per Unit')).toHaveValue(0.045))
+    await waitFor(() => expect(screen.getByLabelText(/Cost per Unit/)).toHaveValue(0.045))
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
 
     await waitFor(() => expect(api.update).toHaveBeenCalled())
@@ -114,7 +118,7 @@ describe('EditConsumableDialog cost per unit', () => {
   it('clears the cost to null rather than to zero', async () => {
     renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
 
-    const cost = await screen.findByLabelText('Cost per Unit')
+    const cost = await screen.findByLabelText(/Cost per Unit/)
     await waitFor(() => expect(cost).toHaveValue(0.045))
     fireEvent.change(cost, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -129,10 +133,52 @@ describe('EditConsumableDialog for a viewer', () => {
     auth.role = 'viewer'
     renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
 
-    const cost = await screen.findByLabelText('Cost per Unit')
+    const cost = await screen.findByLabelText(/Cost per Unit/)
     await waitFor(() => expect(cost).toHaveValue(0.045))
     expect(cost).toBeDisabled()
     expect(screen.getByTestId('read-only-notice')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled()
+  })
+})
+
+describe('EditConsumableDialog when a purchase prices the unit (T277)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.get.mockResolvedValue(
+      consumable({
+        current_cost_per_unit: '0.142857142857',
+        priced_by_purchase_id: 'purchase-uuid',
+        priced_by_purchase_date: '2026-06-01',
+      }),
+    )
+    api.update.mockResolvedValue(consumable())
+  })
+
+  it('shows the cost read-only with the purchase it came from', async () => {
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    const cost = await screen.findByLabelText(/Cost per Unit/)
+    expect(cost).toBeDisabled()
+    expect(await screen.findByTestId('unit-cost-from-purchase')).toHaveTextContent('2026-06-01')
+  })
+
+  it('does not send a unit cost the purchase owns', async () => {
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    await screen.findByTestId('unit-cost-from-purchase')
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(api.update).toHaveBeenCalled())
+    expect(api.update.mock.calls[0][1]).not.toHaveProperty('current_cost_per_unit')
+  })
+})
+
+describe('EditConsumableDialog currency (T276)', () => {
+  it('labels the unit cost in the books currency', async () => {
+    auth.symbol = 'C$'
+    api.get.mockResolvedValue(consumable())
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    expect(await screen.findByLabelText('Cost per Unit (C$)')).toBeInTheDocument()
   })
 })
