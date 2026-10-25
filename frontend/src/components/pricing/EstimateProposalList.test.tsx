@@ -88,6 +88,16 @@ describe('EstimateProposalList', () => {
       expect(screen.getByTestId('proposal-divergence')).toHaveTextContent('810.0% out')
     })
 
+    it('says how far to believe the observation (T259)', async () => {
+      mockList.mockResolvedValue(listOf(makeRevision({ confidence: '0.3680' })))
+
+      render(<EstimateProposalList />)
+
+      expect(await screen.findByTestId('proposal-confidence')).toHaveTextContent(
+        '37% confidence',
+      )
+    })
+
     it('keeps the exact divergence available, not only the rounded one', async () => {
       mockList.mockResolvedValue(listOf(makeRevision({ divergence_pct: '810.3647' })))
 

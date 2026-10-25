@@ -140,25 +140,28 @@ test.describe('Feature Name', () => {
 
 ## CI/CD Integration
 
-### GitHub Actions Example
+`.woodpecker/test-e2e.yml` runs the pricing journeys (`e2e/pricing/`) on every
+push and pull request to `main`, and release builds depend on it. The pipeline
+never touches production: it migrates a scratch PostgreSQL to head, seeds the
+e2e tenant with `backend/scripts/seed_e2e.py`, starts the backend and a Celery
+worker, serves the built frontend on `localhost:4173`, and runs
+`npx playwright test --project=pricing`.
 
-```yaml
-- name: Install Playwright
-  run: npx playwright install --with-deps
+### Running the pricing journeys locally
 
-- name: Run E2E Tests
-  run: npm run test:e2e
-  env:
-    TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
-    TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+```bash
+# A scratch database, migrated and seeded (credentials live in seed_e2e.py)
+cd backend
+DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:5433/batchivo_e2e poetry run alembic upgrade head
+DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:5433/batchivo_e2e poetry run python scripts/seed_e2e.py
 
-- name: Upload test results
-  if: always()
-  uses: actions/upload-artifact@v3
-  with:
-    name: playwright-report
-    path: playwright-report/
+# Backend (and a Celery worker for scenarios) against that database, then:
+cd frontend
+PLAYWRIGHT_BASE_URL=http://localhost:5174 PLAYWRIGHT_API_URL=http://localhost:8001 npx playwright test --project=pricing
 ```
+
+The journeys change the seeded data (a tier, a fee actual, accepted
+proposals), so recreate and reseed the database before each full run.
 
 ## Troubleshooting
 

@@ -52,6 +52,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { formatShare } from '@/lib/money'
 import type { EstimateRevision } from '@/types/pricing'
 
 export interface EstimateProposalListProps {
@@ -144,6 +145,14 @@ function ProposalRow({
       <details className="text-xs">
         <summary className="cursor-pointer text-muted-foreground">
           From {outcomes.length} recorded {outcomes.length === 1 ? 'outcome' : 'outcomes'}
+          {/* How far the evidence goes (T259, US6/AC1): the count and agreement
+              of the outcomes, so a reviewer weighs a thin proposal as one. */}
+          {revision.confidence && (
+            <span data-testid="proposal-confidence">
+              {' '}
+              · {formatShare(revision.confidence)} confidence
+            </span>
+          )}
         </summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-5" data-testid="proposal-outcomes">
           {outcomes.map((runId) => (

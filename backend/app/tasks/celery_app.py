@@ -13,7 +13,9 @@ failed run with a reason rather than leaving a row to look like it is working
 (FR-044b).
 """
 
+import asyncio
 import logging
+import sys
 
 from celery import Celery
 from celery.schedules import crontab
@@ -21,6 +23,12 @@ from celery.schedules import crontab
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+if sys.platform == "win32":
+    # Tasks run their async work with `asyncio.run`, and psycopg's async mode
+    # cannot use the Proactor loop Windows defaults to. Production runs on
+    # Linux; this is what lets a worker run on a Windows development machine.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 settings = get_settings()
 

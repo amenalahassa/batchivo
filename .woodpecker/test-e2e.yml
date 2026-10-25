@@ -1,0 +1,103 @@
+# End-to-end pricing journeys (T267), required before release builds.
+#
+# Everything runs inside this pipeline: a scratch PostgreSQL and Redis, the
+# backend and a Celery worker built from this commit, and the built frontend
+# served on localhost. Playwright never reaches production (Constitution II).
+#
+# Order: migrate to head and seed the e2e tenant, start the backend and the
+# worker as detached steps (reachable by step name), then build the frontend
+# against the backend, serve it with `vite preview` and run the pricing project.
+
+when:
+  - event: pull_request
+    branch: main
+  - event: push
+    branch: main
+  - event: deployment
+    branch: main
+    evaluate: 'CI_PIPELINE_DEPLOY_TARGET == "build-release"'
+
+variables:
+  - &ci_python_image registry.techize.co.uk/batchivo/ci-python:3.12
+  - &node_image registry.techize.co.uk/dockerhub-cache/node@sha256:ab07539e0988b63558ff621f5fbe1077054c39d9809112974fb79993949d41cd
+  - &backend_env
+    DATABASE_URL: postgresql+psycopg://test:test@postgres:5432/batchivo_e2e
+    SECRET_KEY: test-secret-key-for-ci-testing-minimum-32-chars
+    DEBUG: 'false'
+    CELERY_BROKER_URL: redis://redis:6379/5
+    CELERY_RESULT_BACKEND: redis://redis:6379/6
+    CORS_ORIGINS: '["http://localhost:4173"]'
+
+services:
+  postgres:
+    image: registry.techize.co.uk/dockerhub-cache/postgres@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
+    ports:
+      - 5432
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: batchivo_e2e
+  redis:
+    image: registry.techize.co.uk/dockerhub-cache/redis:7-alpine
+    ports:
+      - 6379
+
+steps:
+  # ============================================
+  # Schema and data: migrations alone, then the seeded e2e tenant
+  # ============================================
+  e2e-seed:
+    image: *ci_python_image
+    environment:
+      <<: *backend_env
+      PGPASSWORD: test
+    commands:
+      - cd backend
+      - command -v poetry || pip install --quiet --no-cache-dir poetry
+      - poetry install --no-interaction --quiet --extras dev --no-root
+      - until pg_isready -h postgres -U test -q 2>/dev/null; do sleep 1; done
+      - poetry run alembic upgrade head
+      - poetry run python scripts/seed_e2e.py
+
+  # ============================================
+  # Backend and worker, left running for the journeys
+  # ============================================
+  e2e-backend:
+    image: *ci_python_image
+    detach: true
+    environment: *backend_env
+    commands:
+      - cd backend
+      - command -v poetry || pip install --quiet --no-cache-dir poetry
+      - poetry install --no-interaction --quiet --extras dev --no-root
+      - poetry run uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  e2e-worker:
+    image: *ci_python_image
+    detach: true
+    environment: *backend_env
+    commands:
+      - cd backend
+      - command -v poetry || pip install --quiet --no-cache-dir poetry
+      - poetry install --no-interaction --quiet --extras dev --no-root
+      - poetry run celery -A app.tasks.celery_app worker --pool=solo --loglevel=info
+
+  # ============================================
+  # Built frontend on localhost, and the pricing journeys
+  # ============================================
+  e2e-pricing:
+    image: *node_image
+    environment:
+      CI: 'true'
+      VITE_API_URL: http://e2e-backend:8000
+      PLAYWRIGHT_BASE_URL: http://localhost:4173
+      PLAYWRIGHT_API_URL: http://e2e-backend:8000
+    commands:
+      - cd frontend
+      - npm ci --silent
+      - npx playwright install --with-deps chromium
+      - npm run build
+      - (npx vite preview --port 4173 --strictPort > /tmp/preview.log 2>&1 &)
+      - until node -e "fetch('http://e2e-backend:8000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"; do sleep 2; done
+      - until node -e "fetch('http://localhost:4173').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"; do sleep 1; done
+      - npx playwright test --project=pricing --reporter=list

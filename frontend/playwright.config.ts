@@ -26,8 +26,9 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    /* Default to production for E2E tests; use PLAYWRIGHT_BASE_URL=http://localhost:5173 for local */
-    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'https://www.batchivo.com',
+    /* Defaults to a local frontend (T267): an unconfigured run must never aim
+       at production. Point PLAYWRIGHT_BASE_URL elsewhere deliberately. */
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5173',
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -40,24 +41,48 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
+      testIgnore: /pricing\//,
       use: { ...devices['Desktop Chrome'] },
     },
 
     {
       name: 'firefox',
+      testIgnore: /pricing\//,
       use: { ...devices['Desktop Firefox'] },
     },
 
     {
       name: 'webkit',
+      testIgnore: /pricing\//,
       use: { ...devices['Desktop Safari'] },
+    },
+
+    /*
+     * The pricing journeys (T266), against the tenant
+     * `backend/scripts/seed_e2e.py` seeds. The setup project signs the owner
+     * and the viewer in once each, so the suite stays inside the login rate
+     * limit; every spec reuses those sessions. CI runs `--project=pricing`.
+     */
+    {
+      name: 'pricing-setup',
+      testMatch: /pricing\/auth\.setup\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'pricing',
+      testMatch: /pricing\/.*\.spec\.ts/,
+      dependencies: ['pricing-setup'],
+      use: { ...devices['Desktop Chrome'] },
     },
   ],
 
-  /* Run local dev server only when testing locally (set PLAYWRIGHT_BASE_URL=http://localhost:5173) */
-  webServer: process.env.PLAYWRIGHT_BASE_URL?.includes('localhost')
+  /* Start (or reuse) the Vite dev server only for the default local address.
+     CI serves a built frontend on its own port and starts nothing here. */
+  webServer: (process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173').startsWith(
+    'http://localhost:5173',
+  )
     ? {
-        command: `VITE_API_URL=${process.env.PLAYWRIGHT_API_URL || 'https://api.batchivo.com'} npm run dev`,
+        command: `VITE_API_URL=${process.env.PLAYWRIGHT_API_URL || 'http://localhost:8000'} npm run dev`,
         url: 'http://localhost:5173',
         reuseExistingServer: !process.env.CI,
         stdout: 'ignore',
