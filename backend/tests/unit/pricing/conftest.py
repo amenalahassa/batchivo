@@ -29,7 +29,7 @@ from app.models.printer import Printer
 from app.models.product import Product
 from app.models.sales_channel import SalesChannel
 from app.services.fee_engine import OrderContext
-from app.services.pricing_policy import CostPolicy
+from app.services.pricing_policy import POLICY_FIELDS, CostPolicy
 from tests.fixtures import golden_case as golden
 
 MINUTES_PER_HOUR = Decimal("60")
@@ -87,8 +87,10 @@ def make_policy(**overrides) -> CostPolicy:
         overhead_monthly_pool=golden.MONTHLY_OVERHEAD_POOL,
         expected_monthly_machine_hours=golden.EXPECTED_MONTHLY_MACHINE_HOURS,
         electricity_rate_per_kwh=golden.ELECTRICITY_RATE_PER_KWH,
-        # The golden case's rates are the operator's own decisions.
+        # The golden case's rates are the operator's own decisions -- every
+        # lever, since an origin is recorded per lever (T260).
         decided=True,
+        decided_levers={lever: {"as_of": None, "role": "owner"} for lever in POLICY_FIELDS},
     )
     defaults.update(overrides)
     return CostPolicy(**defaults)

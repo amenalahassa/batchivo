@@ -190,19 +190,32 @@ class _Origin:
     source: str
     as_of: Optional[date]
     pending: bool = False
+    #: How far to believe an observed figure, in (0, 1], from the outcomes
+    #: behind it (T259). ``None`` where confidence means nothing -- a policy
+    #: decision, a hand measurement, an assumption.
+    confidence: Optional[Decimal] = None
 
 
 _DEFAULT_ORIGIN = _Origin(source="assumed", as_of=None)
 
 
-def _policy_origin(policy: CostPolicy) -> _Origin:
+def _policy_origin(policy: CostPolicy, *levers: str) -> _Origin:
     """The origin of a figure taken from the tenant's pricing policy.
 
-    ``policy`` with the row's date when an operator set it, ``assumed`` when
-    the row was seeded and nobody has (task T219). Hardcoding ``policy`` here
-    presented a default rate nobody chose as a decision.
+    Per lever (T260): ``policy`` with the day an operator chose it, ``assumed``
+    for a lever nobody has -- even on a row somebody wrote, which carries the
+    levers it did not name forward. A figure built from several levers is as
+    weak as the weakest of them. Hardcoding ``policy`` here presented a
+    default rate nobody chose as a decision (task T219).
     """
-    return _Origin(source=policy.source, as_of=policy.effective_from)
+    if not levers:
+        return _Origin(source=policy.source, as_of=policy.effective_from)
+    return _weakest(
+        [
+            _Origin(source=policy.lever_source(lever), as_of=policy.lever_as_of(lever))
+            for lever in levers
+        ]
+    )
 
 
 @dataclass
@@ -214,6 +227,7 @@ class _RawLine:
     source: str = "assumed"
     as_of: Optional[date] = None
     pending: bool = False
+    confidence: Optional[Decimal] = None
 
     @property
     def risk_class(self) -> str:
@@ -318,7 +332,12 @@ def _origin_of(
     recorded = origins.get((entity_type, entity_id, field_name))
     if recorded is None:
         return _Origin(source=default_source, as_of=None, pending=is_pending)
-    return _Origin(source=recorded.source, as_of=recorded.as_of, pending=is_pending)
+    return _Origin(
+        source=recorded.source,
+        as_of=recorded.as_of,
+        pending=is_pending,
+        confidence=recorded.confidence,
+    )
 
 
 def _weakest(origins: Sequence[_Origin]) -> _Origin:
@@ -337,10 +356,14 @@ def _weakest(origins: Sequence[_Origin]) -> _Origin:
     # Any disputed input makes the line disputed. The symmetry with `source` is
     # deliberate: a line is as weak as its weakest input and as under-review as
     # its most disputed one.
+    # A line is as believable as its least believable observed input; the
+    # others say nothing about confidence either way (T259).
+    confidences = [origin.confidence for origin in origins if origin.confidence is not None]
     return _Origin(
         source=weakest.source,
         as_of=oldest,
         pending=any(origin.pending for origin in origins),
+        confidence=min(confidences) if confidences else None,
     )
 
 
@@ -561,6 +584,7 @@ def _item_lines(
                 material_at.source,
                 material_at.as_of,
                 material_at.pending,
+                material_at.confidence,
             )
         )
 
@@ -580,7 +604,14 @@ def _item_lines(
                 [_origin_of(origins, pending, "model", model_id, "waste_grams"), plate_origin]
             )
             result.lines.append(
-                _RawLine("waste", waste_cost, waste_at.source, waste_at.as_of, waste_at.pending)
+                _RawLine(
+                    "waste",
+                    waste_cost,
+                    waste_at.source,
+                    waste_at.as_of,
+                    waste_at.pending,
+                    waste_at.confidence,
+                )
             )
 
     # -------------------------------------------------------------- machine
@@ -638,7 +669,7 @@ def _item_lines(
         machine_rate = policy.default_machine_rate_per_hour
         if machine_rate is not None and printer is None:
             # FR-011: an item planned on no printer falls back to the policy rate.
-            machine_origins.append(_policy_origin(policy))
+            machine_origins.append(_policy_origin(policy, "default_machine_rate_per_hour"))
 
     if machine_rate is None and result.print_hours_per_item is not None:
         result.incomplete_reasons.append(
@@ -658,6 +689,7 @@ def _item_lines(
                 machine_at.source,
                 machine_at.as_of,
                 machine_at.pending,
+                machine_at.confidence,
             )
         )
 
@@ -667,28 +699,46 @@ def _item_lines(
     handling_rate = override if override is not None else policy.print_labor_rate
     finishing_rate = override if override is not None else policy.finishing_labor_rate
 
-    rate_origin = (
-        _origin_of(origins, pending, "model", model_id, "labor_rate_override")
-        if override is not None
-        else _policy_origin(policy)
-    )
+    def rate_origin_for(lever: str) -> _Origin:
+        # Each line carries its own rate's origin (T260): the finishing rate
+        # being a default nobody chose says nothing about the handling rate.
+        if override is not None:
+            return _origin_of(origins, pending, "model", model_id, "labor_rate_override")
+        return _policy_origin(policy, lever)
 
-    for key, hours_key, rate, field_name in (
-        ("labor_handling", "handling", handling_rate, "labor_hours_per_item"),
-        ("labor_finishing", "finishing", finishing_rate, "finishing_hours_per_item"),
+    for key, hours_key, rate, field_name, lever in (
+        ("labor_handling", "handling", handling_rate, "labor_hours_per_item", "print_labor_rate"),
+        (
+            "labor_finishing",
+            "finishing",
+            finishing_rate,
+            "finishing_hours_per_item",
+            "finishing_labor_rate",
+        ),
         # Packing is handling work, charged at the handling rate; what matters
         # for FR-016 is that it is distinguishable from finishing, and for
         # FR-015 that the premium never reaches it.
-        ("labor_packing", "packing", handling_rate, "packing_hours_per_item"),
+        ("labor_packing", "packing", handling_rate, "packing_hours_per_item", "print_labor_rate"),
     ):
         component_hours = hours[hours_key]
         if component_hours <= ZERO:
             continue
         line_at = _weakest(
-            [rate_origin, _origin_of(origins, pending, "model", model_id, field_name), plate_origin]
+            [
+                rate_origin_for(lever),
+                _origin_of(origins, pending, "model", model_id, field_name),
+                plate_origin,
+            ]
         )
         result.lines.append(
-            _RawLine(key, component_hours * rate, line_at.source, line_at.as_of, line_at.pending)
+            _RawLine(
+                key,
+                component_hours * rate,
+                line_at.source,
+                line_at.as_of,
+                line_at.pending,
+                line_at.confidence,
+            )
         )
 
     # ----------------------------------------------------------- components
@@ -714,6 +764,7 @@ def _item_lines(
                 component_at.source,
                 component_at.as_of,
                 component_at.pending,
+                component_at.confidence,
             )
         )
 
@@ -729,7 +780,18 @@ def _item_lines(
                 "(FR-014, FR-019)"
             )
         elif result.print_hours_per_item is not None:
-            overhead_at = _weakest([_policy_origin(policy), time_origin, plate_origin])
+            overhead_at = _weakest(
+                [
+                    _policy_origin(
+                        policy,
+                        "overhead_method",
+                        "overhead_monthly_pool",
+                        "expected_monthly_machine_hours",
+                    ),
+                    time_origin,
+                    plate_origin,
+                ]
+            )
             result.lines.append(
                 _RawLine(
                     "overhead",
@@ -737,6 +799,7 @@ def _item_lines(
                     overhead_at.source,
                     overhead_at.as_of,
                     overhead_at.pending,
+                    overhead_at.confidence,
                 )
             )
     else:
@@ -755,7 +818,7 @@ def _item_lines(
             overhead_at = (
                 _origin_of(origins, pending, "model", model_id, "overhead_percentage")
                 if model_pct is not None
-                else _policy_origin(policy)
+                else _policy_origin(policy, "overhead_percentage")
             )
             result.lines.append(
                 _RawLine(
@@ -764,6 +827,7 @@ def _item_lines(
                     overhead_at.source,
                     overhead_at.as_of,
                     overhead_at.pending,
+                    overhead_at.confidence,
                 )
             )
 
@@ -806,7 +870,9 @@ def _rounded_lines(raw: Sequence[_RawLine]) -> list[CostLine]:
     origins: dict[str, list[_Origin]] = {}
     for line in raw:
         merged[line.key] = merged.get(line.key, ZERO) + line.amount
-        origins.setdefault(line.key, []).append(_Origin(line.source, line.as_of, line.pending))
+        origins.setdefault(line.key, []).append(
+            _Origin(line.source, line.as_of, line.pending, line.confidence)
+        )
 
     order = {key: index for index, key in enumerate(_LINE_ORDER)}
     keys = sorted(merged, key=lambda key: (order.get(key, len(order)), key))
@@ -826,6 +892,7 @@ def _rounded_lines(raw: Sequence[_RawLine]) -> list[CostLine]:
                 source=origin.source,  # type: ignore[arg-type]
                 as_of=origin.as_of,
                 has_pending_revision=origin.pending,
+                confidence=origin.confidence,
             )
         )
     return lines
@@ -1225,6 +1292,7 @@ class CostingService:
                         source=line.source,
                         as_of=line.as_of,
                         pending=line.has_pending_revision,
+                        confidence=line.confidence,
                     )
                 )
             inherited_premium += breakdown.failure_premium * quantity
@@ -1280,6 +1348,7 @@ class CostingService:
                     packaging_origin.source,
                     packaging_origin.as_of,
                     packaging_origin.pending,
+                    packaging_origin.confidence,
                 )
             )
 
@@ -1295,6 +1364,7 @@ class CostingService:
                     assembly_origin.source,
                     assembly_origin.as_of,
                     assembly_origin.pending,
+                    assembly_origin.confidence,
                 )
             )
 

@@ -163,6 +163,50 @@ class TestTheLabourLineSaysWhoChoseTheRate:
         assert line["source"] == "policy"
         assert line["as_of"] is not None
 
+    async def test_one_lever_written_on_an_assumed_row_leaves_the_rest_assumed(
+        self, client: AsyncClient, db_session: AsyncSession, test_tenant: Tenant
+    ) -> None:
+        """T260: changing the margin basis does not relabel the carried labour rate."""
+        await seed_policy_row(db_session, test_tenant)
+        await db_session.commit()
+
+        written = await client.put(POLICY, json={"margin_basis": "item_price"})
+
+        assert written.status_code == 200, written.text
+        levers = written.json()["levers"]
+        assert levers["margin_basis"]["source"] == "policy"
+        assert levers["margin_basis"]["as_of"] is not None
+        assert levers["margin_basis"]["set_by_role"] in {"admin", "owner"}
+        for carried in ("print_labor_rate", "finishing_labor_rate", "overhead_percentage"):
+            assert levers[carried]["source"] == "assumed", carried
+            assert levers[carried]["as_of"] is None
+
+        # And the next write carries the decided lever forward as decided.
+        again = (await client.put(POLICY, json={"print_labor_rate": "31.00"})).json()
+        assert again["levers"]["margin_basis"]["source"] == "policy"
+        assert again["levers"]["print_labor_rate"]["source"] == "policy"
+        assert again["levers"]["finishing_labor_rate"]["source"] == "assumed"
+
+    async def test_a_carried_default_does_not_reach_a_cost_line_as_policy(
+        self,
+        client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        test_model: Model,
+    ) -> None:
+        """The labour line built from a carried rate stays assumed (T260)."""
+        await seed_policy_row(db_session, test_tenant)
+        await db_session.commit()
+        await client.put(
+            f"/api/v1/models/{test_model.id}/cost-profile",
+            json={"labor_hours_per_item": "0.25", "prints_per_plate": 1},
+        )
+
+        await client.put(POLICY, json={"margin_basis": "item_price"})
+
+        body = (await client.get(f"/api/v1/models/{test_model.id}/cost")).json()
+        assert _line(body, "labor_handling")["source"] == "assumed"
+
     async def test_the_policy_read_reports_a_seeded_row_as_assumed(
         self, client: AsyncClient, db_session: AsyncSession, test_tenant: Tenant
     ) -> None:

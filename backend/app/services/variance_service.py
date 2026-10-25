@@ -131,6 +131,46 @@ class VarianceDecision:
 # ---------------------------------------------------------------------------
 
 
+#: Outcomes at which the sample term reaches one half. Five matches the
+#: default minimum before an estimate updates (FR-042a): the fewest outcomes
+#: allowed to move a figure earn it half the weight their agreement allows.
+CONFIDENCE_HALF_AT = Decimal("5")
+CONFIDENCE_PRECISION = Decimal("0.0001")
+
+
+def estimate_confidence(outcomes: Sequence[Outcome]) -> Optional[Decimal]:
+    """How far to believe an estimate observed from ``outcomes``, in (0, 1] (T259).
+
+    Two things make an observed figure believable: how many outcomes stand
+    behind it, and how closely they agree. So it is the product of
+
+    * a sample term, ``n / (n + 5)`` -- a half at five outcomes, approaching
+      one as they accumulate and never reaching it; and
+    * an agreement term, ``1 / (1 + cv)``, where ``cv`` is the outcomes'
+      coefficient of variation -- one when they agree exactly, falling as they
+      scatter.
+
+    Exact, rounded once to four places at the edge, and never zero: a figure
+    with any outcome behind it carries some evidence. ``None`` without
+    outcomes, where confidence means nothing.
+    """
+    if not outcomes:
+        return None
+    values = [Decimal(str(outcome.value)) for outcome in outcomes]
+    count = Decimal(len(values))
+    mean = sum(values, ZERO) / count
+    variance = sum(((value - mean) ** 2 for value in values), ZERO) / count
+    spread = variance.sqrt()
+    if mean == ZERO:
+        variation = ZERO if spread == ZERO else Decimal("1")
+    else:
+        variation = spread / abs(mean)
+    sample = count / (count + CONFIDENCE_HALF_AT)
+    agreement = Decimal("1") / (Decimal("1") + variation)
+    confidence = (sample * agreement).quantize(CONFIDENCE_PRECISION, rounding=ROUND_HALF_UP)
+    return max(confidence, CONFIDENCE_PRECISION)
+
+
 def rolling_average(outcomes: Sequence[Outcome]) -> Optional[Decimal]:
     """The mean of the outcomes' values, exact and unrounded.
 
@@ -454,6 +494,7 @@ async def consider_outcomes(
             entity_type=entity_type,
             field_name=field_name,
             observed=observed,
+            confidence=estimate_confidence(outcomes),
             observed_on=observed_on,
             divergence=divergence,
             run_ids=run_ids,
@@ -514,6 +555,9 @@ async def consider_outcomes(
         derived_from_run_ids=sorted(run_ids),
         state="pending",
         observed_as_of=observed_on,
+        # What the evidence earns, frozen with it, so accepting the proposal
+        # records the confidence the operator was shown (T259).
+        confidence=estimate_confidence(outcomes),
     )
     db.add(proposal)
     await db.flush()
@@ -547,6 +591,7 @@ async def _apply(
     entity_type: str,
     field_name: str,
     observed: Decimal,
+    confidence: Optional[Decimal],
     observed_on: date,
     divergence: Optional[Decimal],
     run_ids: frozenset[str],
@@ -564,6 +609,7 @@ async def _apply(
         field_name=field_name,
         source="observed",
         as_of=observed_on,
+        confidence=confidence,
         automated=True,
     )
     await db.flush()
@@ -653,6 +699,7 @@ async def accept_revision(
                 field_name=revision.field_name,
                 source="observed",
                 as_of=revision.observed_as_of,
+                confidence=revision.confidence,
                 automated=True,
             )
         except ProvenanceNotEditable:

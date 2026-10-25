@@ -106,6 +106,16 @@ class PricingPolicyUpdate(BaseModel):
         return values
 
 
+class PolicyLeverOrigin(BaseModel):
+    """Where one policy lever's figure came from (T260, FR-001)."""
+
+    source: Literal["policy", "assumed"] = Field(
+        ..., description="'policy' once an operator chose this lever; 'assumed' until then"
+    )
+    as_of: Optional[date] = Field(None, description="The day it was chosen; null if never")
+    set_by_role: Optional[str] = Field(None, description="The role that chose it (FR-007a)")
+
+
 class PricingPolicyResponse(BaseModel):
     """The policy in effect, with where it came from and when it started."""
 
@@ -152,6 +162,14 @@ class PricingPolicyResponse(BaseModel):
         description=(
             "'policy' once an operator has set this policy; 'assumed' for the row "
             "seeded when the tenant was created, which nobody chose (task T219)"
+        ),
+    )
+    levers: dict[str, PolicyLeverOrigin] = Field(
+        default_factory=dict,
+        description=(
+            "Every lever with its own origin (T260). A write names the levers it "
+            "moves; the rest are carried forward with the origin they had, so a "
+            "default nobody chose stays 'assumed' on a row somebody wrote."
         ),
     )
 

@@ -48,7 +48,8 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { usePricingPolicy, useUpdatePricingPolicy } from '@/hooks/usePricing'
-import { formatMoney } from '@/lib/money'
+import { compareMoney, formatMoney } from '@/lib/money'
+import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 import type { PricingPolicyUpdate } from '@/types/pricing'
 
 const nonNegative = (message: string) =>
@@ -133,36 +134,51 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
   // once the policy loads, and only a subscription re-renders this branch.
   const method = useWatch({ control: form.control, name: 'overhead_method' })
 
+  // Only the levers the administrator moved are sent (T260). The server
+  // records each lever it is sent as a decision, so re-sending an unchanged
+  // default would relabel a figure nobody chose as policy.
+  const DECIMAL_LEVERS = [
+    'print_labor_rate',
+    'finishing_labor_rate',
+    'default_machine_rate_per_hour',
+    'overhead_monthly_pool',
+    'expected_monthly_machine_hours',
+    'electricity_rate_per_kwh',
+    'overhead_percentage',
+  ] as const
+
   const onSubmit = (values: FormValues) => {
-    const changes: PricingPolicyUpdate = {
-      overhead_method: values.overhead_method,
-      margin_basis: values.margin_basis,
+    const changes: PricingPolicyUpdate = {}
+    for (const lever of DECIMAL_LEVERS) {
+      const value = values[lever]
+      if (value === '') continue
+      const current = policy?.[lever] ?? null
+      if (current === null || compareMoney(value, current) !== 0) changes[lever] = value
     }
-    if (values.print_labor_rate !== '') changes.print_labor_rate = values.print_labor_rate
-    if (values.finishing_labor_rate !== '') {
-      changes.finishing_labor_rate = values.finishing_labor_rate
+    if (values.overhead_method !== policy?.overhead_method) {
+      changes.overhead_method = values.overhead_method
     }
-    if (values.default_machine_rate_per_hour !== '') {
-      changes.default_machine_rate_per_hour = values.default_machine_rate_per_hour
-    }
-    if (values.overhead_monthly_pool !== '') {
-      changes.overhead_monthly_pool = values.overhead_monthly_pool
-    }
-    if (values.expected_monthly_machine_hours !== '') {
-      changes.expected_monthly_machine_hours = values.expected_monthly_machine_hours
-    }
-    if (values.electricity_rate_per_kwh !== '') {
-      changes.electricity_rate_per_kwh = values.electricity_rate_per_kwh
-    }
-    // Sent only when it moved: an unchanged figure re-sent would still be a
-    // change of period, recorded as a decision nobody made.
-    if (
-      values.overhead_percentage !== '' &&
-      values.overhead_percentage !== policy?.overhead_percentage
-    ) {
-      changes.overhead_percentage = values.overhead_percentage
-    }
+    if (values.margin_basis !== policy?.margin_basis) changes.margin_basis = values.margin_basis
+    if (Object.keys(changes).length === 0) return
     updatePolicy(changes)
+  }
+
+  /** A lever's label with its own origin beside it (T260). */
+  const labelWithOrigin = (text: string, lever: string) => {
+    const origin = policy?.levers?.[lever]
+    return (
+      <span className="flex items-center gap-2">
+        <span>{text}</span>
+        {origin && policy?.origin === 'policy_row' && (
+          <ProvenanceBadge
+            source={origin.source}
+            asOf={origin.as_of}
+            isStale={false}
+            isDefault={!origin.as_of}
+          />
+        )}
+      </span>
+    )
   }
 
   if (isLoading) {
@@ -244,7 +260,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="print_labor_rate"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Print handling rate (per hour)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Print handling rate (per hour)', 'print_labor_rate')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -266,7 +282,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="finishing_labor_rate"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Finishing rate (per hour)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Finishing rate (per hour)', 'finishing_labor_rate')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -290,7 +306,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="overhead_method"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>How overhead reaches a unit</FormLabel>
+                  <FormLabel>{labelWithOrigin('How overhead reaches a unit', 'overhead_method')}</FormLabel>
                   <Select
                     onValueChange={(value) => {
                       // Radix emits '' on mount when the value matches no
@@ -331,7 +347,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
                 name="overhead_percentage"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Overhead percentage</FormLabel>
+                    <FormLabel>{labelWithOrigin('Overhead percentage', 'overhead_percentage')}</FormLabel>
                     <FormControl>
                       <Input inputMode="decimal" placeholder="15" disabled={!canEdit} {...field} />
                     </FormControl>
@@ -352,7 +368,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
                   name="overhead_monthly_pool"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Monthly overhead</FormLabel>
+                      <FormLabel>{labelWithOrigin('Monthly overhead', 'overhead_monthly_pool')}</FormLabel>
                       <FormControl>
                         <Input
                           inputMode="decimal"
@@ -375,7 +391,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
                   name="expected_monthly_machine_hours"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Expected machine-hours a month</FormLabel>
+                      <FormLabel>{labelWithOrigin('Expected machine-hours a month', 'expected_monthly_machine_hours')}</FormLabel>
                       <FormControl>
                         <Input
                           inputMode="decimal"
@@ -404,7 +420,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="default_machine_rate_per_hour"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Fallback machine rate (per hour)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Fallback machine rate (per hour)', 'default_machine_rate_per_hour')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -428,7 +444,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="electricity_rate_per_kwh"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Electricity rate (per kWh)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Electricity rate (per kWh)', 'electricity_rate_per_kwh')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
@@ -452,7 +468,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
               name="margin_basis"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>What a margin percentage is taken over</FormLabel>
+                  <FormLabel>{labelWithOrigin('What a margin percentage is taken over', 'margin_basis')}</FormLabel>
                   <Select
                     onValueChange={(value) => {
                       // Radix emits '' on mount when the value matches no

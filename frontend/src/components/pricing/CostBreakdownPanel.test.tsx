@@ -83,6 +83,26 @@ describe('CostBreakdownPanel', () => {
     ).toBeInTheDocument()
   })
 
+  it('says how far to believe an observed line (T259)', () => {
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({ lines: [line({ confidence: '0.8333' })] })}
+      />,
+    )
+
+    expect(screen.getByTestId('provenance-confidence')).toHaveTextContent('83% confidence')
+  })
+
+  it('claims no confidence for a line nobody observed', () => {
+    render(
+      <CostBreakdownPanel
+        breakdown={breakdown({ lines: [line({ source: 'policy', confidence: null })] })}
+      />,
+    )
+
+    expect(screen.queryByTestId('provenance-confidence')).not.toBeInTheDocument()
+  })
+
   it('names where each line came from', () => {
     render(<CostBreakdownPanel breakdown={breakdown()} />)
 

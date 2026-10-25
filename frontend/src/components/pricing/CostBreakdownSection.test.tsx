@@ -22,6 +22,18 @@ vi.mock('@/lib/api/pricing', () => ({
     getModelCost: vi.fn(),
     getPricingPolicy: vi.fn(),
   },
+  // The inputs list under the breakdown (T259); its own tests are in
+  // ProvenanceFieldsPanel.test.tsx.
+  getProvenance: vi.fn(async () => ({
+    entity_type: 'model',
+    entity_id: 'm',
+    fields: [],
+    observed_count: 0,
+    total_count: 0,
+    stale_count: 0,
+    staleness_threshold_days: 180,
+  })),
+  putProvenance: vi.fn(),
 }))
 
 const mocked = vi.mocked(pricingApi)

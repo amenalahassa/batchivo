@@ -227,6 +227,40 @@ describe('PricingPolicySettings', () => {
     expect(mocked.updatePricingPolicy.mock.calls[0][0]).not.toHaveProperty('overhead_percentage')
   })
 
+  it('sends only the lever that moved, never the rest of the form (T260)', async () => {
+    const user = userEvent.setup({ delay: null })
+    mocked.getPricingPolicy.mockResolvedValue(policy({ overhead_method: 'percentage' }))
+    renderPolicy(<PricingPolicySettings />)
+
+    const rate = await screen.findByLabelText('Print handling rate (per hour)')
+    await user.clear(rate)
+    await user.type(rate, '30')
+    await user.click(screen.getByRole('button', { name: /Save pricing policy/ }))
+
+    await waitFor(() => {
+      expect(mocked.updatePricingPolicy).toHaveBeenCalled()
+    })
+    expect(mocked.updatePricingPolicy.mock.calls[0][0]).toEqual({ print_labor_rate: '30' })
+  })
+
+  it('shows each lever with its own origin (T260)', async () => {
+    mocked.getPricingPolicy.mockResolvedValue(
+      policy({
+        source: 'policy',
+        levers: {
+          margin_basis: { source: 'policy', as_of: '2026-10-20', set_by_role: 'owner' },
+          print_labor_rate: { source: 'assumed', as_of: null, set_by_role: null },
+        },
+      }),
+    )
+    renderPolicy(<PricingPolicySettings />)
+
+    const rate = await screen.findByLabelText(/Print handling rate/)
+    const rateLabel = document.querySelector(`label[for="${rate.id}"]`)
+    expect(rateLabel?.textContent).toMatch(/assumed|default/i)
+    expect(rateLabel?.textContent).not.toMatch(/policy/i)
+  })
+
   it('says when nobody has set the policy yet', async () => {
     mocked.getPricingPolicy.mockResolvedValue(policy({ source: 'assumed', set_by_role: null }))
     renderPolicy(<PricingPolicySettings />)

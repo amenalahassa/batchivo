@@ -13,8 +13,13 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB, role_in_tenant
-from app.schemas.pricing_policy import PricingPolicyResponse, PricingPolicyUpdate
+from app.schemas.pricing_policy import (
+    PolicyLeverOrigin,
+    PricingPolicyResponse,
+    PricingPolicyUpdate,
+)
 from app.services.pricing_policy import (
+    POLICY_FIELDS,
     PolicyMisconfigured,
     cost_policy_from_row,
     legacy_cost_policy,
@@ -57,6 +62,14 @@ def _response(
         effective_to=effective_to,
         set_by_role=set_by_role,
         source=policy.source,
+        levers={
+            lever: PolicyLeverOrigin(
+                source=policy.lever_source(lever),
+                as_of=policy.lever_as_of(lever),
+                set_by_role=(policy.decided_levers.get(lever) or {}).get("role"),
+            )
+            for lever in POLICY_FIELDS
+        },
     )
 
 

@@ -20,6 +20,7 @@ import { AlertTriangle, Clock } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { SOURCE_EXPLANATION, SOURCE_LABEL, SOURCE_VARIANT } from '@/lib/provenance'
+import { formatShare } from '@/lib/money'
 import { cn } from '@/lib/utils'
 import type { ProvenanceSource } from '@/types/pricing'
 
@@ -33,6 +34,11 @@ export interface ProvenanceBadgeProps {
   hasPendingRevision?: boolean
   /** True where the registry's default applied because nothing was recorded. */
   isDefault?: boolean
+  /**
+   * How far to believe an observed figure, a fraction in (0, 1] (T259). Shown
+   * beside the origin; omitted where confidence means nothing.
+   */
+  confidence?: string | null
   /** Drops the date and the explanatory text, for a dense table cell. */
   compact?: boolean
   className?: string
@@ -55,6 +61,7 @@ export function ProvenanceBadge({
   isStale = false,
   hasPendingRevision = false,
   isDefault = false,
+  confidence = null,
   compact = false,
   className,
 }: ProvenanceBadgeProps) {
@@ -72,6 +79,17 @@ export function ProvenanceBadge({
 
       {!compact && (
         <span className="text-xs text-muted-foreground">{dateLabel(asOf, isDefault)}</span>
+      )}
+
+      {/* US6/AC1: an observed figure says how much evidence stands behind it. */}
+      {confidence && (
+        <span
+          className="text-xs text-muted-foreground"
+          data-testid="provenance-confidence"
+          title="From how many outcomes stand behind this figure and how closely they agree"
+        >
+          {formatShare(confidence)} confidence
+        </span>
       )}
 
       {/* FR-005: flagged, and the figure above it is still shown. The badge

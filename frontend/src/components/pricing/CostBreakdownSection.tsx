@@ -22,6 +22,7 @@ import { AlertCircle, Loader2 } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CostBreakdownPanel } from './CostBreakdownPanel'
+import { ProvenanceFieldsPanel } from './ProvenanceFieldsPanel'
 import { useModelCost, usePricingPolicy, useProductCost } from '@/hooks/usePricing'
 
 export interface CostBreakdownSectionProps {
@@ -94,11 +95,26 @@ export function CostBreakdownSection({
   }
 
   return (
-    <CostBreakdownPanel
-      breakdown={breakdown}
-      currencySymbol={currencySymbol}
-      stalenessThresholdDays={policy?.staleness_threshold_days ?? null}
-      className={className}
-    />
+    <div className={className}>
+      <CostBreakdownPanel
+        breakdown={breakdown}
+        currencySymbol={currencySymbol}
+        stalenessThresholdDays={policy?.staleness_threshold_days ?? null}
+      />
+      {/* Each input behind the lines, and the one place to re-confirm a stale
+          measurement (T259, FR-001, FR-005). Closed by default: the lines
+          above already say each one's weakest origin. */}
+      <details className="mt-2 rounded-md border px-3 py-2" data-testid="cost-inputs">
+        <summary className="cursor-pointer text-sm font-medium">
+          Where these figures come from
+        </summary>
+        <div className="pt-2">
+          <ProvenanceFieldsPanel
+            entityType={productId ? 'product' : 'model'}
+            entityId={(productId ?? modelId) as string}
+          />
+        </div>
+      </details>
+    </div>
   )
 }

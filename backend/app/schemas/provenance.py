@@ -136,6 +136,9 @@ class EstimateRevisionResponse(BaseModel):
     current_value: Decimal = Field(..., description="The estimate this would change")
     observed_value: Decimal = Field(..., description="What the outcomes average to")
     divergence_pct: Decimal = Field(..., description="How far apart they were when this was raised")
+    confidence: Optional[Decimal] = Field(
+        None, description="How far to believe the observation, in (0, 1] (T259)"
+    )
     derived_from_run_ids: list[str] = Field(
         ..., description="The outcomes behind it, so a reviewer can check them"
     )
@@ -150,6 +153,10 @@ class EstimateRevisionResponse(BaseModel):
     @field_serializer("current_value", "observed_value", "divergence_pct")
     def _serialise_money(self, value: Decimal) -> str:
         return str(value)
+
+    @field_serializer("confidence")
+    def _serialise_revision_confidence(self, value: Optional[Decimal]) -> Optional[str]:
+        return None if value is None else str(value)
 
 
 class EstimateRevisionListResponse(BaseModel):

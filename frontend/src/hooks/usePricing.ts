@@ -8,8 +8,9 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { pricingApi } from '@/lib/api/pricing'
+import { getProvenance, pricingApi, putProvenance } from '@/lib/api/pricing'
 import type {
+  OperatorProvenanceSource,
   CostBreakdown,
   FilamentPurchase,
   FilamentPurchaseCreate,
@@ -35,6 +36,8 @@ export const pricingKeys = {
   printerCostPolicy: (printerId: string) =>
     ['pricing', 'printer-cost-policy', printerId] as const,
   modelCostProfile: (modelId: string) => ['pricing', 'model-cost-profile', modelId] as const,
+  provenance: (entityType: string, entityId: string) =>
+    ['pricing', 'provenance', entityType, entityId] as const,
   filamentPurchases: () => ['pricing', 'filament-purchases'] as const,
   filamentPurchase: (purchaseId: string) =>
     ['pricing', 'filament-purchase', purchaseId] as const,
@@ -341,5 +344,52 @@ export function usePriceLadder(
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,
+  }
+}
+
+
+/** Every input on one entity with its origin, date, confidence and staleness (T259). */
+export function useEntityProvenance(entityType: string, entityId: string | undefined) {
+  const query = useQuery({
+    queryKey: pricingKeys.provenance(entityType, entityId ?? ''),
+    queryFn: () => getProvenance(entityType, entityId as string),
+    enabled: Boolean(entityId),
+  })
+
+  return {
+    provenance: query.data,
+    isLoading: query.isLoading,
+    error: query.error,
+  }
+}
+
+/**
+ * Record one figure's origin again -- typically a stale measurement found
+ * still correct, dated today without changing its value (T259, FR-005).
+ */
+export function useReconfirmProvenance(entityType: string, entityId: string) {
+  const queryClient = useQueryClient()
+
+  const mutation = useMutation({
+    mutationFn: ({
+      fieldName,
+      source,
+      asOf,
+    }: {
+      fieldName: string
+      source: OperatorProvenanceSource
+      asOf: string
+    }) => putProvenance(entityType, entityId, fieldName, { source, as_of: asOf }),
+    onSuccess: () => {
+      // A line's origin and date are read from these, so every breakdown
+      // that might show this entity is refetched (Constitution V).
+      queryClient.invalidateQueries({ queryKey: ['pricing'] })
+    },
+  })
+
+  return {
+    reconfirm: mutation.mutate,
+    isSaving: mutation.isPending,
+    error: mutation.error,
   }
 }

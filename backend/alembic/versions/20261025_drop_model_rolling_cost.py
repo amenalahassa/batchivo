@@ -1,6 +1,6 @@
 """Retire the rolling-average actual cost stored on a model.
 
-Revision ID: pricing_drop_model_rolling_cost_v1
+Revision ID: pricing_drop_model_rolling_v1
 Revises: pricing_material_from_spool_v1
 
 Task T255. `models.actual_production_cost` folded each completed run into a
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "pricing_drop_model_rolling_cost_v1"
+revision = "pricing_drop_model_rolling_v1"
 down_revision = "pricing_material_from_spool_v1"
 branch_labels = None
 depends_on = None

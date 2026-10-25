@@ -23,10 +23,10 @@ which should not happen -- so a cost is still never computed from nothing.
 """
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Mapping, Optional, TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,11 +112,26 @@ class CostPolicy:
     decided: bool = False
     #: The role that authorised the row, where somebody did (FR-007a).
     set_by_role: Optional[str] = None
+    #: The levers an operator decided, each with its day and role (T260). The
+    #: row-level ``decided`` says somebody wrote the row; this says which
+    #: figures they chose, so a carried-forward default is not relabelled.
+    decided_levers: Mapping[str, Mapping[str, Optional[str]]] = field(default_factory=dict)
 
     @property
     def source(self) -> str:
-        """The provenance a figure taken from this policy carries."""
+        """Whether any lever on this policy was decided by an operator."""
         return "policy" if self.decided else "assumed"
+
+    def lever_source(self, lever: str) -> str:
+        """``policy`` for a lever an operator chose, ``assumed`` otherwise (T260)."""
+        return "policy" if lever in self.decided_levers else "assumed"
+
+    def lever_as_of(self, lever: str) -> Optional[date]:
+        """The day a lever was decided, or ``None`` for one nobody chose."""
+        entry = self.decided_levers.get(lever)
+        if not entry or not entry.get("as_of"):
+            return None
+        return date.fromisoformat(str(entry["as_of"]))
 
     @property
     def overhead_rate_per_machine_hour(self) -> Optional[Decimal]:
@@ -250,6 +265,7 @@ def cost_policy_from_row(row: TenantPricingPolicy) -> CostPolicy:
         origin="policy_row",
         decided=row.set_by_user_id is not None,
         set_by_role=row.set_by_role,
+        decided_levers=dict(row.decided_levers or {}),
     )
 
 
@@ -313,10 +329,10 @@ def _validate(values: dict[str, Any]) -> None:
                 "above zero; a capacity of zero is a misconfiguration, not a divisor"
             )
 
-    for field in ("print_labor_rate", "finishing_labor_rate", "overhead_percentage"):
-        value = values.get(field)
+    for lever in ("print_labor_rate", "finishing_labor_rate", "overhead_percentage"):
+        value = values.get(lever)
         if value is not None and Decimal(str(value)) < 0:
-            raise PolicyMisconfigured(f"{field} cannot be negative")
+            raise PolicyMisconfigured(f"{lever} cannot be negative")
 
 
 async def write_policy(
@@ -373,6 +389,14 @@ async def write_policy(
     merged = {**carried, **changes}
     _validate(merged)
 
+    # Which levers an operator has decided (T260): the predecessor's, plus the
+    # ones this write names when somebody is writing it. A seed or migration
+    # write decides nothing, so its figures stay assumed.
+    decided = dict(current.decided_levers or {}) if current is not None else {}
+    if user is not None:
+        for lever in changes:
+            decided[lever] = {"as_of": opens_on.isoformat(), "role": role}
+
     if current is not None:
         closes_on = opens_on - timedelta(days=1)
         if closes_on < current.effective_from:
@@ -389,6 +413,7 @@ async def write_policy(
         effective_to=None,
         set_by_user_id=user.id if user is not None else None,
         set_by_role=role,
+        decided_levers=decided,
         **merged,
     )
     db.add(row)

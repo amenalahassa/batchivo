@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     Date,
@@ -215,6 +216,21 @@ class TenantPricingPolicy(Base, UUIDMixin, TimestampMixin):
         String(20),
         nullable=True,
         comment="The role that authorised the change (FR-007a)",
+    )
+
+    #: Which levers an operator decided, with the day and role (T260).
+    #:
+    #: ``{lever: {"as_of": "YYYY-MM-DD", "role": "admin"}}``. A row carries its
+    #: predecessor's entries forward and adds the levers its own write named, so
+    #: changing ``margin_basis`` on a seeded row marks that lever ``policy`` and
+    #: leaves the carried CA$20.00 labour rate ``assumed``. A lever absent here
+    #: was never chosen by anyone. Immutable with the row (FR-003).
+    decided_levers: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+        comment="Levers an operator decided: lever -> {as_of, role} (T260)",
     )
 
     # Relationships

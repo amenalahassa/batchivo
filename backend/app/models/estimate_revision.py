@@ -146,6 +146,15 @@ class EstimateRevision(Base, UUIDMixin, TimestampMixin):
         comment="The rolling average of the outcomes this proposal came from",
     )
 
+    confidence: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4),
+        nullable=True,
+        comment=(
+            "How far to believe the observed value, in (0, 1], from the count and "
+            "spread of the outcomes behind it (T259)"
+        ),
+    )
+
     divergence_pct: Mapped[Decimal] = mapped_column(
         Numeric(9, 4),
         nullable=False,
@@ -245,6 +254,10 @@ class EstimateRevision(Base, UUIDMixin, TimestampMixin):
             "(state = 'pending' AND reviewed_at IS NULL)"
             " OR (state <> 'pending' AND reviewed_at IS NOT NULL)",
             name="ck_estimate_revision_reviewed_when_decided",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence > 0 AND confidence <= 1)",
+            name="ck_estimate_revision_confidence",
         ),
         {
             "comment": (

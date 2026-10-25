@@ -46,6 +46,16 @@ class CostLine(BaseModel):
     as_of: Optional[date] = Field(
         None, description="When the figure was set or observed; null if never recorded"
     )
+    confidence: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        le=1,
+        description=(
+            "How far to believe the line's observed inputs, in (0, 1], from the "
+            "count and spread of the outcomes behind them (T259, FR-001). Null "
+            "where confidence means nothing: a decision, a measurement, a guess."
+        ),
+    )
     has_pending_revision: bool = Field(
         False,
         description=(

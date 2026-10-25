@@ -1,7 +1,7 @@
 """Date an item's failure-mode change, so yield is learned only under the current mode.
 
 Revision ID: pricing_failure_mode_since_v1
-Revises: pricing_drop_model_rolling_cost_v1
+Revises: pricing_drop_model_rolling_v1
 
 Task T256. Expected yield is now learned from production history (FR-015d,
 SC-010), and the same yield figure means something different under each
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "pricing_failure_mode_since_v1"
-down_revision = "pricing_drop_model_rolling_cost_v1"
+down_revision = "pricing_drop_model_rolling_v1"
 branch_labels = None
 depends_on = None
 

@@ -75,6 +75,8 @@ export interface CostLine {
    * the evidence already contradicts as though nothing were in question.
    */
   has_pending_revision: boolean
+  /** How far to believe its observed inputs, a fraction in (0, 1] (T259). */
+  confidence?: Money | null
 }
 
 /**
@@ -125,6 +127,13 @@ export interface MarginFigure {
  * not a decision anyone made. Say so on screen rather than presenting it as
  * configured.
  */
+/** Where one pricing-policy lever's figure came from (T260). */
+export interface PolicyLeverOrigin {
+  source: 'policy' | 'assumed'
+  as_of: string | null
+  set_by_role: string | null
+}
+
 export interface PricingPolicy {
   print_labor_rate: Money
   finishing_labor_rate: Money
@@ -156,6 +165,11 @@ export interface PricingPolicy {
    * when the tenant was created, which nobody chose.
    */
   source: 'policy' | 'assumed'
+  /**
+   * Each lever's own origin (T260). A lever an administrator never chose stays
+   * 'assumed' even on a row somebody wrote.
+   */
+  levers?: Record<string, PolicyLeverOrigin>
 }
 
 /** A change to one or more policy levers. Unlisted levers are carried forward. */
@@ -854,6 +868,8 @@ export interface EstimateRevision {
   current_value: Money
   observed_value: Money
   divergence_pct: Money
+  /** How far to believe the observation, a fraction in (0, 1] (T259). */
+  confidence?: Money | null
   /** The outcomes behind it, so a reviewer can check them (FR-042c). */
   derived_from_run_ids: string[]
   state: RevisionState
