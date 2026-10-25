@@ -91,6 +91,7 @@ from app.services.costing import (
     CircularReferenceError,
     CostingService,
     MaxDepthExceededError,
+    consumable_unit_cost,
     resolve_margin_basis,
 )
 from app.services.postage import Postage, postage_for_product
@@ -100,6 +101,7 @@ from app.services.shopify_sync import (
     ShopifySyncService,
     ShopifySyncError,
     ShopifyNotConfiguredError,
+    ShopifyUnpricedError,
 )
 from app.services.image_storage import ImageStorage, ImageStorageError, get_image_storage
 from app.services.search_service import SearchService, get_search_service
@@ -268,7 +270,9 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
         "cost_breakdown": cost_breakdown,
         "packaging_consumable_name": packaging_consumable.name if packaging_consumable else None,
         "packaging_consumable_sku": packaging_consumable.sku if packaging_consumable else None,
-        "packaging_consumable_cost": packaging_consumable.current_cost_per_unit
+        # The unit cost the packaging line is priced at (T273), not the typed
+        # figure a purchase has since superseded.
+        "packaging_consumable_cost": consumable_unit_cost(packaging_consumable)
         if packaging_consumable
         else None,
         # Designer info for attribution
@@ -2898,6 +2902,13 @@ async def sync_product_to_shopify(
     except ShopifyNotConfiguredError as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+    except ShopifyUnpricedError as e:
+        # Unpriced on Shopify is the operator's to fix, not a failed sync (T274).
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(e),
         )
     except ShopifySyncError as e:

@@ -57,7 +57,11 @@ from app.services.fee_engine import (
     OrderContext,
     TaxTreatment,
 )
-from app.services.landed_cost import MaterialPerGram, material_cost_per_gram
+from app.services.landed_cost import (
+    MaterialPerGram,
+    _relationship_loaded,
+    material_cost_per_gram,
+)
 from app.services.pricing_policy import CostPolicy
 
 logger = logging.getLogger(__name__)
@@ -1791,6 +1795,45 @@ class CostingService:
         )
 
 
+def consumable_unit_cost(consumable: Any) -> Decimal:
+    """What one unit of a consumable costs, derived on read (task T273).
+
+    From the latest purchase still on record, as an exact ``total_cost /
+    quantity_purchased``: three boxes for 10.00 cost 10/3 each, so three of them
+    cost 10.00 again. The quotient used to be stored at four places on the
+    consumable and multiplied back up (9.9999), and it stayed after the purchase
+    behind it was deleted (Constitution IV and V). With no purchase on record,
+    the unit cost is the figure the operator typed.
+
+    A consumable whose purchases were not loaded falls back to the typed figure
+    rather than lazily loading under asyncio; every cost read loads them
+    (`cost_resolution.cost_load_options`).
+    """
+    purchases = (
+        list(getattr(consumable, "purchases", None) or [])
+        if _relationship_loaded(consumable, "purchases")
+        else []
+    )
+    priced = [
+        purchase
+        for purchase in purchases
+        if (_as_decimal(getattr(purchase, "quantity_purchased", None), ZERO) or ZERO) > ZERO
+        and getattr(purchase, "total_cost", None) is not None
+    ]
+    if priced:
+        latest = max(
+            priced,
+            key=lambda purchase: (
+                getattr(purchase, "purchase_date", None) or date.min,
+                str(getattr(purchase, "created_at", None) or ""),
+            ),
+        )
+        total = _as_decimal(latest.total_cost, ZERO) or ZERO
+        quantity = _as_decimal(latest.quantity_purchased, ONE) or ONE
+        return total / quantity
+    return _as_decimal(getattr(consumable, "current_cost_per_unit", None), ZERO) or ZERO
+
+
 def _packaging_cost(
     product: "Product",
     origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]],
@@ -1804,7 +1847,7 @@ def _packaging_cost(
     product_id = getattr(product, "id", None)
     consumable = getattr(product, "packaging_consumable", None)
     if consumable is not None:
-        unit_cost = _as_decimal(getattr(consumable, "current_cost_per_unit", None), ZERO) or ZERO
+        unit_cost = consumable_unit_cost(consumable)
         quantity = _as_decimal(getattr(product, "packaging_quantity", None), ONE) or ONE
         # The unit cost sets the amount, so its origin is the line's: a
         # quantity of one measured box tells nothing about what a box costs

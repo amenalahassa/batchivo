@@ -477,8 +477,10 @@ class TestARepricingSupersedesTheProfile:
         march = await postage_for_grams(db_session, test_tenant, Decimal("100"), date(2026, 3, 1))
         july = await postage_for_grams(db_session, test_tenant, Decimal("100"), date(2026, 7, 2))
 
-        assert march == Decimal("9.50")
-        assert july == Decimal("11.25")
+        # A per-parcel result since T257: the amount, and no gap to report.
+        assert march.amount == Decimal("9.50")
+        assert july.amount == Decimal("11.25")
+        assert march.reason is None and july.reason is None
 
     async def test_a_used_profile_is_closed_on_delete(
         self, client: AsyncClient, db_session, test_tenant

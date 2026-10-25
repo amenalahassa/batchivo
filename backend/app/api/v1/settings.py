@@ -3,7 +3,14 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
+from app.api.provenance_http import record_operator_origins
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    TenantDB,
+    role_in_tenant,
+)
 from app.database import get_db
 from app.models.user import UserRole
 from app.schemas.tenant_settings import (
@@ -187,7 +194,7 @@ async def test_etsy_connection(
 async def get_tenant_settings(
     tenant: CurrentTenant,
     user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> TenantResponse:
     """Get tenant details.
 
@@ -203,14 +210,29 @@ async def update_tenant_settings(
     tenant: CurrentTenant,
     user: CurrentUser,
     _admin: RequireAdmin,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> TenantResponse:
     """Update tenant details.
 
     Requires Admin or Owner role: the books currency is monetary policy, since
     every cost is converted from it (FR-007a, FR-028). Can update the name,
     the description and the books currency with its symbol.
+
+    On the tenant-scoped session (Constitution I), and a change of currency
+    records who decided it and when, like every other monetary lever (FR-001,
+    task T272). The origin is written first so the service's commit carries
+    both together.
     """
+    if data.currency_code is not None and data.currency_code != tenant.currency_code:
+        await record_operator_origins(
+            db,
+            tenant,
+            entity_type="tenant",
+            entity_id=tenant.id,
+            fields=["currency_code"],
+            user=user,
+            role=await role_in_tenant(db, user.id, tenant.id),
+        )
 
     service = TenantSettingsService(db)
     return await service.update_tenant(tenant.id, data)

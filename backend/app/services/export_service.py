@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.models.tenant import Tenant
 from app.services.refund_actuals import recorded_refund_totals
+from app.services.temporal_pricing import current_price, platform_price
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +44,16 @@ class ExportService:
     # Product Export (Shopify Product CSV Format)
     # ============================================
 
-    async def export_products_csv(self) -> str:
+    async def export_products_csv(self, channel_id: Optional[UUID] = None) -> str:
         """
         Export all products in Shopify CSV format.
+
+        The price is the one in force today at one unit, on ``channel_id`` when
+        given and otherwise on the tenant's Shopify channel; a product unpriced
+        there exports a blank price rather than another channel's, a superseded
+        one or a quantity tier (task T274, FR-039, research D6). "Cost per item"
+        is left blank: a cost belongs to the engine, never a figure typed beside
+        it (FR-048).
 
         Returns:
             CSV string ready for Shopify import
@@ -97,7 +106,7 @@ class ExportService:
             select(Product)
             .where(Product.tenant_id == self.tenant.id)
             .options(
-                selectinload(Product.pricing),
+                selectinload(Product.current_pricing),
                 selectinload(Product.images),
                 selectinload(Product.categories),
                 selectinload(Product.variants),
@@ -110,10 +119,11 @@ class ExportService:
             # Generate handle from SKU or name
             handle = self._generate_handle(product.sku or product.name)
 
-            # Get base price from first pricing entry
-            base_price = Decimal("0")
-            if product.pricing:
-                base_price = product.pricing[0].list_price or Decimal("0")
+            base_price = (
+                current_price(product, channel_id)
+                if channel_id is not None
+                else platform_price(product, "shopify")
+            )
 
             # Get primary image
             image_src = ""
@@ -174,7 +184,11 @@ class ExportService:
             if active_variants:
                 # Product has size variants — emit one row per variant
                 for i, variant in enumerate(active_variants):
-                    variant_price = base_price + Decimal(variant.price_adjustment_pence) / 100
+                    variant_price = (
+                        base_price + Decimal(variant.price_adjustment_pence) / 100
+                        if base_price is not None
+                        else None
+                    )
                     # Shopify inventory policy: deny if stock, continue if PTO
                     inventory_policy = "deny" if variant.fulfilment_type == "stock" else "continue"
                     row = {
@@ -191,17 +205,13 @@ class ExportService:
                         "Variant Inventory Qty": str(variant.units_in_stock or 0),
                         "Variant Inventory Policy": inventory_policy,
                         "Variant Fulfillment Service": "manual",
-                        "Variant Price": str(variant_price),
+                        "Variant Price": "" if variant_price is None else str(variant_price),
                         "Variant Compare At Price": "",
                         "Variant Requires Shipping": "TRUE",
                         "Variant Taxable": "TRUE",
                         "Variant Barcode": "",
                         "Variant Image": "",
-                        "Cost per item": (
-                            str(Decimal(variant.material_cost_pence) / 100)
-                            if variant.material_cost_pence
-                            else ""
-                        ),
+                        "Cost per item": "",
                     }
                     # Only include product-level fields (title, images) on first row
                     if i == 0:
@@ -231,7 +241,7 @@ class ExportService:
                     "Variant Inventory Qty": str(product.units_in_stock or 0),
                     "Variant Inventory Policy": "deny",
                     "Variant Fulfillment Service": "manual",
-                    "Variant Price": str(base_price),
+                    "Variant Price": "" if base_price is None else str(base_price),
                     "Variant Compare At Price": "",
                     "Variant Requires Shipping": "TRUE",
                     "Variant Taxable": "TRUE",

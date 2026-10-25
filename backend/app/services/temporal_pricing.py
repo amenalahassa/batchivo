@@ -202,6 +202,34 @@ def current_price(
     return None if row.list_price is None else Decimal(str(row.list_price))
 
 
+def platform_price(
+    product: "Product",
+    platform_type: str,
+    *,
+    quantity: int = 1,
+) -> Optional[Decimal]:
+    """The current, active price on this product's channel of one platform.
+
+    What a marketplace sync or a marketplace export publishes: the row in force
+    today on a channel of that platform (``shopify``, ``etsy``), at the highest
+    quantity tier ``quantity`` reaches -- so a 10+ tier is never published as
+    the price of one. ``None`` means unpriced on that platform, and the caller
+    reports it rather than publishing another channel's price or a zero (task
+    T274; the storefront made the same choice in T228 and T253).
+    """
+    on_platform = [
+        row
+        for row in current_rows(product)
+        if row.is_active
+        and quantity >= row.min_quantity
+        and getattr(getattr(row, "sales_channel", None), "platform_type", None) == platform_type
+    ]
+    if not on_platform:
+        return None
+    row = max(on_platform, key=lambda r: r.min_quantity)
+    return None if row.list_price is None else Decimal(str(row.list_price))
+
+
 def storefront_price(
     product: "Product",
     *,

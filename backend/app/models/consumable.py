@@ -158,12 +158,9 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
             return False
         return self.quantity_on_hand <= self.reorder_point
 
-    @property
-    def stock_value(self) -> Decimal:
-        """Calculate total value of stock on hand."""
-        if self.current_cost_per_unit is None:
-            return Decimal("0")
-        return Decimal(str(self.quantity_on_hand)) * Decimal(str(self.current_cost_per_unit))
+    # `stock_value` stood here, valuing stock at the stored unit cost. The unit
+    # cost is derived from the purchases on read (task T273), so the value is
+    # too: `consumable_type_to_response` in `app/api/v1/consumables.py`.
 
 
 class ConsumablePurchase(Base, UUIDMixin, TimestampMixin):

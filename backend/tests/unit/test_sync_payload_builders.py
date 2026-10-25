@@ -18,10 +18,13 @@ from app.services.etsy_sync import EtsySyncService
 # ---------------------------------------------------------------------------
 
 
-def make_pricing(list_price, is_active=True, platform_type="shopify"):
+def make_pricing(list_price, is_active=True, platform_type="shopify", min_quantity=1):
     channel = SimpleNamespace(platform_type=platform_type)
     return SimpleNamespace(
-        list_price=Decimal(str(list_price)), is_active=is_active, sales_channel=channel
+        list_price=Decimal(str(list_price)),
+        is_active=is_active,
+        sales_channel=channel,
+        min_quantity=min_quantity,
     )
 
 
@@ -322,14 +325,19 @@ class TestEtsyBuildListingData:
         data = self._build(product)
         assert data["price"] == Decimal("12.00")
 
-    def test_price_falls_back_to_any_active_pricing(self):
-        # `== 9.99` before T191, which held only because the figure had been
-        # pushed through `float()`: `Decimal("9.99") == 9.99` is False, since
-        # the float is not 9.99 (task T191, Constitution IV).
+    def test_another_channels_price_is_not_published_on_etsy(self):
+        # It used to fall back to any active listing, which published a
+        # Shopify price on Etsy; unpriced is reported instead (task T274).
         shopify_p = make_pricing(9.99, platform_type="shopify")
         product = make_product(pricing=[shopify_p])
         data = self._build(product)
-        assert data["price"] == Decimal("9.99")
+        assert data["price"] is None
+
+    def test_a_quantity_tier_is_not_published_as_the_price_of_one(self):
+        tier = make_pricing("10.00", platform_type="etsy", min_quantity=10)
+        base = make_pricing("12.00", platform_type="etsy")
+        product = make_product(pricing=[tier, base])
+        assert self._build(product)["price"] == Decimal("12.00")
 
     def test_price_none_when_no_pricing(self):
         product = make_product(pricing=[])

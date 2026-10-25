@@ -27,9 +27,12 @@ from app.database import Base
 # This is the Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging
+# Interpret the config file for Python logging. `disable_existing_loggers`
+# must stay False: its default disables every logger created before this
+# runs, so a migration run inside a process -- a test worker, the app --
+# silenced the application's own loggers from then on (task T271).
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Load database URL from app settings
 settings = get_settings()

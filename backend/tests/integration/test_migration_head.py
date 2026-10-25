@@ -19,6 +19,7 @@ Two things are asserted, and they need different amounts of machinery:
 """
 
 import os
+import asyncio
 import re
 from pathlib import Path
 
@@ -139,8 +140,11 @@ class TestAFreshDatabaseReachesHead:
             # `sqlalchemy.url` from the application settings, so a Config handed
             # its own URL would migrate whatever DATABASE_URL points at --
             # the developer's own database rather than this scratch one.
+            # Off the loop: `env.py` runs the migrations with `asyncio.run`,
+            # which refuses to start inside this test's running loop on every
+            # platform (task T270).
             with alembic_against(scratch_url) as config:
-                command.upgrade(config, "head")
+                await asyncio.to_thread(command.upgrade, config, "head")
 
             engine = create_async_engine(scratch_url)
             try:

@@ -38,9 +38,12 @@ MONEY_COLUMN = re.compile(r"(cost|price|fee|amount|postage|revenue|refund|paid|t
 
 #: Services the rule flags that carry a money figure without computing one.
 NOT_MONEY_PATHS: dict[str, str] = {
-    "etsy_sync": "pushes the price `temporal_pricing` resolves to Etsy's API; computes none",
-    "shopify_sync": "pushes the price `temporal_pricing` resolves to Shopify; computes none",
-    "export_service": "formats stored figures into CSV rows; computes none",
+    "etsy_sync": "pushes the Etsy price `temporal_pricing.platform_price` resolves; computes none",
+    "shopify_sync": "pushes the Shopify price `temporal_pricing.platform_price` resolves",
+    "export_service": (
+        "formats CSV rows; the price comes from `temporal_pricing` and the cost "
+        "column is left blank (T274)"
+    ),
     "platform_admin": "counts tenants' orders and products for the admin console",
     "inventory_transaction": "moves grams between spools; the money is `run_costs`'",
     "print_queue_service": "ranks jobs by the margin the engine serves; computes none",

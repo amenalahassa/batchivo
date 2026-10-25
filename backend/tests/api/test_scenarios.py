@@ -55,6 +55,7 @@ from app.models.pricing_input_provenance import PricingInputProvenance
 from app.models.product import Product
 from app.models.product_component import ProductComponent
 from app.models.product_model import ProductModel
+from app.services.pricing_policy import POLICY_FIELDS
 from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.models.scenario_run import ScenarioRun
@@ -261,9 +262,14 @@ async def instrumented_item(db_session, test_tenant, test_filament_type, test_us
             ),
             margin_basis="customer_total",
             effective_from=clock.today() - timedelta(days=30),
-            # An operator's own policy: a row nobody set reads as assumed (T219).
+            # An operator's own policy: a row nobody set reads as assumed (T219),
+            # and since T260 each lever says for itself that it was decided.
             set_by_user_id=test_user.id,
             set_by_role="owner",
+            decided_levers={
+                lever: {"as_of": clock.today().isoformat(), "role": "owner"}
+                for lever in POLICY_FIELDS
+            },
         )
     )
 

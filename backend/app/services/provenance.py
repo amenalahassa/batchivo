@@ -246,6 +246,15 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
         "current_cost_per_unit",
         "Unit cost of a consumable, such as the packaging a product ships in",
     ),
+    # The books currency (T272). Every cost input is entered in it and every
+    # sale converts to it, so changing it is a monetary policy decision.
+    _entry(
+        "tenant",
+        "currency_code",
+        "The currency the books are kept in",
+        default_source="policy",
+        learnable=False,
+    ),
     # Shipping profiles (Tier 2). Postage is a published carrier price the
     # operator transcribes, so it is `policy`; it is learnable because a
     # recorded label cost is a direct observation of the same figure.

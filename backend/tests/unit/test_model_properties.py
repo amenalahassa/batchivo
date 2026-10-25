@@ -82,24 +82,9 @@ class TestConsumableTypeIsLowStock:
 # ---------------------------------------------------------------------------
 
 
-class TestConsumableTypeStockValue:
-    def test_no_cost_returns_zero(self):
-        obj = make_consumable_type(quantity_on_hand=10, current_cost_per_unit=None)
-        assert ConsumableType.stock_value.fget(obj) == 0.0
-
-    def test_calculates_correctly(self):
-        obj = make_consumable_type(quantity_on_hand=10, current_cost_per_unit=Decimal("2.50"))
-        assert ConsumableType.stock_value.fget(obj) == 25.0
-
-    def test_zero_quantity(self):
-        obj = make_consumable_type(quantity_on_hand=0, current_cost_per_unit=Decimal("5.00"))
-        assert ConsumableType.stock_value.fget(obj) == 0.0
-
-    def test_decimal_cost(self):
-        # Exact, with no tolerance: the property returns a Decimal now, so
-        # 3 x 1.99 is 5.97 and not 5.970000000000001 (Constitution IV).
-        obj = make_consumable_type(quantity_on_hand=3, current_cost_per_unit=Decimal("1.99"))
-        assert ConsumableType.stock_value.fget(obj) == Decimal("5.97")
+# `ConsumableType.stock_value` was removed with the stored unit cost it read
+# (task T273); the unit cost is derived from the purchases on read, and its
+# tests are in `tests/unit/pricing/test_consumable_unit_cost.py`.
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.temporal_pricing import current_rows
+from app.services.temporal_pricing import platform_price
 from app.config import get_settings
 from app.core.money import pence_to_pounds
 from app.models.external_listing import ExternalListing
@@ -36,6 +36,14 @@ class ShopifySyncError(Exception):
 
 class ShopifyNotConfiguredError(ShopifySyncError):
     """Raised when Shopify credentials are not configured."""
+
+
+class ShopifyUnpricedError(ShopifySyncError):
+    """Raised when the product has no current price on a Shopify channel.
+
+    The operator's to fix, so it is not a sync failure: never published at zero
+    or at another channel's price (task T274).
+    """
 
 
 class ShopifySyncService:
@@ -192,14 +200,17 @@ class ShopifySyncService:
         # `current_pricing` rather than `pricing`: since Tier 3 the second is
         # the full price history, and publishing a superseded price to a live
         # Shopify listing would undercharge every customer who bought at it
-        # (task T097, FR-039). Read through `current_rows`, which falls back
+        # (task T097, FR-039). Read through `platform_price`, which falls back
         # to filtering the history where the relationship is absent -- reading
         # the attribute directly made a sync raise on any product handed over
         # without it.
-        base_price_pence: int = 0
-        active = [p for p in current_rows(product) if p.is_active]
-        if active:
-            base_price_pence = int(Decimal(str(active[0].list_price)) * 100)
+        #
+        # And the Shopify channel's own price at one unit (task T274): the first
+        # current row was any channel's and any tier's, and a product with none
+        # was published at zero. `sync_product` refuses an unpriced product
+        # before it gets here.
+        base_price = platform_price(product, "shopify")
+        base_price_pence = int((base_price or Decimal("0")) * 100)
 
         active_variants = sorted(
             [v for v in getattr(product, "variants", []) if v.is_active],
@@ -324,6 +335,19 @@ class ShopifySyncService:
                 f"Product already up-to-date on Shopify (listing {existing_listing.external_id})",
                 existing_listing,
             )
+
+        if platform_price(product, "shopify") is None:
+            # Unpriced on Shopify: never published at zero or at another
+            # channel's price (task T274).
+            error_msg = "Product has no current price on a Shopify channel"
+            await self._upsert_listing(
+                product,
+                existing_listing.external_id if existing_listing else "unknown",
+                "",
+                status="error",
+                error=error_msg,
+            )
+            raise ShopifyUnpricedError(error_msg)
 
         payload = self._build_product_payload(product)
 

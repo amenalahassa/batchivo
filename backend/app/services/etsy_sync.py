@@ -16,7 +16,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.temporal_pricing import current_rows
+from app.services.temporal_pricing import platform_price
 from app.core.encryption import safe_decrypt
 from app.models.external_listing import ExternalListing
 from app.core.money import pence_to_pounds, pounds_to_pence
@@ -441,21 +441,13 @@ class EtsySyncService:
         # back to filtering the history where the relationship is absent --
         # reading the attribute directly made a sync raise on any product
         # handed over without it.
-        price = None
-        current = current_rows(product)
-        if current:
-            etsy_pricing = [
-                p for p in current if p.is_active and p.sales_channel.platform_type == "etsy"
-            ]
-            # `list_price` is the exact `Numeric` column the temporal price
-            # rows are kept in; it stays a `Decimal` all the way to the one
-            # conversion Etsy's API requires (task T191, Constitution IV).
-            if etsy_pricing:
-                price = etsy_pricing[0].list_price
-            else:
-                active_pricing = [p for p in current if p.is_active]
-                if active_pricing:
-                    price = active_pricing[0].list_price
+        #
+        # The Etsy channel's own price at one unit (task T274): no fall-back to
+        # another channel's listing and no quantity tier published as the price
+        # of one. `None` is reported as "no price configured". The price stays a
+        # `Decimal` all the way to the one conversion Etsy's API requires (task
+        # T191, Constitution IV).
+        price = platform_price(product, "etsy")
 
         # Build per-size variant data for Etsy inventory offerings
         # Etsy property_id 100 = "Size" (standard Etsy taxonomy property)

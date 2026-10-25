@@ -121,6 +121,9 @@ FEATURE_ROUTES: list[tuple[str, str, str]] = [
     ("GET", f"{API}/analytics/variance-report", "T183"),
     ("GET", f"{API}/analytics/products/{{product_id}}/production-history", "T183"),
     ("GET", f"{API}/analytics/spools/{{spool_id}}/production-usage", "T183"),
+    # The books currency every cost is converted from (T242, T272).
+    ("GET", f"{API}/settings/tenant", "T272"),
+    ("PUT", f"{API}/settings/tenant", "T272"),
 ]
 
 
@@ -192,6 +195,8 @@ ROUTER_PREFIXES: dict[str, str] = {
     # The Shopify ingest, which scopes its session in the handler rather than
     # through a dependency; see the test below for why (T184).
     "shopify_webhooks": f"{API}/shopify",
+    # The tenant settings, where the books currency is set (T272).
+    "settings": f"{API}/settings",
 }
 
 
@@ -942,8 +947,6 @@ NOT_YET_SCOPED: set[tuple[str, str]] = {
     ("GET", f"{API}/settings/etsy"),
     ("PUT", f"{API}/settings/etsy"),
     ("POST", f"{API}/settings/etsy/test"),
-    ("GET", f"{API}/settings/tenant"),
-    ("PUT", f"{API}/settings/tenant"),
     ("GET", f"{API}/settings/shop"),
     ("PUT", f"{API}/settings/shop"),
     ("GET", f"{API}/settings/branding"),

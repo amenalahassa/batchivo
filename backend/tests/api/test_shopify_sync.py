@@ -43,8 +43,9 @@ async def shop_product(db_session, test_tenant):
     # Add a sales channel + pricing
     channel = SalesChannel(
         tenant_id=test_tenant.id,
-        name="Own Shop",
-        platform_type="online_shop",
+        name="Shopify",
+        # The sync publishes the Shopify channel's own price (task T274).
+        platform_type="shopify",
         is_active=True,
     )
     db_session.add(channel)
@@ -365,3 +366,53 @@ class TestShopifySyncEndpoints:
             headers=auth_headers,
         )
         assert resp.status_code == 404
+
+
+class TestAnUnpricedProductIsNotPublished:
+    """Task T274: no zero price, and no other channel's price, sent to Shopify."""
+
+    @pytest.mark.asyncio
+    async def test_a_product_priced_only_elsewhere_is_refused(
+        self, client, db_session, test_tenant, auth_headers
+    ):
+        product = Product(
+            tenant_id=test_tenant.id,
+            sku="FAIR-ONLY",
+            name="Fair-only Dragon",
+            is_active=True,
+            shop_visible=True,
+            units_in_stock=1,
+        )
+        fair = SalesChannel(
+            tenant_id=test_tenant.id, name="Fair", platform_type="fair", is_active=True
+        )
+        db_session.add_all([product, fair])
+        await db_session.flush()
+        db_session.add(
+            ProductPricing(
+                product_id=product.id,
+                sales_channel_id=fair.id,
+                list_price=Decimal("30.00"),
+                is_active=True,
+            )
+        )
+        await db_session.commit()
+
+        with (
+            patch("app.services.shopify_sync.get_settings") as mock_cfg,
+            patch("app.services.shopify_sync.httpx.AsyncClient") as mock_client_cls,
+        ):
+            cfg = MagicMock()
+            cfg.shopify_store_domain = "mystmereforge.myshopify.com"
+            cfg.shopify_access_token = "shpat_test"
+            mock_cfg.return_value = cfg
+
+            resp = await client.post(
+                f"/api/v1/products/{product.id}/sync/shopify",
+                headers=auth_headers,
+                json={"force": True},
+            )
+
+        assert resp.status_code == 422, resp.text
+        assert "Shopify" in resp.json()["detail"]
+        mock_client_cls.assert_not_called()

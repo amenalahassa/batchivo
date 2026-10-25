@@ -12,6 +12,7 @@ filter inside the service was the only belt (Constitution I).
 
 from datetime import date
 from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
@@ -26,6 +27,10 @@ router = APIRouter()
 async def export_products_csv(
     db: TenantDB,
     tenant: CurrentTenant,
+    channel_id: Optional[UUID] = Query(
+        None,
+        description="Export this channel's current price; defaults to the Shopify channel",
+    ),
 ):
     """
     Export all products in Shopify-compatible CSV format.
@@ -34,7 +39,7 @@ async def export_products_csv(
     using their product import feature.
     """
     service = get_export_service(db, tenant)
-    csv_content = await service.export_products_csv()
+    csv_content = await service.export_products_csv(channel_id=channel_id)
 
     filename = f"products_{date.today().isoformat()}.csv"
 

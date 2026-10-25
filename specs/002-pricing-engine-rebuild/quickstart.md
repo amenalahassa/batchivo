@@ -18,15 +18,12 @@ cd frontend && pnpm install
 docker compose up -d postgres redis
 ```
 
-**On Windows, three checks cannot run locally.** psycopg refuses asyncio's
-ProactorEventLoop, which is the default event loop there, so the *async* tests
-that talk to PostgreSQL error out on a developer machine:
-`test_migration_head.py::test_upgrade_head_succeeds_on_an_empty_database` and
-the `TestCostBearingReadsDoNotLeakAcrossTenants` cases in
-`test_rls_pricing.py`. They run in CI, where the loop is a selector loop. The
-*synchronous* PostgreSQL suites -- the fee migration parity, the Tier 1
-seeding, and the drop migration's data path -- run anywhere, which is why they
-were written that way.
+**The fresh-database check runs everywhere.** `test_migration_head.py::test_upgrade_head_succeeds_on_an_empty_database`
+used to call `command.upgrade` inside its own running event loop, and `env.py`
+runs the migrations with `asyncio.run`, which refuses to start there -- on every
+platform, not only on Windows as this note once said. It now runs the upgrade
+in a worker thread (task T270). `env.py` selects the selector loop on Windows,
+which psycopg's async mode needs.
 
 Run the suite and the linters the way the Constitution requires before any commit:
 

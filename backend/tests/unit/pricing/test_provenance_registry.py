@@ -35,6 +35,7 @@ from app.models.product import Product
 from app.models.sales_channel import SalesChannel
 from app.models.shipping_profile import ShippingProfile
 from app.models.spool import Spool
+from app.models.tenant import Tenant
 from app.models.tenant_pricing_policy import TenantPricingPolicy
 from app.services.provenance import (
     REGISTERED_INPUTS,
@@ -62,6 +63,7 @@ COSTING_ENTITIES: dict[str, type] = {
     "fee_rule": FeeRule,
     "shipping_profile": ShippingProfile,
     "consumable_type": ConsumableType,
+    "tenant": Tenant,
 }
 # `ProductPricing` is deliberately absent: a list price is the operator's
 # decision that margins read, never an input to a cost (T249 checked it).

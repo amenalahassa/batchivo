@@ -578,3 +578,60 @@ class TestConsumableTypesComputedFields:
             test_consumable_type.current_cost_per_unit or Decimal("0")
         )
         assert Decimal(data["stock_value"]) == expected_value
+
+
+class TestTheUnitCostIsDerivedFromThePurchase:
+    """Task T273: no rounded quotient stored, none left behind by a deleted purchase."""
+
+    @pytest.mark.asyncio
+    async def test_the_unit_cost_is_served_unrounded(
+        self, client: AsyncClient, auth_headers: dict, test_consumable_type: ConsumableType
+    ):
+        response = await client.post(
+            "/api/v1/consumables/purchases",
+            headers=auth_headers,
+            json={
+                "consumable_type_id": str(test_consumable_type.id),
+                "quantity_purchased": 7,
+                "total_cost": "1.00",
+                "purchase_date": "2026-06-01",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+        served = await client.get(
+            f"/api/v1/consumables/types/{test_consumable_type.id}", headers=auth_headers
+        )
+        unit = Decimal(served.json()["current_cost_per_unit"])
+        # Not the four-place 0.1429 a column would hold: over a thousand units
+        # that drift is four pence.
+        assert (unit * 1000).quantize(Decimal("0.01")) == Decimal("142.86")
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_purchase_stops_its_price_applying(
+        self, client: AsyncClient, auth_headers: dict, test_consumable_type: ConsumableType
+    ):
+        created = await client.post(
+            "/api/v1/consumables/purchases",
+            headers=auth_headers,
+            json={
+                "consumable_type_id": str(test_consumable_type.id),
+                "quantity_purchased": 4,
+                "total_cost": "2.00",
+                "purchase_date": "2026-06-01",
+            },
+        )
+        assert created.status_code == 201, created.text
+        url = f"/api/v1/consumables/types/{test_consumable_type.id}"
+        assert Decimal(
+            (await client.get(url, headers=auth_headers)).json()["current_cost_per_unit"]
+        ) == Decimal("0.5")
+
+        deleted = await client.delete(
+            f"/api/v1/consumables/purchases/{created.json()['id']}", headers=auth_headers
+        )
+        assert deleted.status_code == 204
+
+        # Back to the figure the operator typed on the consumable itself.
+        served = (await client.get(url, headers=auth_headers)).json()
+        assert Decimal(served["current_cost_per_unit"]) == Decimal("5.99")

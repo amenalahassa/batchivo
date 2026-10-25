@@ -69,6 +69,7 @@ def cost_load_options() -> list:
     """
     from sqlalchemy.orm import selectinload
 
+    from app.models.consumable import ConsumableType
     from app.models.filament_purchase import FilamentPurchase
     from app.models.model import Model
     from app.models.model_material import ModelMaterial
@@ -102,7 +103,8 @@ def cost_load_options() -> list:
             ),
             chain(prefix, Product.product_models, ProductModel.model, Model.components),
             chain(prefix, Product.product_models, ProductModel.model, Model.printer_configs),
-            chain(prefix, Product.packaging_consumable),
+            # The purchases price the unit (T273).
+            chain(prefix, Product.packaging_consumable, ConsumableType.purchases),
         ]
 
     options: list = []

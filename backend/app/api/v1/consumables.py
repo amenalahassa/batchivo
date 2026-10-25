@@ -1,14 +1,18 @@
 """Consumables inventory API endpoints."""
 
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
 from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
+from app.services.costing import consumable_unit_cost
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
     ConsumablePurchaseListResponse,
@@ -35,12 +39,26 @@ router = APIRouter()
 
 
 def consumable_type_to_response(consumable: ConsumableType) -> dict:
-    """Convert ConsumableType model to response dict."""
+    """Convert ConsumableType model to response dict.
+
+    The unit cost served is the one the engine prices a packaging line at --
+    the latest purchase's exact quotient, or the typed figure when there is no
+    purchase (task T273) -- so this screen and every cost agree. Callers load
+    `purchases` first (`_load_purchases`).
+    """
+    unit_cost = consumable_unit_cost(consumable)
     return {
         **{k: v for k, v in consumable.__dict__.items() if not k.startswith("_")},
+        "current_cost_per_unit": unit_cost,
         "is_low_stock": consumable.is_low_stock,
-        "stock_value": consumable.stock_value,
+        "stock_value": Decimal(consumable.quantity_on_hand or 0) * unit_cost,
     }
+
+
+async def _load_purchases(db: AsyncSession, consumable: ConsumableType) -> ConsumableType:
+    """Load the purchases that price the unit, so nothing lazy-loads under asyncio."""
+    await db.refresh(consumable, attribute_names=["purchases"])
+    return consumable
 
 
 def purchase_to_response(purchase: ConsumablePurchase) -> dict:
@@ -117,6 +135,7 @@ async def create_consumable_type(
     await db.commit()
     await db.refresh(consumable)
 
+    await _load_purchases(db, consumable)
     return ConsumableTypeResponse(**consumable_type_to_response(consumable))
 
 
@@ -159,8 +178,8 @@ async def list_consumable_types(
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(ConsumableType.sku)
 
-    # Execute
-    result = await db.execute(query)
+    # Execute, with the purchases that price each unit (T273)
+    result = await db.execute(query.options(selectinload(ConsumableType.purchases)))
     consumables = result.scalars().all()
 
     # Apply low_stock filter and convert to response
@@ -200,6 +219,7 @@ async def get_consumable_type(
             detail=f"Consumable type {consumable_id} not found",
         )
 
+    await _load_purchases(db, consumable)
     return ConsumableTypeResponse(**consumable_type_to_response(consumable))
 
 
@@ -244,6 +264,7 @@ async def update_consumable_type(
     await db.commit()
     await db.refresh(consumable)
 
+    await _load_purchases(db, consumable)
     return ConsumableTypeResponse(**consumable_type_to_response(consumable))
 
 
@@ -316,7 +337,7 @@ async def adjust_stock(
         quantity_used=abs(adjustment.quantity_adjustment)
         if adjustment.quantity_adjustment < 0
         else -adjustment.quantity_adjustment,
-        cost_at_use=consumable.current_cost_per_unit,
+        cost_at_use=consumable_unit_cost(await _load_purchases(db, consumable)),
         usage_type="adjustment",
         notes=f"{adjustment.reason}. {adjustment.notes or ''}".strip(),
     )
@@ -325,6 +346,7 @@ async def adjust_stock(
     await db.commit()
     await db.refresh(consumable)
 
+    await _load_purchases(db, consumable)
     return ConsumableTypeResponse(**consumable_type_to_response(consumable))
 
 
@@ -341,11 +363,13 @@ async def get_low_stock_alerts(
 ) -> list[LowStockAlert]:
     """Get all consumables that are below their reorder point."""
     result = await db.execute(
-        select(ConsumableType).where(
+        select(ConsumableType)
+        .where(
             ConsumableType.tenant_id == tenant.id,
             ConsumableType.is_active.is_(True),
             ConsumableType.reorder_point.isnot(None),
         )
+        .options(selectinload(ConsumableType.purchases))
     )
     consumables = result.scalars().all()
 
@@ -361,7 +385,8 @@ async def get_low_stock_alerts(
                     reorder_point=consumable.reorder_point,
                     reorder_quantity=consumable.reorder_quantity,
                     preferred_supplier=consumable.preferred_supplier,
-                    stock_value=consumable.stock_value,
+                    stock_value=Decimal(consumable.quantity_on_hand or 0)
+                    * consumable_unit_cost(consumable),
                 )
             )
 
@@ -419,9 +444,10 @@ async def create_purchase(
 
     db.add(purchase)
 
-    # Update consumable stock and cost
+    # Update consumable stock. The unit cost is not copied onto the type: it is
+    # derived from this purchase on read, exactly, and stops applying when the
+    # purchase is deleted (task T273).
     consumable.quantity_on_hand += purchase_data.quantity_purchased
-    consumable.current_cost_per_unit = cost_per_unit
     # A purchase the operator recorded is their figure, not an observation
     # from a feed (FR-001, T249).
     await record_operator_origins(
@@ -603,7 +629,7 @@ async def record_usage(
         production_run_id=usage_data.production_run_id,
         product_id=usage_data.product_id,
         quantity_used=usage_data.quantity_used,
-        cost_at_use=consumable.current_cost_per_unit,
+        cost_at_use=consumable_unit_cost(await _load_purchases(db, consumable)),
         usage_type=usage_data.usage_type,
         notes=usage_data.notes,
     )
