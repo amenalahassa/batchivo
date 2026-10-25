@@ -7,7 +7,11 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.api.provenance_http import (
+    record_operator_origins,
+    refuse_observed_or_409,
+    served_origins,
+)
 from app.auth.dependencies import (
     CurrentTenant,
     CurrentUser,
@@ -178,6 +182,16 @@ async def delete_printer(
 # ============================================================================
 
 
+#: The machine cost policy's figures, in the order the form shows them.
+COST_POLICY_FIELDS: tuple[str, ...] = (
+    "purchase_price",
+    "expected_lifetime_hours",
+    "maintenance_reserve_total",
+    "measured_watts",
+    "electricity_rate_per_kwh",
+)
+
+
 async def _cost_policy_response(
     printer,
     db: AsyncSession,
@@ -204,6 +218,14 @@ async def _cost_policy_response(
         machine_rate_per_hour=derived["total"],
         components=derived["components"],
         missing=derived["missing"],
+        origins=await served_origins(
+            db,
+            tenant,
+            entity_type="printer",
+            entity_id=printer.id,
+            fields=COST_POLICY_FIELDS,
+            staleness_threshold_days=policy.staleness_threshold_days,
+        ),
     )
 
 

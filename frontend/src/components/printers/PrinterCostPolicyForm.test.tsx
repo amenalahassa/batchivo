@@ -267,4 +267,63 @@ describe('PrinterCostPolicyForm', () => {
       ).toBeInTheDocument()
     })
   })
+
+  it('locks a draw the smart plug observed and names its origin (T262)', async () => {
+    mocked.getPrinterCostPolicy.mockResolvedValue(
+      configured({
+        origins: [
+          {
+            field_name: 'purchase_price',
+            source: 'policy',
+            as_of: '2026-10-01',
+            is_stale: false,
+            editable: true,
+          },
+          {
+            field_name: 'measured_watts',
+            source: 'observed',
+            as_of: '2026-10-24',
+            is_stale: false,
+            editable: false,
+          },
+        ],
+      }),
+    )
+    renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
+
+    const draw = await screen.findByLabelText(/Measured draw while printing/)
+    await waitFor(() => expect(draw).toHaveValue('95.00'))
+    expect(draw).toBeDisabled()
+    expect(screen.getByLabelText(/Purchase price/)).toBeEnabled()
+    expect(screen.getAllByText(/observed/i).length).toBeGreaterThan(0)
+  })
+
+  it('does not send an observed draw back with the rest of the form', async () => {
+    mocked.getPrinterCostPolicy.mockResolvedValue(
+      configured({
+        origins: [
+          {
+            field_name: 'measured_watts',
+            source: 'observed',
+            as_of: '2026-10-24',
+            is_stale: false,
+            editable: false,
+          },
+        ],
+      }),
+    )
+    const user = userEvent.setup()
+    renderForm(<PrinterCostPolicyForm printerId={PRINTER_ID} />)
+
+    const price = await screen.findByLabelText(/Purchase price/)
+    await waitFor(() => expect(price).toHaveValue('1100.00'))
+    await user.clear(price)
+    await user.type(price, '1200.00')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+
+    await waitFor(() => expect(mocked.updatePrinterCostPolicy).toHaveBeenCalled())
+    const [, body] = mocked.updatePrinterCostPolicy.mock.calls[0]
+    expect(body).not.toHaveProperty('measured_watts')
+    expect(body).toMatchObject({ purchase_price: '1200.00' })
+  })
 })

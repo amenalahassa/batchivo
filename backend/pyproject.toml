@@ -130,6 +130,13 @@ module = [
     # (tasks T231, T232); `tenant_cost_settings` was removed and left here.
     "app.services.currency_edge",
     "app.services.sale_snapshot",
+    # Found by the money rule in tests/unit/pricing/money_modules.py (T265):
+    # postage on every margin and snapshot, realised refunds, the cost-input
+    # estimates, and a run's frozen and realised filament cost.
+    "app.services.postage",
+    "app.services.refund_actuals",
+    "app.services.variance_service",
+    "app.services.run_costs",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

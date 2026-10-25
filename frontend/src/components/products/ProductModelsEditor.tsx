@@ -20,7 +20,7 @@ import {
   type ProductModel,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
-import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
+import { formatMoney, multiplyMoney } from '@/lib/money'
 import { listModels } from '@/lib/api/models'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -79,9 +79,19 @@ type ModelFormValues = z.infer<typeof modelFormSchema>
 interface ProductModelsEditorProps {
   productId: string
   models: ProductModel[]
+  /**
+   * The engine's models subtotal from the product's cost breakdown. The
+   * browser does not re-sum quantized lines: that total can disagree with
+   * the breakdown by a cent (T263, FR-048).
+   */
+  totalCost?: string | null
 }
 
-export function ProductModelsEditor({ productId, models }: ProductModelsEditorProps) {
+export function ProductModelsEditor({
+  productId,
+  models,
+  totalCost,
+}: ProductModelsEditorProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [, setEditingModel] = useState<ProductModel | null>(null)
   const queryClient = useQueryClient()
@@ -153,19 +163,12 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
   const selectableModels =
     availableModels?.models?.filter((m) => !existingModelIds.includes(m.id)) || []
 
-  // The column total, from the decimal strings the API sent. Each line is a
-  // unit cost times a whole quantity, which `parseFloat` and `*` get wrong in
-  // the last cent often enough to make this total disagree with the lines
-  // above it (Constitution IV).
-  const totalModelsCost = sumMoney(
-    models.map((pm) => multiplyMoney(pm.model_cost, pm.quantity)),
-  )
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total models cost: <span className="font-semibold">{formatMoney(totalModelsCost, currency.symbol)}</span>
+          Total models cost: <span className="font-semibold">{totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -365,7 +368,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                 Total Models Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatMoney(totalModelsCost, currency.symbol)}
+                {totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

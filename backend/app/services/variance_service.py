@@ -168,7 +168,7 @@ def divergence_pct(current: Decimal, observed: Decimal) -> Optional[Decimal]:
     return (abs(observed - current) / abs(current) * HUNDRED).quantize(DIVERGENCE_PRECISION)
 
 
-def _coerce_to_field(entity: object, field_name: str, value: Decimal):
+def _coerce_to_field(entity: object, field_name: str, value: Decimal) -> Decimal | int:
     """``value`` in the type the column holds.
 
     An integer column handed a ``Decimal`` with a fraction is either rejected
@@ -180,14 +180,10 @@ def _coerce_to_field(entity: object, field_name: str, value: Decimal):
         raise NotLearnable(f"{field_name} is not a numeric estimate")
     if isinstance(current, int):
         return int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-    if isinstance(current, float):
-        # A float column is a pre-existing wart, not something to introduce.
-        # Going through `str` keeps the value exactly as decided here.
-        return float(str(value))
     return value
 
 
-def _as_decimal(value) -> Optional[Decimal]:
+def _as_decimal(value: object) -> Optional[Decimal]:
     if value is None:
         return None
     try:

@@ -39,7 +39,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PriceLadder } from './PriceLadder'
 import { PriceSolverPanel } from './PriceSolverPanel'
 import { usePriceLadder, useSolvePrice } from '@/hooks/usePricing'
-import { compareMoney, divideMoney, multiplyMoney, subtractMoney } from '@/lib/money'
+import { compareMoney, divideMoney, multiplyMoney, subtractMoney, symbolForCurrency } from '@/lib/money'
 import type { Money } from '@/types/pricing'
 
 export interface PriceFinderDialogProps {
@@ -158,7 +158,7 @@ export function PriceFinderDialog({
                 onSolve={solve}
                 onApply={onApply ? apply : undefined}
                 onDismiss={reset}
-                currencySymbol={currencySymbol}
+                currencySymbol={symbolForCurrency(result?.currency, currencySymbol)}
               />
             </TabsContent>
 
@@ -217,7 +217,7 @@ export function PriceFinderDialog({
                 error={ladderError}
                 currentPrice={currentPrice}
                 onChoose={onApply ? apply : undefined}
-                currencySymbol={currencySymbol}
+                currencySymbol={symbolForCurrency(ladder?.currency, currencySymbol)}
               />
             </TabsContent>
           </Tabs>

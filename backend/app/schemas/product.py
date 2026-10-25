@@ -131,6 +131,9 @@ class ProductPricingResponse(ProductPricingBase):
     )
     channel_name: Optional[str] = Field(None, description="Sales channel name")
     platform_type: Optional[str] = Field(None, description="Platform type")
+    currency: Optional[str] = Field(
+        None, description="ISO 4217 code the row's amounts are in: the channel's (T261)"
+    )
     platform_fee: Optional[Decimal] = Field(None, description="Calculated platform fee")
     net_revenue: Optional[Decimal] = Field(None, description="Net revenue after fees")
     profit: Optional[Decimal] = Field(None, description="Profit after make cost")

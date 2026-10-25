@@ -50,7 +50,13 @@ import {
   type ProductPricing,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
-import { averageMoney, compareMoney, formatMoney, formatPercent } from '@/lib/money'
+import {
+  averageMoney,
+  compareMoney,
+  formatMoney,
+  formatPercent,
+  symbolForCurrency,
+} from '@/lib/money'
 import { listSalesChannels } from '@/lib/api/sales-channels'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -349,12 +355,26 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
   // summed with `parseFloat`, which is the conversion Constitution IV rules
   // out for a monetary figure. `averageMoney` is the one place a rounding
   // happens, and it says so.
+  //
+  // And within one currency only (T261): a channel selling in dollars and one
+  // in pounds have no average profit. Each currency's channels are averaged
+  // apart and shown in that currency.
   const activePricing = currentPricing.filter((p) => p.is_active && p.min_quantity === 1)
-  const avgProfit = averageMoney(activePricing.map((p) => p.profit))
-  const avgMargin = averageMoney(
-    activePricing.map((p) => p.margin_percentage),
-    1,
-  )
+  const rowSymbol = (row: { currency?: string }) => symbolForCurrency(row.currency, currency.symbol)
+  const averagesByCurrency = Object.entries(
+    activePricing.reduce<Record<string, typeof activePricing>>((groups, row) => {
+      const key = rowSymbol(row)
+      groups[key] = [...(groups[key] ?? []), row]
+      return groups
+    }, {}),
+  ).map(([symbol, rows]) => ({
+    symbol,
+    profit: averageMoney(rows.map((p) => p.profit)),
+    margin: averageMoney(
+      rows.map((p) => p.margin_percentage),
+      1,
+    ),
+  }))
 
   return (
     <div className="space-y-4">
@@ -363,18 +383,20 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
           <span>
             Make Cost: <span className="font-semibold">{formatMoney(makeCost, currency.symbol)}</span>
           </span>
-          {activePricing.length > 0 && (
-            <>
-              <span>•</span>
+          {averagesByCurrency.map((group) => (
+            <span key={group.symbol} data-testid={`pricing-averages-${group.symbol.trim()}`}>
+              <span>•</span>{' '}
               <span>
-                Avg Profit: <span className="font-semibold">{formatMoney(avgProfit, currency.symbol)}</span>
-              </span>
-              <span>•</span>
+                Avg Profit{averagesByCurrency.length > 1 ? ` (${group.symbol.trim()})` : ''}:{' '}
+                <span className="font-semibold">{formatMoney(group.profit, group.symbol)}</span>
+              </span>{' '}
+              <span>•</span>{' '}
               <span>
-                Avg Margin: <span className="font-semibold">{formatPercent(avgMargin)}</span>
+                Avg Margin{averagesByCurrency.length > 1 ? ` (${group.symbol.trim()})` : ''}:{' '}
+                <span className="font-semibold">{formatPercent(group.margin)}</span>
               </span>
-            </>
-          )}
+            </span>
+          ))}
         </div>
         <Dialog open={dialogOpen} onOpenChange={(open) => !open && handleDialogClose()}>
           <DialogTrigger asChild>
@@ -611,13 +633,13 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                     {tierLabel(pricingItem.min_quantity)}
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-medium">
-                    {formatMoney(pricingItem.list_price, currency.symbol)}
+                    {formatMoney(pricingItem.list_price, rowSymbol(pricingItem))}
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-muted-foreground">
-                    -{formatMoney(pricingItem.platform_fee, currency.symbol)}
+                    -{formatMoney(pricingItem.platform_fee, rowSymbol(pricingItem))}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatMoney(pricingItem.net_revenue, currency.symbol)}
+                    {formatMoney(pricingItem.net_revenue, rowSymbol(pricingItem))}
                   </TableCell>
                   <TableCell className="text-right">
                     <div className={`flex items-center justify-end gap-1 tabular-nums font-semibold ${
@@ -628,7 +650,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       ) : (
                         <TrendingDown className="h-3 w-3" />
                       )}
-                      {formatMoney(profit, currency.symbol)}
+                      {formatMoney(profit, rowSymbol(pricingItem))}
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
@@ -662,7 +684,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       >
                         {pricingItem.profit_per_machine_hour == null
                           ? 'untimed'
-                          : `${formatMoney(pricingItem.profit_per_machine_hour, currency.symbol)}/machine-hr`}
+                          : `${formatMoney(pricingItem.profit_per_machine_hour, rowSymbol(pricingItem))}/machine-hr`}
                       </span>
                     </div>
                   </TableCell>
@@ -838,7 +860,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
                       {tierLabel(row.min_quantity)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums font-medium">
-                      {formatMoney(row.list_price, currency.symbol)}
+                      {formatMoney(row.list_price, rowSymbol(row))}
                     </TableCell>
                     <TableCell className="text-center">
                       <Badge variant={row.is_current ? 'default' : 'outline'}>
@@ -871,7 +893,7 @@ export function ProductPricingEditor({ productId, pricing, makeCost }: ProductPr
             ? (price) => handleApplyFoundPrice(finderPricing, price)
             : undefined
         }
-        currencySymbol={currency.symbol}
+        currencySymbol={finderPricing ? rowSymbol(finderPricing) : currency.symbol}
       />
     </div>
   )

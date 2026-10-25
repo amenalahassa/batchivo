@@ -15,6 +15,8 @@ import { Loader2, RefreshCw } from 'lucide-react'
 import { createModel, updateModel, listModels, parse3mfFile, uploadModelFile, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest, type ThreeMFParseResponse } from '@/lib/api/models'
 import { listDesigners } from '@/lib/api/designers'
 import { useNextSKU } from '@/hooks/useSKU'
+import { useModelCostProfile } from '@/hooks/usePricing'
+import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 
 // Predefined options for Source and Machine
 const PREDEFINED_SOURCES = [
@@ -92,6 +94,28 @@ interface ModelFormProps {
 export function ModelForm({ model, mode }: ModelFormProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+
+  // Where the print time and batch size came from. Telemetry makes a print
+  // time observed, and an observed figure is refreshed from its source and
+  // never typed over (FR-004): the server refuses the save with 409, so the
+  // field is locked rather than offered (T262).
+  const { profile: costProfile } = useModelCostProfile(mode === 'edit' ? model?.id : undefined)
+  const originOf = (fieldName: string) =>
+    costProfile?.origins.find((entry) => entry.field_name === fieldName)
+  const isObserved = (fieldName: string) => originOf(fieldName)?.editable === false
+  const printTimeLocked = isObserved('print_time_minutes')
+  const printsPerPlateLocked = isObserved('prints_per_plate')
+  const originBadge = (fieldName: string) => {
+    const origin = originOf(fieldName)
+    return origin ? (
+      <ProvenanceBadge
+        source={origin.source}
+        asOf={origin.as_of}
+        isStale={origin.is_stale}
+        isDefault={!origin.as_of}
+      />
+    ) : null
+  }
 
   // Auto-generate SKU for new models
   const { nextSKU, isLoading: isLoadingSKU, refetch: refetchSKU } = useNextSKU('MOD', mode === 'create')
@@ -323,10 +347,13 @@ export function ModelForm({ model, mode }: ModelFormProps) {
       overhead_percentage: values.overhead_percentage || '0',
       designer: finalDesigner || undefined,
       source: finalSource || undefined,
-      print_time_minutes: (print_time_hours || print_time_minutes)
+      // A locked figure is not sent: it is the observed one, unchanged.
+      print_time_minutes: !printTimeLocked && (print_time_hours || print_time_minutes)
         ? (parseInt(print_time_hours || '0') * 60) + parseInt(print_time_minutes || '0')
         : undefined,
-      prints_per_plate: prints_per_plate ? parseInt(prints_per_plate) : 1,
+      prints_per_plate: printsPerPlateLocked
+        ? undefined
+        : prints_per_plate ? parseInt(prints_per_plate) : 1,
       machine: finalMachine || undefined,
       last_printed_date: values.last_printed_date || undefined,
       units_in_stock: values.units_in_stock ? parseInt(values.units_in_stock) : 0,
@@ -710,9 +737,20 @@ export function ModelForm({ model, mode }: ModelFormProps) {
               name="print_time_hours"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Plate Print Time</FormLabel>
+                  <FormLabel>
+                    <span className="flex items-center gap-2">
+                      <span>Plate Print Time</span>
+                      {originBadge('print_time_minutes')}
+                    </span>
+                  </FormLabel>
                   <FormControl>
-                    <Input type="number" min="0" placeholder="0" {...field} />
+                    <Input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      disabled={printTimeLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Hours</FormDescription>
                   <FormMessage />
@@ -727,7 +765,15 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                 <FormItem>
                   <FormLabel>&nbsp;</FormLabel>
                   <FormControl>
-                    <Input type="number" min="0" max="59" placeholder="0" {...field} />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="59"
+                      placeholder="0"
+                      aria-label="Plate print time minutes"
+                      disabled={printTimeLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Minutes</FormDescription>
                   <FormMessage />
@@ -740,9 +786,20 @@ export function ModelForm({ model, mode }: ModelFormProps) {
               name="prints_per_plate"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Items per Plate</FormLabel>
+                  <FormLabel>
+                    <span className="flex items-center gap-2">
+                      <span>Items per Plate</span>
+                      {originBadge('prints_per_plate')}
+                    </span>
+                  </FormLabel>
                   <FormControl>
-                    <Input type="number" min="1" placeholder="1" {...field} />
+                    <Input
+                      type="number"
+                      min="1"
+                      placeholder="1"
+                      disabled={printsPerPlateLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Batch size</FormDescription>
                   <FormMessage />

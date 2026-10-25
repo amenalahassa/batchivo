@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.pricing.money_modules import money_services
+
 # The five money modules named in research.md D8. Modules belonging to a later
 # tier do not exist yet; those are skipped by name so the gap is visible in the
 # test report rather than silently passing.
@@ -27,13 +29,11 @@ import pytest
 #: test objecting. There were none to find; the point of the ban is that a
 #: future one fails here rather than in a margin six months later (task T137).
 #:
-#: `variance_service.py` is deliberately absent. It assigns an estimate back
-#: onto a model field and must coerce to `float` where the column still is one;
-#: that single documented conversion is a pre-existing wart it accommodates
-#: rather than introduces, so the ban would fail on the one line written to
-#: contain the problem. Its arithmetic is `Decimal` throughout, which
-#: `test_variance.py` asserts directly.
-MONEY_MODULES = [
+#: Every service the money rule flags joins these (T265): the rule in
+#: `money_modules.py` is the authority, and this list is the floor it adds to.
+#: `variance_service.py` used to be exempt for a coercion to a `float` column
+#: no estimable field has any more; the branch was removed with the exemption.
+_LISTED_MONEY_MODULES = [
     "costing.py",
     "landed_cost.py",
     "fee_engine.py",
@@ -51,6 +51,7 @@ MONEY_MODULES = [
     # The realised-versus-planned comparison (task T134).
     "margin_alert.py",
 ]
+MONEY_MODULES = sorted(set(_LISTED_MONEY_MODULES) | {f"{name}.py" for name in money_services()})
 
 #: Money modules outside `app/services/`, scanned by the same total ban.
 #:
@@ -602,10 +603,6 @@ MONEY_FLOAT_CALL_EXCEPTIONS: dict[str, tuple[str, ...]] = {
         "float(total_material_cost)",
         # `waste_grams` in a transaction's metadata: grams.
         "float(waste_amount)",
-    ),
-    "app/services/variance_service.py": (
-        # Writing back to a column that is still a float.
-        "float(str(value))",
     ),
 }
 

@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   RouterProvider,
@@ -40,6 +41,8 @@ import {
 } from '@/lib/api/models'
 import { listDesigners } from '@/lib/api/designers'
 import { skuApi } from '@/lib/api/sku'
+import { pricingApi } from '@/lib/api/pricing'
+import { updateModel, type ModelDetail } from '@/lib/api/models'
 
 vi.mock('@/lib/api/models', () => ({
   createModel: vi.fn(),
@@ -47,6 +50,10 @@ vi.mock('@/lib/api/models', () => ({
   listModels: vi.fn(),
   parse3mfFile: vi.fn(),
   uploadModelFile: vi.fn(),
+}))
+
+vi.mock('@/lib/api/pricing', () => ({
+  pricingApi: { getModelCostProfile: vi.fn() },
 }))
 
 vi.mock('@/lib/api/designers', () => ({
@@ -85,13 +92,13 @@ function createTestQueryClient() {
   })
 }
 
-function renderModelForm() {
+function renderModelForm(node: ReactNode = <ModelForm mode="create" />) {
   const queryClient = createTestQueryClient()
   const rootRoute = createRootRoute()
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/',
-    component: () => <ModelForm mode="create" />,
+    component: () => node,
   })
   const router = createRouter({
     routeTree: rootRoute.addChildren([indexRoute]),
@@ -313,5 +320,63 @@ describe('ModelForm - 3MF import auto-fill', () => {
     await waitFor(() =>
       expect(mockUploadModelFile).toHaveBeenCalledWith('model-123', file, 'source_3mf')
     )
+  })
+})
+
+describe('ModelForm - an observed figure is read-only (T262)', () => {
+  const MODEL = {
+    id: 'model-1',
+    sku: 'MOD-001',
+    name: 'Dragon',
+    labor_hours: '0',
+    overhead_percentage: '0',
+    is_active: true,
+    print_time_minutes: 570,
+    prints_per_plate: 4,
+    units_in_stock: 0,
+  } as unknown as ModelDetail
+
+  function origin(field_name: string, source: string, editable: boolean) {
+    return { field_name, source, as_of: '2026-10-24', is_stale: false, editable }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListModels.mockResolvedValue({ models: [], total: 0, skip: 0, limit: 500 })
+    mockListDesigners.mockResolvedValue({ designers: [], total: 0 })
+    ;(updateModel as Mock).mockResolvedValue({ id: 'model-1' })
+  })
+
+  it('locks a print time telemetry observed and names its origin', async () => {
+    ;(pricingApi.getModelCostProfile as Mock).mockResolvedValue({
+      origins: [
+        origin('print_time_minutes', 'observed', false),
+        origin('prints_per_plate', 'measured', true),
+      ],
+    })
+    renderModelForm(<ModelForm mode="edit" model={MODEL} />)
+
+    const minutes = await screen.findByLabelText('Plate print time minutes')
+    await waitFor(() => expect(minutes).toBeDisabled())
+    expect(screen.getByText(/observed/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/Items per Plate/)).toBeEnabled()
+  })
+
+  it('leaves the observed print time out of the save', async () => {
+    ;(pricingApi.getModelCostProfile as Mock).mockResolvedValue({
+      origins: [origin('print_time_minutes', 'observed', false)],
+    })
+    const user = userEvent.setup()
+    renderModelForm(<ModelForm mode="edit" model={MODEL} />)
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Plate print time minutes')).toBeDisabled(),
+    )
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() => expect(updateModel).toHaveBeenCalled())
+    const [, body] = (updateModel as Mock).mock.calls[0]
+    expect(body.print_time_minutes).toBeUndefined()
+    expect(body.prints_per_plate).toBe(4)
   })
 })

@@ -589,7 +589,11 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ProductModelsEditor productId={productId} models={product.models || []} />
+          <ProductModelsEditor
+            productId={productId}
+            models={product.models || []}
+            totalCost={modelsCost}
+          />
         </CardContent>
       </Card>
 
@@ -605,7 +609,11 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ProductComponentsEditor productId={productId} components={product.child_products || []} />
+          <ProductComponentsEditor
+            productId={productId}
+            components={product.child_products || []}
+            totalCost={childProductsCost}
+          />
         </CardContent>
       </Card>
 

@@ -53,6 +53,12 @@ class PriceLadderResponse(BaseModel):
     product_id: UUID
     sales_channel_id: UUID
     as_of: date
+    currency: str = Field(
+        ...,
+        min_length=3,
+        max_length=3,
+        description="ISO 4217 code of the channel's currency; every amount here is in it (T261)",
+    )
 
     price_from: Decimal
     price_to: Decimal

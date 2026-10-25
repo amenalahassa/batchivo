@@ -107,6 +107,14 @@ describe('ProductMarginBreakdown', () => {
     expect(api.getMargin).toHaveBeenCalledWith('product-1', 'channel-1', { quantity: 3 })
   })
 
+  it('labels the figures in the currency the margin was computed in (T261)', async () => {
+    api.getMargin.mockResolvedValue(margin({ currency: 'USD', profit: '30.05' }))
+    renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)
+
+    expect(await screen.findByTestId('margin-profit')).toHaveTextContent('$30.05')
+    expect(screen.getByTestId('margin-profit')).not.toHaveTextContent('£30.05')
+  })
+
   it('sets postage paid against shipping charged as its own, negative, line', async () => {
     renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)
 

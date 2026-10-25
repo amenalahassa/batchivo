@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from app.schemas.model_cost_profile import CostProfileFieldOrigin
+
 
 class PrinterBase(BaseModel):
     """Base printer schema with common fields."""
@@ -187,6 +189,12 @@ class PrinterCostPolicyResponse(BaseModel):
     )
     missing: list[str] = Field(
         default_factory=list, description="Inputs the operator has not supplied yet"
+    )
+    origins: list[CostProfileFieldOrigin] = Field(
+        default_factory=list,
+        description=(
+            "Where each policy figure came from; an observed draw is not editable (FR-004, T262)"
+        ),
     )
 
     model_config = ConfigDict(from_attributes=True)

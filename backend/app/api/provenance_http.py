@@ -20,9 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.schemas.model_cost_profile import CostProfileFieldOrigin
 from app.services.provenance import (
     ProvenanceNotEditable,
     changed_fields,
+    origins_for_entity,
     record_operator_write,
     refuse_overwriting_observed,
 )
@@ -85,3 +87,33 @@ async def record_operator_origins(
     except ProvenanceNotEditable as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+async def served_origins(
+    db: AsyncSession,
+    tenant: Tenant,
+    *,
+    entity_type: str,
+    entity_id: uuid.UUID,
+    fields: Iterable[str],
+    staleness_threshold_days: int,
+) -> list[CostProfileFieldOrigin]:
+    """Each field's origin as a form needs it: source, date, staleness, editable.
+
+    ``editable`` is served rather than inferred on the client, so one rule
+    decides it: an observed figure is refreshed from its source and never
+    typed over (FR-004). Every form that edits a cost input reads it from here
+    (T262), so none of them leaves an observed field open to a save the server
+    would refuse with 409.
+    """
+    origins = await origins_for_entity(db, tenant, entity_type, entity_id)
+    return [
+        CostProfileFieldOrigin(
+            field_name=field_name,
+            source=origins[field_name].source,
+            as_of=origins[field_name].as_of,
+            is_stale=origins[field_name].is_stale(threshold_days=staleness_threshold_days),
+            editable=origins[field_name].source != "observed",
+        )
+        for field_name in fields
+    ]

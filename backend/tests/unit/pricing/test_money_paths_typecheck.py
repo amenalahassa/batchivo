@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.pricing.money_modules import NOT_MONEY_PATHS, flagged_services, money_services
+
 BACKEND = Path(__file__).resolve().parents[3]
 
 
@@ -28,10 +30,26 @@ def test_every_listed_module_exists() -> None:
     assert not missing, f"the mypy money list names modules that do not exist: {missing}"
 
 
-def test_every_service_that_handles_a_frozen_or_converted_figure_is_listed() -> None:
+def test_every_service_that_handles_money_is_listed() -> None:
+    """The list covers every service the money rule flags (T265).
+
+    Checking two names by hand let postage, realised refunds and the
+    cost-input estimates go unchecked; the rule finds them instead.
+    """
     listed = set(_money_modules())
-    for module in ("app.services.currency_edge", "app.services.sale_snapshot"):
-        assert module in listed, f"{module} handles money and is not type-checked strictly"
+    unlisted = {
+        name: why for name, why in money_services().items() if f"app.services.{name}" not in listed
+    }
+    assert not unlisted, (
+        "these services handle money and are not type-checked strictly; add them to "
+        "the mypy override in pyproject.toml, or to NOT_MONEY_PATHS with the reason: "
+        f"{unlisted}"
+    )
+
+
+def test_an_exempt_service_is_one_the_rule_still_flags() -> None:
+    stale = set(NOT_MONEY_PATHS) - set(flagged_services())
+    assert not stale, f"NOT_MONEY_PATHS names services the rule no longer flags: {stale}"
 
 
 @pytest.mark.timeout(600)

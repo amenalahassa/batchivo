@@ -359,3 +359,65 @@ class TestCostsMeetPricesInOneCurrency:
 
         assert response.status_code == 409, response.text
         assert response.json()["detail"]["reason"] == "no_exchange_rate"
+
+    async def test_every_price_answer_names_the_channels_currency(
+        self, client: AsyncClient, db_session, test_tenant, test_product
+    ) -> None:
+        """Margin, solve and ladder say which currency their amounts are in (T261).
+
+        The books are in CAD and the channel sells in USD: the figures are USD,
+        and a screen labelling them with the books' symbol would misstate them.
+        """
+        from app.core import clock
+        from app.models.product_pricing import ProductPricing
+        from app.models.sales_channel import SalesChannel
+
+        channel = SalesChannel(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            name="US Marketplace",
+            platform_type="etsy",
+            currency_code="USD",
+            is_active=True,
+        )
+        db_session.add(channel)
+        db_session.add(
+            ProductPricing(
+                id=uuid4(),
+                product_id=test_product.id,
+                sales_channel_id=channel.id,
+                list_price=Decimal("25.00"),
+                is_active=True,
+            )
+        )
+        test_tenant.currency_code = "CAD"
+        db_session.add(test_tenant)
+        await fx_service.record_rate(
+            db_session, base="CAD", quote="USD", rate=Decimal("0.74"), rate_date=clock.today()
+        )
+        await db_session.commit()
+        base = f"/api/v1/products/{test_product.id}/pricing/{channel.id}"
+
+        margin = await client.get(f"{base}/margin")
+        solve = await client.post(f"{base}/solve", json={"target_margin_pct": "30"})
+        ladder = await client.get(
+            f"{base}/ladder", params={"price_from": "20", "price_to": "30", "step": "5"}
+        )
+
+        for response in (margin, ladder):
+            assert response.status_code == 200, response.text
+            assert response.json()["currency"] == "USD"
+        # A product with no make-cost has no price to solve for; the refusal
+        # still carries the whole answer, currency included.
+        body = solve.json()
+        assert (body.get("detail") if solve.status_code == 422 else body)["currency"] == "USD"
+
+        # And the price row itself, so the editor labels it in dollars.
+        await db_session.refresh(test_product, ["pricing", "current_pricing"])
+        detail = (await client.get(f"/api/v1/products/{test_product.id}")).json()
+        rows = {row["sales_channel_id"]: row for row in detail["pricing"]}
+        assert rows[str(channel.id)]["currency"] == "USD"
+        history = (
+            await client.get(f"/api/v1/products/{test_product.id}/pricing/{channel.id}/history")
+        ).json()
+        assert {row["currency"] for row in history} == {"USD"}

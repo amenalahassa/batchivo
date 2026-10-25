@@ -25,7 +25,7 @@ that genuinely speaks HTTP.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -46,9 +46,22 @@ from app.services.fx_service import (
     set_manual_rate,
 )
 
-TODAY = clock.today()
+TODAY = date(2026, 6, 15)
 YESTERDAY = TODAY - timedelta(days=1)
 LAST_MONTH = TODAY - timedelta(days=30)
+
+
+@pytest.fixture(autouse=True)
+def _pinned_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hold "today" still for every test (T264).
+
+    ``TODAY`` used to be ``clock.today()`` at import, so a run that crossed
+    midnight UTC compared yesterday's date with the code's today. The code
+    reads the date through ``clock.now``, so pinning that pins both sides.
+    """
+    monkeypatch.setattr(
+        clock, "now", lambda: datetime.combine(TODAY, time(12, 0), tzinfo=timezone.utc)
+    )
 
 
 # ---------------------------------------------------------------------------

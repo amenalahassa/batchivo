@@ -19,7 +19,7 @@ import { FeeBreakdownTable } from '@/components/pricing/FeeBreakdownTable'
 import { MarginFigure } from '@/components/pricing/MarginBasisLabel'
 import { useProductMargin } from '@/hooks/useFeeRules'
 import { useCurrency } from '@/hooks/useCurrency'
-import { compareMoney, formatMoney, formatPercent, formatShare } from '@/lib/money'
+import { compareMoney, formatMoney, formatPercent, formatShare, symbolForCurrency } from '@/lib/money'
 import { cn } from '@/lib/utils'
 
 interface ProductMarginBreakdownProps {
@@ -41,12 +41,15 @@ export function ProductMarginBreakdown({
   quantity = 1,
 }: ProductMarginBreakdownProps) {
   const { currency } = useCurrency()
-  const symbol = currencySymbol ?? currency.symbol
+  const fallbackSymbol = currencySymbol ?? currency.symbol
   const { margin, isLoading, error } = useProductMargin(
     productId,
     channelId,
     quantity > 1 ? { quantity } : undefined,
   )
+  // The margin says which currency it is in (T261); the caller's symbol is
+  // only a fallback for a response that does not.
+  const symbol = symbolForCurrency(margin?.currency, fallbackSymbol)
 
   if (isLoading) {
     return (

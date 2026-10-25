@@ -21,7 +21,7 @@ import {
   type ProductComponent,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
-import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
+import { formatMoney, multiplyMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -79,9 +79,19 @@ type ComponentFormValues = z.infer<typeof componentFormSchema>
 interface ProductComponentsEditorProps {
   productId: string
   components: ProductComponent[]
+  /**
+   * The engine's child products subtotal from the product's cost breakdown. The
+   * browser does not re-sum quantized lines: that total can disagree with
+   * the breakdown by a cent (T263, FR-048).
+   */
+  totalCost?: string | null
 }
 
-export function ProductComponentsEditor({ productId, components }: ProductComponentsEditorProps) {
+export function ProductComponentsEditor({
+  productId,
+  components,
+  totalCost,
+}: ProductComponentsEditorProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const queryClient = useQueryClient()
   const { currency } = useCurrency()
@@ -147,19 +157,12 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
       (p) => !existingProductIds.includes(p.id) && p.id !== productId
     ) || []
 
-  // The bundle's total, from the decimal strings the API sent. Each line is a
-  // unit cost times a whole quantity, which `parseFloat` and `*` get wrong in
-  // the last cent often enough to make this total disagree with the lines
-  // above it (Constitution IV).
-  const totalComponentsCost = sumMoney(
-    components.map((pc) => multiplyMoney(pc.child_product_cost, pc.quantity)),
-  )
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total child products cost: <span className="font-semibold">{formatMoney(totalComponentsCost, currency.symbol)}</span>
+          Total child products cost: <span className="font-semibold">{totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -361,7 +364,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                 Total Child Products Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatMoney(totalComponentsCost, currency.symbol)}
+                {totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

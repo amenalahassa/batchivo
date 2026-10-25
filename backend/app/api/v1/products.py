@@ -78,7 +78,7 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
-from app.services.currency_edge import CostConversion, books_to_channel
+from app.services.currency_edge import CostConversion, books_to_channel, channel_currency
 from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
 from app.services.cost_resolution import (
@@ -238,6 +238,8 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
                 "min_quantity": pricing.min_quantity,
                 "channel_name": channel.name if channel else None,
                 "platform_type": channel.platform_type if channel else None,
+                # The row's amounts are in the channel's currency (T261).
+                "currency": channel_currency(tenant, channel),
                 "platform_fee": profit_data["platform_fee"],
                 "net_revenue": profit_data["net_revenue"],
                 "profit": profit_data["profit"],
@@ -858,6 +860,7 @@ async def get_product_margin(
         product_id=product.id,
         sales_channel_id=channel.id,
         as_of=reference,
+        currency=conversion.sale_currency,
         quantity=quantity,
         unit_price=Decimal(str(pricing.list_price)),
         list_price=result.list_price,
@@ -1065,6 +1068,7 @@ class _PricingContext:
         breakdown: CostBreakdown,
         postage: Decimal,
         economics: ChannelEconomics,
+        currency: str,
     ) -> None:
         self.product = product
         self.channel = channel
@@ -1077,6 +1081,9 @@ class _PricingContext:
         # task T136), not as the channel row stands today: a quote dated last
         # month must still explain itself under the reserves then in force.
         self.economics = economics
+        # The channel's currency: every figure the solver and ladder return is
+        # in it, and the response says so (T261).
+        self.currency = currency
 
 
 async def _pricing_context(
@@ -1203,7 +1210,17 @@ async def _pricing_context(
                 ]
             }
         )
-    return _PricingContext(product, channel, pricing, policy, rules, breakdown, postage, economics)
+    return _PricingContext(
+        product,
+        channel,
+        pricing,
+        policy,
+        rules,
+        breakdown,
+        postage,
+        economics,
+        conversion.sale_currency,
+    )
 
 
 def _reasons_for(ctx: "_PricingContext", reference: date) -> list[str]:
@@ -1309,6 +1326,7 @@ async def solve_product_price(
         product_id=ctx.product.id,
         sales_channel_id=ctx.channel.id,
         as_of=reference,
+        currency=ctx.currency,
         achievable=result.achievable,
         reason=result.reason,
         binding_constraint=result.binding_constraint,
@@ -1416,6 +1434,7 @@ async def get_product_price_ladder(
         product_id=ctx.product.id,
         sales_channel_id=ctx.channel.id,
         as_of=reference,
+        currency=ctx.currency,
         price_from=price_from,
         price_to=price_to,
         step=step,
@@ -1734,6 +1753,7 @@ def _pricing_response(
     pricing: ProductPricing,
     channel: Optional[SalesChannel],
     profit_data: Optional[dict],
+    tenant: Tenant,
 ) -> ProductPricingResponse:
     """One price row as the API serves it, period included.
 
@@ -1754,6 +1774,7 @@ def _pricing_response(
         is_current=pricing.is_current,
         channel_name=channel.name if channel else None,
         platform_type=channel.platform_type if channel else None,
+        currency=channel_currency(tenant, channel),
         platform_fee=profit_data["platform_fee"] if profit_data else None,
         net_revenue=profit_data["net_revenue"] if profit_data else None,
         profit=profit_data["profit"] if profit_data else None,
@@ -1851,7 +1872,7 @@ async def add_product_pricing(
         await resolve_cost_policy(db, tenant),
     )
 
-    return _pricing_response(pricing, channel, profit_data)
+    return _pricing_response(pricing, channel, profit_data, tenant)
 
 
 @router.get(
@@ -1923,7 +1944,7 @@ async def get_product_pricing_history(
     # have to be computed from today's costs, which is exactly the restatement
     # FR-038 forbids -- a settled order's own snapshot is where that margin
     # lives. This endpoint reports prices and periods, nothing derived.
-    return [_pricing_response(row, channel, None) for row in rows]
+    return [_pricing_response(row, channel, None, tenant) for row in rows]
 
 
 @router.put("/{product_id}/pricing/{pricing_id}", response_model=ProductPricingResponse)
@@ -2027,7 +2048,7 @@ async def update_product_pricing(
             await resolve_cost_policy(db, tenant),
         )
 
-    return _pricing_response(pricing, channel, profit_data)
+    return _pricing_response(pricing, channel, profit_data, tenant)
 
 
 @router.delete("/{product_id}/pricing/{pricing_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -41,7 +41,8 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { usePrinterCostPolicy, useUpdatePrinterCostPolicy } from '@/hooks/usePricing'
 import { formatMoney } from '@/lib/money'
-import type { PrinterCostPolicyUpdate } from '@/types/pricing'
+import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
+import type { CostProfileFieldOrigin, PrinterCostPolicyUpdate } from '@/types/pricing'
 
 /** Human wording for each input the derived rate can be missing. */
 const MISSING_LABEL: Record<string, string> = {
@@ -123,6 +124,37 @@ export function PrinterCostPolicyForm({
     }
   }, [costPolicy, form])
 
+  const originOf = (fieldName: string): CostProfileFieldOrigin | undefined =>
+    costPolicy?.origins?.find((entry) => entry.field_name === fieldName)
+
+  // An observed figure -- a draw the smart plug measured -- is refreshed from
+  // its source and never typed over (FR-004). The server refuses the save with
+  // 409 either way; the field is disabled so the operator is not offered one
+  // (T262).
+  const isReadOnly = (fieldName: string) => {
+    if (!canEdit) return true
+    const origin = originOf(fieldName)
+    return origin ? !origin.editable : false
+  }
+
+  /** The label, with the origin of the figure beside it. */
+  const labelWithOrigin = (text: string, fieldName: string) => {
+    const origin = originOf(fieldName)
+    return (
+      <span className="flex items-center gap-2">
+        <span>{text}</span>
+        {origin && (
+          <ProvenanceBadge
+            source={origin.source}
+            asOf={origin.as_of}
+            isStale={origin.is_stale}
+            isDefault={!origin.as_of}
+          />
+        )}
+      </span>
+    )
+  }
+
   const onSubmit = (values: FormValues) => {
     // Only the fields the operator filled in are sent. A blank field must not
     // erase a figure entered earlier.
@@ -134,7 +166,9 @@ export function PrinterCostPolicyForm({
     if (values.maintenance_reserve_total !== '') {
       changes.maintenance_reserve_total = values.maintenance_reserve_total
     }
-    if (values.measured_watts !== '') changes.measured_watts = values.measured_watts
+    if (values.measured_watts !== '' && !isReadOnly('measured_watts')) {
+      changes.measured_watts = values.measured_watts
+    }
     if (values.electricity_rate_per_kwh !== '') {
       changes.electricity_rate_per_kwh = values.electricity_rate_per_kwh
     }
@@ -229,12 +263,12 @@ export function PrinterCostPolicyForm({
               name="purchase_price"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Purchase price</FormLabel>
+                  <FormLabel>{labelWithOrigin('Purchase price', 'purchase_price')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
                       placeholder="1100.00"
-                      disabled={!canEdit}
+                      disabled={isReadOnly('purchase_price')}
                       {...field}
                     />
                   </FormControl>
@@ -251,9 +285,9 @@ export function PrinterCostPolicyForm({
               name="expected_lifetime_hours"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Expected printing hours</FormLabel>
+                  <FormLabel>{labelWithOrigin('Expected printing hours', 'expected_lifetime_hours')}</FormLabel>
                   <FormControl>
-                    <Input inputMode="numeric" placeholder="6000" disabled={!canEdit} {...field} />
+                    <Input inputMode="numeric" placeholder="6000" disabled={isReadOnly('expected_lifetime_hours')} {...field} />
                   </FormControl>
                   <FormDescription>
                     How many hours of printing you expect from it in total. This is the
@@ -269,12 +303,12 @@ export function PrinterCostPolicyForm({
               name="maintenance_reserve_total"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Maintenance reserve</FormLabel>
+                  <FormLabel>{labelWithOrigin('Maintenance reserve', 'maintenance_reserve_total')}</FormLabel>
                   <FormControl>
                     <Input
                       inputMode="decimal"
                       placeholder="220.00"
-                      disabled={!canEdit}
+                      disabled={isReadOnly('maintenance_reserve_total')}
                       {...field}
                     />
                   </FormControl>
@@ -291,9 +325,9 @@ export function PrinterCostPolicyForm({
               name="measured_watts"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Measured draw while printing (watts)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Measured draw while printing (watts)', 'measured_watts')}</FormLabel>
                   <FormControl>
-                    <Input inputMode="decimal" placeholder="95" disabled={!canEdit} {...field} />
+                    <Input inputMode="decimal" placeholder="95" disabled={isReadOnly('measured_watts')} {...field} />
                   </FormControl>
                   <FormDescription>
                     Measured at the wall, not the figure on the nameplate — they differ by more
@@ -309,9 +343,9 @@ export function PrinterCostPolicyForm({
               name="electricity_rate_per_kwh"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Electricity rate (per kWh)</FormLabel>
+                  <FormLabel>{labelWithOrigin('Electricity rate (per kWh)', 'electricity_rate_per_kwh')}</FormLabel>
                   <FormControl>
-                    <Input inputMode="decimal" placeholder="0.1300" disabled={!canEdit} {...field} />
+                    <Input inputMode="decimal" placeholder="0.1300" disabled={isReadOnly('electricity_rate_per_kwh')} {...field} />
                   </FormControl>
                   <FormDescription>
                     Leave blank to use the rate from your pricing settings.

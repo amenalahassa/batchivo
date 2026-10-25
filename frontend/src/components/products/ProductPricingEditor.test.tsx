@@ -321,6 +321,36 @@ describe('quantity tiers', () => {
     expect(profit?.textContent).toContain('CA$22.92')
   })
 
+  it("shows each row in its channel's currency (T261)", async () => {
+    renderEditor([
+      priceRow({ id: 'a', list_price: '25.00', profit: '9.10', currency: 'USD' }),
+    ])
+
+    expect(await screen.findByText('$25.00')).toBeInTheDocument()
+    expect(screen.queryByText('CA$25.00')).not.toBeInTheDocument()
+  })
+
+  it('averages only within one currency, never across two (T261)', async () => {
+    renderEditor([
+      priceRow({ id: 'a', sales_channel_id: 'ch-cad', profit: '20.00', currency: 'CAD' }),
+      priceRow({
+        id: 'b',
+        sales_channel_id: 'ch-usd',
+        channel_name: 'US Market',
+        profit: '10.00',
+        currency: 'USD',
+      }),
+    ])
+
+    const cad = await screen.findByTestId('pricing-averages-CA$')
+    const usd = screen.getByTestId('pricing-averages-$')
+    expect(cad.textContent).toContain('CA$20.00')
+    expect(usd.textContent).toContain('$10.00')
+    // A mixed mean (15.00) would add pounds to dollars.
+    expect(cad.textContent).not.toContain('15.00')
+    expect(usd.textContent).not.toContain('15.00')
+  })
+
   it('keeps every channel selectable, since a channel can carry several tiers', async () => {
     const user = userEvent.setup({ delay: null })
     renderEditor([priceRow({ min_quantity: 1 })])

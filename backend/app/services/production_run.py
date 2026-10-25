@@ -1,7 +1,6 @@
 """Production Run service for business logic operations."""
 
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
@@ -30,154 +29,32 @@ from app.schemas.production_run import (
 
 logger = logging.getLogger(__name__)
 
-#: The scale of the columns the realised figures are stored in, so the one
-#: rounding in `record_actual_unit_costs` happens at the width the database
-#: would round to anyway rather than at an arbitrary one.
-PER_GRAM = Decimal("0.000001")
-PER_UNIT = Decimal("0.0001")
+# A run's money -- the per-gram figure a material is frozen at, the realised
+# unit cost and the expected-against-actual summary -- lives in
+# `app.services.run_costs`, which is type-checked as a money path (T265).
+# Re-exported here for the callers that import it from the run service.
+from app.services.run_costs import (  # noqa: E402
+    COMPLETED,
+    MaterialCostSummary,
+    MaterialCostUnderivable,
+    RealisedUnitCost,
+    average_unit_cost,
+    material_cost_summary,
+    realised_unit_costs,
+    record_actual_unit_costs,
+    run_material_cost_per_gram,
+)
 
-#: The status a run reaches when its actuals are recordable. A plain string on
-#: the column rather than an enum, so it is named once here.
-COMPLETED = "completed"
-
-
-@dataclass(frozen=True)
-class MaterialCostSummary:
-    """A run's filament cost, expected against actual (task T183).
-
-    Three exact figures, unrounded. `actual` and `variance_percent` are `None`
-    for a run with nothing recorded yet, which is a different fact from zero.
-    """
-
-    estimated: Decimal
-    actual: Optional[Decimal]
-    variance_percent: Optional[Decimal]
-
-
-class MaterialCostUnderivable(ValueError):
-    """A run material names no cost, and its spool cannot supply one (FR-019).
-
-    Consumed material is history (Constitution VI): a zero written here would
-    be a settled run costed as free filament forever. Refusing lets the
-    operator fix the spool's price or weight, or type the figure.
-    """
-
-
-def run_material_cost_per_gram(spool: Spool, given: Optional[Decimal]) -> Decimal:
-    """The per-gram figure a run material is frozen at.
-
-    ``given`` is what the operator typed and wins. Otherwise it is the spool's
-    landed cost per usable gram, with the purchase's shipping and tax, which
-    the spool loads with it (T254).
-    """
-    if given is not None:
-        return given
-    from app.services.landed_cost import spool_landed_cost
-
-    landed = spool_landed_cost(spool)
-    if landed.cost_per_gram is None or landed.cost_per_gram <= Decimal("0"):
-        reasons = "; ".join(landed.incomplete_reasons) or "it derives to zero"
-        raise MaterialCostUnderivable(
-            f"no cost per gram was given for spool {spool.spool_id}, and none can be "
-            f"derived from it: {reasons}"
-        )
-    return landed.cost_per_gram
-
-
-@dataclass(frozen=True)
-class RealisedUnitCost:
-    """What one unit of a model actually cost, averaged over completed runs (T255).
-
-    Derived on read from each run's immutable ``actual_cost_per_unit`` and the
-    units that succeeded, in one unrounded chain (Constitution IV). Nothing is
-    stored, so a run recorded late is weighted by its units like any other and
-    no rounded average is ever fed back into the next one (Constitution V).
-    """
-
-    average: Decimal
-    units: int
-    last_completed_at: Optional[datetime]
-
-
-def average_unit_cost(outcomes: list[tuple[Decimal, int]]) -> Optional[Decimal]:
-    """Units-weighted mean of per-run unit costs, unrounded; ``None`` if none."""
-    units = sum(quantity for _, quantity in outcomes if quantity > 0)
-    if units <= 0:
-        return None
-    total = sum(
-        (Decimal(str(cost)) * Decimal(quantity) for cost, quantity in outcomes if quantity > 0),
-        Decimal("0"),
-    )
-    return total / Decimal(units)
-
-
-async def realised_unit_costs(
-    db: AsyncSession, tenant_id: UUID, model_ids: list[UUID]
-) -> dict[UUID, RealisedUnitCost]:
-    """The realised unit cost of each model, from its completed runs.
-
-    A single-plate run records its unit cost per item, a multi-plate run per
-    plate; each run is read from the one it used, so no unit counts twice.
-    """
-    from app.models.production_run_plate import ProductionRunPlate
-
-    if not model_ids:
-        return {}
-
-    item_rows = await db.execute(
-        select(
-            ProductionRunItem.model_id,
-            ProductionRunItem.actual_cost_per_unit,
-            ProductionRunItem.successful_quantity,
-            ProductionRun.completed_at,
-        )
-        .join(ProductionRun, ProductionRunItem.production_run_id == ProductionRun.id)
-        .where(
-            ProductionRun.tenant_id == tenant_id,
-            ProductionRun.status == COMPLETED,
-            ProductionRun.total_plates == 0,
-            ProductionRunItem.model_id.in_(model_ids),
-            ProductionRunItem.actual_cost_per_unit.is_not(None),
-            ProductionRunItem.successful_quantity > 0,
-        )
-    )
-    plate_rows = await db.execute(
-        select(
-            ProductionRunPlate.model_id,
-            ProductionRunPlate.actual_cost_per_unit,
-            ProductionRunPlate.successful_prints,
-            ProductionRun.completed_at,
-        )
-        .join(ProductionRun, ProductionRunPlate.production_run_id == ProductionRun.id)
-        .where(
-            ProductionRun.tenant_id == tenant_id,
-            ProductionRun.status == COMPLETED,
-            ProductionRun.total_plates > 0,
-            ProductionRunPlate.model_id.in_(model_ids),
-            ProductionRunPlate.actual_cost_per_unit.is_not(None),
-            ProductionRunPlate.successful_prints > 0,
-        )
-    )
-
-    outcomes: dict[UUID, list[tuple[Decimal, int]]] = {}
-    latest: dict[UUID, Optional[datetime]] = {}
-    for model_id, cost, quantity, completed_at in [*item_rows.all(), *plate_rows.all()]:
-        outcomes.setdefault(model_id, []).append((Decimal(str(cost)), int(quantity)))
-        seen = latest.get(model_id)
-        if completed_at is not None and (seen is None or completed_at > seen):
-            latest[model_id] = completed_at
-
-    result: dict[UUID, RealisedUnitCost] = {}
-    for model_id, rows in outcomes.items():
-        average = average_unit_cost(rows)
-        if average is not None:
-            result[model_id] = RealisedUnitCost(
-                average=average,
-                units=sum(quantity for _, quantity in rows),
-                last_completed_at=latest.get(model_id),
-            )
-    return result
-
+__all__ = [
+    "COMPLETED",
+    "MaterialCostSummary",
+    "MaterialCostUnderivable",
+    "ProductionRunService",
+    "RealisedUnitCost",
+    "average_unit_cost",
+    "realised_unit_costs",
+    "run_material_cost_per_gram",
+]
 
 # OpenTelemetry tracer for production run operations
 tracer = trace.get_tracer(__name__)
@@ -206,93 +83,17 @@ class ProductionRunService:
         total_material_cost: Decimal,
         successful_weight: Decimal,
     ) -> None:
-        """Write what each finished unit actually cost in filament (FR-040).
-
-        A recorded actual is one of the two deliberate exceptions to "nothing
-        derived is stored": it is what a run consumed, not a figure the engine
-        can re-derive once a spool price moves. Storing it is intended;
-        deriving it in a route handler was not (Constitution III, task T164).
-
-        The waste is distributed across the successful units rather than the
-        attempted ones, which is the point of dividing by the *successful*
-        weight: a plate that failed half its parts put its filament into the
-        parts that survived, and costing them at the per-gram price of a
-        perfect run would understate what they cost.
-
-        Exact throughout, and rounded once at the edge (Constitution IV). The
-        quotient is carried unrounded into each unit's multiplication and only
-        the stored figures are quantized -- to the scale of the column each
-        sits in, which is six places for a per-gram price and four for a
-        unit's cost. Rounding the quotient first and multiplying by 300 g
-        would put the error in every part the plate carried.
-
-        Nothing is committed; the caller's transaction decides.
-        """
-        if successful_weight <= Decimal("0"):
-            # No successful output, so there is nothing to attribute the
-            # filament to. Reported by its absence rather than written as a
-            # zero, which would read as a free run (FR-019).
-            return
-
-        cost_per_gram = total_material_cost / successful_weight
-        production_run.cost_per_gram_actual = cost_per_gram.quantize(PER_GRAM)
-        production_run.successful_weight_grams = successful_weight
-
-        if production_run.is_multi_plate and production_run.plates:
-            units = production_run.plates
-        elif production_run.items:
-            units = production_run.items
-        else:
-            return
-
-        for unit in units:
-            if unit.model_weight_grams:
-                unit.actual_cost_per_unit = (unit.model_weight_grams * cost_per_gram).quantize(
-                    PER_UNIT
-                )
+        """Write what each finished unit actually cost; see :func:`run_costs.record_actual_unit_costs`."""
+        record_actual_unit_costs(
+            production_run,
+            total_material_cost=total_material_cost,
+            successful_weight=successful_weight,
+        )
 
     @staticmethod
-    def material_cost_summary(production_run: ProductionRun) -> "MaterialCostSummary":
-        """What a run's filament was expected to cost and what it did (task T183).
-
-        The run-level aggregate of `ProductionRunMaterial.estimated_total_cost`
-        and `.total_cost`, with the variance between them. It lives here
-        because a route handler was computing it instead:
-        `analytics.py` summed `float(m.estimated_total_weight * m.cost_per_gram)`
-        and the actual beside it, took a percentage from the two and rounded
-        between the steps -- a second cost implementation, in binary floating
-        point, in a reader (Constitution III and IV).
-
-        Exact throughout and rounded nowhere. A caller that displays these
-        rounds once, at its own edge.
-
-        The actual is `None` rather than zero for a run that has not completed:
-        a run still printing has not yet spent anything *recordable*, and
-        reporting that as a cost of nothing would read as a free run and give a
-        variance of -100% (FR-019). The variance is `None` whenever either side
-        is unknown, and also when the estimate is zero -- there is no
-        percentage of nothing.
-        """
-        estimated = sum(
-            (material.estimated_total_cost for material in production_run.materials),
-            Decimal("0"),
-        )
-
-        actual: Optional[Decimal] = None
-        variance_percent: Optional[Decimal] = None
-        if production_run.status == COMPLETED:
-            actual = sum(
-                (material.total_cost for material in production_run.materials),
-                Decimal("0"),
-            )
-            if estimated > Decimal("0"):
-                variance_percent = ((actual - estimated) / estimated) * Decimal("100")
-
-        return MaterialCostSummary(
-            estimated=estimated,
-            actual=actual,
-            variance_percent=variance_percent,
-        )
+    def material_cost_summary(production_run: ProductionRun) -> MaterialCostSummary:
+        """A run's filament expected against actual; see :func:`run_costs.material_cost_summary`."""
+        return material_cost_summary(production_run)
 
     async def create_production_run(
         self,

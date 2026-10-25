@@ -49,6 +49,12 @@ class ProductMarginResponse(BaseModel):
     product_id: UUID
     sales_channel_id: UUID
     as_of: date
+    currency: str = Field(
+        ...,
+        min_length=3,
+        max_length=3,
+        description="ISO 4217 code of the channel's currency; every amount here is in it (T261)",
+    )
     quantity: int = Field(1, description="Units on the line every amount here is for")
     unit_price: Optional[Decimal] = Field(
         None, description="The price per unit at this quantity's tier"

@@ -202,6 +202,8 @@ export interface PrinterCostPolicy {
   /** The parts the rate is made of, each named, so it needs no recomputing. */
   components: Record<string, Money>
   missing: string[]
+  /** Where each figure came from; an observed draw is not editable (T262). */
+  origins?: CostProfileFieldOrigin[]
 }
 
 export type PrinterCostPolicyUpdate = Partial<
@@ -496,6 +498,8 @@ export interface ProductMargin {
   product_id: string
   sales_channel_id: string
   as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
   /** Units on the line every amount is for (T258); one when not asked. */
   quantity?: number
   /** The price per unit at this quantity's tier. */
@@ -697,6 +701,8 @@ export interface PriceSolveResult {
   product_id: string
   sales_channel_id: string
   as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
 
   achievable: boolean
   reason: string | null
@@ -752,6 +758,8 @@ export interface PriceLadder {
   product_id: string
   sales_channel_id: string
   as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
 
   price_from: Money
   price_to: Money

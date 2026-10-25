@@ -10,7 +10,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.api.provenance_http import (
+    record_operator_origins,
+    refuse_observed_or_409,
+    served_origins,
+)
 from app.auth.dependencies import (
     MONETARY_ROLES,
     CurrentTenant,
@@ -28,7 +32,6 @@ from app.models.spool import Spool
 from app.models.tenant import Tenant
 from app.models.filament_type import FilamentType
 from app.schemas.model_cost_profile import (
-    CostProfileFieldOrigin,
     ModelCostProfileResponse,
     ModelCostProfileUpdate,
 )
@@ -54,7 +57,6 @@ from app.services.pricing_policy import resolve_cost_policy
 from app.services.provenance import (
     ProvenanceNotEditable,
     changed_fields,
-    origins_for_entity,
     record_operator_write,
     record_origin,
     refuse_overwriting_observed,
@@ -442,24 +444,15 @@ async def _cost_profile_response(
     model: Model,
 ) -> ModelCostProfileResponse:
     """One item's profile with the origin of each figure and what is missing."""
-    origins = await origins_for_entity(db, tenant, "model", model.id)
     policy = await resolve_cost_policy(db, tenant)
-
-    entries: list[CostProfileFieldOrigin] = []
-    for field_name in _COST_PROFILE_FIELDS:
-        origin = origins[field_name]
-        entries.append(
-            CostProfileFieldOrigin(
-                field_name=field_name,
-                source=origin.source,
-                as_of=origin.as_of,
-                is_stale=origin.is_stale(threshold_days=policy.staleness_threshold_days),
-                # An observed figure is refreshed from its source, never typed
-                # over (FR-004). The flag is served rather than inferred on the
-                # client so that one rule decides it.
-                editable=origin.source != "observed",
-            )
-        )
+    entries = await served_origins(
+        db,
+        tenant,
+        entity_type="model",
+        entity_id=model.id,
+        fields=_COST_PROFILE_FIELDS,
+        staleness_threshold_days=policy.staleness_threshold_days,
+    )
 
     # FR-019: name what the engine cannot cost rather than letting it read as
     # zero. A missing print time is the one that matters most -- it silently

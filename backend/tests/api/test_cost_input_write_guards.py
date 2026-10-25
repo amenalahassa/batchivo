@@ -284,6 +284,21 @@ class TestPrinterCostPolicyWrites:
 
         assert response.status_code == 409
 
+    async def test_the_policy_serves_each_figures_origin_so_the_form_can_lock_it(
+        self, client: AsyncClient, db_session, test_printer, test_tenant
+    ) -> None:
+        """The form reads ``editable`` from here rather than meeting a 409 (T262)."""
+        await _observe(db_session, test_tenant, "printer", test_printer.id, "measured_watts")
+
+        response = await client.get(f"{API}/printers/{test_printer.id}/cost-policy")
+
+        assert response.status_code == 200, response.text
+        origins = {entry["field_name"]: entry for entry in response.json()["origins"]}
+        assert origins["measured_watts"]["source"] == "observed"
+        assert origins["measured_watts"]["editable"] is False
+        assert origins["purchase_price"]["source"] == "policy"
+        assert origins["purchase_price"]["editable"] is True
+
 
 class TestModelPrinterConfigWrites:
     async def test_the_service_records_and_refuses(

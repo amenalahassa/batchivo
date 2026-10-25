@@ -80,6 +80,11 @@ def books_currency(tenant: "Tenant") -> str:
     return _code(getattr(tenant, "currency_code", None)) or "GBP"
 
 
+def channel_currency(tenant: "Tenant", channel: object) -> str:
+    """The currency a channel sells in: its own, else the books' (T261)."""
+    return _code(getattr(channel, "currency_code", None)) or books_currency(tenant)
+
+
 async def books_to_sale(
     db: AsyncSession,
     tenant: "Tenant",

@@ -80,6 +80,8 @@ export interface ProductPricing {
   min_quantity: number
   channel_name?: string
   platform_type?: string
+  /** ISO 4217 code the row's amounts are in: the channel's (T261). */
+  currency?: string
   platform_fee?: string
   net_revenue?: string
   profit?: string
