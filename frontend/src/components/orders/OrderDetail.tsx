@@ -26,6 +26,7 @@ import {
 
 import { getOrder, shipOrder, deliverOrder, updateOrder } from '@/lib/api/orders'
 import { OrderLineSnapshot } from './OrderLineSnapshot'
+import { ConfirmedParcels, OrderParcelDialog } from './OrderParcelDialog'
 import { useCurrency } from '@/hooks/useCurrency'
 import { compareMoney, ZERO } from '@/lib/money'
 import { Button } from '@/components/ui/button'
@@ -77,6 +78,8 @@ export function OrderDetail() {
   const { formatCurrency } = useCurrency()
 
   const [shipDialogOpen, setShipDialogOpen] = useState(false)
+  // Parcels are confirmed before shipping, unless they already were (D10).
+  const [parcelDialogOpen, setParcelDialogOpen] = useState(false)
   const [trackingNumber, setTrackingNumber] = useState('')
   const [trackingUrl, setTrackingUrl] = useState('')
   const [notesDialogOpen, setNotesDialogOpen] = useState(false)
@@ -235,6 +238,11 @@ export function OrderDetail() {
                   <span className="text-muted-foreground">Postage paid</span>
                   <span>
                     {order.postage_paid == null ? 'Not recorded' : formatCurrency(order.postage_paid)}
+                    {order.postage_is_estimate && (
+                      <Badge variant="outline" className="ml-2">
+                        estimate
+                      </Badge>
+                    )}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm" data-testid="order-tax-collected">
@@ -301,6 +309,17 @@ export function OrderDetail() {
             </Card>
           </div>
 
+          {order.parcels && order.parcels.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Parcels</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ConfirmedParcels parcels={order.parcels} />
+              </CardContent>
+            </Card>
+          )}
+
           {/* Tracking Info (if shipped) */}
           {(order.status === 'shipped' || order.status === 'delivered') && order.tracking_number && (
             <Card>
@@ -345,7 +364,9 @@ export function OrderDetail() {
               {(order.status === 'pending' || order.status === 'processing') && (
                 <Button
                   className="w-full"
-                  onClick={() => setShipDialogOpen(true)}
+                  onClick={() =>
+                    order.parcels?.length ? setShipDialogOpen(true) : setParcelDialogOpen(true)
+                  }
                   disabled={shipMutation.isPending}
                 >
                   <Truck className="mr-2 h-4 w-4" />
@@ -430,6 +451,17 @@ export function OrderDetail() {
           )}
         </div>
       </div>
+
+      <OrderParcelDialog
+        orderId={orderId}
+        orderNumber={order.order_number}
+        open={parcelDialogOpen}
+        onOpenChange={setParcelDialogOpen}
+        onContinue={() => {
+          setParcelDialogOpen(false)
+          setShipDialogOpen(true)
+        }}
+      />
 
       {/* Ship Dialog */}
       <Dialog open={shipDialogOpen} onOpenChange={setShipDialogOpen}>

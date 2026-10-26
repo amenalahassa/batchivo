@@ -37,6 +37,8 @@ vi.mock('@/lib/api/consumables', () => ({
           is_active: true,
           is_low_stock: false,
           stock_value: '4.50',
+          packaging_kind: 'box',
+          packaging_incomplete: true,
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-01T00:00:00Z',
         },
@@ -65,5 +67,18 @@ describe('ConsumableList currency (T276)', () => {
     expect((await screen.findAllByText('C$0.45')).length).toBeGreaterThan(0)
     expect(screen.getAllByText('C$4.50').length).toBeGreaterThan(0)
     expect(screen.queryByText(/£/)).not.toBeInTheDocument()
+  })
+})
+
+describe('ConsumableList packaging (T029)', () => {
+  it('marks a box without its inner size as incomplete', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConsumableList />
+      </QueryClientProvider>,
+    )
+
+    expect((await screen.findAllByText('Incomplete')).length).toBeGreaterThan(0)
   })
 })

@@ -15,10 +15,26 @@ amounts of money, not about counting things.
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+PackagingKind = Literal["box", "mailer", "void_fill", "wrap"]
+#: An inner length in mm: positive, to 0.1 mm, within Numeric(7, 1).
+_LENGTH = dict(gt=0, max_digits=7, decimal_places=1)
+_INNER = ("inner_length_mm", "inner_width_mm", "inner_height_mm")
+
+
+def _check_inner_all_or_none(values: BaseModel, given: set[str]) -> None:
+    """The three inner dimensions are recorded together or not at all (D5)."""
+    named = [name for name in _INNER if name in given]
+    if not named:
+        return
+    present = [getattr(values, name) is not None for name in _INNER]
+    if (len(named) != 3 and any(present)) or (any(present) and not all(present)):
+        missing = [name for name, ok in zip(_INNER, present) if not ok]
+        raise ValueError(f"give all three inner dimensions or none; missing: {', '.join(missing)}")
 
 
 # =============================================================================
@@ -78,11 +94,41 @@ class ConsumableTypeBase(BaseModel):
     # Status
     is_active: bool = Field(True, description="Whether this consumable is active")
 
+    # Packaging attributes (packaging advisor, research D5). All optional, so a
+    # consumable that is not packaging is unaffected (FR-013).
+    packaging_kind: Optional[PackagingKind] = Field(
+        None, description="box, mailer, void_fill or wrap; null when not packaging"
+    )
+    inner_length_mm: Optional[Decimal] = Field(None, **_LENGTH, description="Inner length, mm")
+    inner_width_mm: Optional[Decimal] = Field(None, **_LENGTH, description="Inner width, mm")
+    inner_height_mm: Optional[Decimal] = Field(
+        None, **_LENGTH, description="Inner height, mm (a mailer's maximum thickness)"
+    )
+    wall_mm: Optional[Decimal] = Field(
+        None, ge=0, max_digits=5, decimal_places=1, description="Wall thickness, mm"
+    )
+    empty_weight_grams: Optional[Decimal] = Field(
+        None, ge=0, max_digits=8, decimal_places=1, description="Weight of one empty unit, g"
+    )
+    fill_volume_ml: Optional[Decimal] = Field(
+        None, ge=0, max_digits=10, decimal_places=1, description="Void fill: ml one unit fills"
+    )
+
+    @model_validator(mode="after")
+    def _inner_all_or_none(self):
+        _check_inner_all_or_none(self, self.model_fields_set)
+        return self
+
 
 class ConsumableTypeCreate(ConsumableTypeBase):
     """Schema for creating a new consumable type."""
 
-    pass  # Inherits all fields from ConsumableTypeBase
+    packaging_provenance: Optional["PackagingProvenanceIn"] = Field(
+        None,
+        description=(
+            "How the inner size, wall and empty weight are known (FR-038); defaults to assumed"
+        ),
+    )
 
 
 class ConsumableTypeUpdate(BaseModel):
@@ -102,6 +148,35 @@ class ConsumableTypeUpdate(BaseModel):
     supplier_url: Optional[str] = Field(None, max_length=500)
     typical_lead_days: Optional[int] = Field(None, ge=0)
     is_active: Optional[bool] = None
+    packaging_kind: Optional[PackagingKind] = None
+    inner_length_mm: Optional[Decimal] = Field(None, **_LENGTH)
+    inner_width_mm: Optional[Decimal] = Field(None, **_LENGTH)
+    inner_height_mm: Optional[Decimal] = Field(None, **_LENGTH)
+    wall_mm: Optional[Decimal] = Field(None, ge=0, max_digits=5, decimal_places=1)
+    empty_weight_grams: Optional[Decimal] = Field(None, ge=0, max_digits=8, decimal_places=1)
+    fill_volume_ml: Optional[Decimal] = Field(None, ge=0, max_digits=10, decimal_places=1)
+    packaging_provenance: Optional["PackagingProvenanceIn"] = Field(
+        None, description="How the packaging figures being saved are known (FR-038)"
+    )
+
+    @model_validator(mode="after")
+    def _inner_all_or_none(self):
+        _check_inner_all_or_none(self, self.model_fields_set)
+        return self
+
+
+class PackagingProvenanceIn(BaseModel):
+    """Where a container's size, wall and weight came from (FR-038).
+
+    An operator measured them, or they are assumed (a catalogue figure, a
+    guess). Never ``observed``: that word is for figures a machine recorded.
+    """
+
+    source: Literal["measured", "assumed"] = "assumed"
+
+
+ConsumableTypeCreate.model_rebuild()
+ConsumableTypeUpdate.model_rebuild()
 
 
 class ConsumableTypeResponse(ConsumableTypeBase):
@@ -122,6 +197,14 @@ class ConsumableTypeResponse(ConsumableTypeBase):
     )
     priced_by_purchase_date: Optional[date] = Field(
         None, description="Date of the purchase that prices the unit"
+    )
+    packaging_incomplete: bool = Field(
+        False,
+        description="A box or mailer missing an inner dimension: never suggested (D5)",
+    )
+    packaging_provenance: dict[str, Optional[str]] = Field(
+        default_factory=dict,
+        description="Each packaging figure's provenance source, as recorded (FR-038)",
     )
 
     model_config = ConfigDict(from_attributes=True)

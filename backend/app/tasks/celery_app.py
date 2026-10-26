@@ -46,6 +46,8 @@ celery_app = Celery(
         # origin in a running system (task T148).
         "app.tasks.telemetry",
         "app.tasks.power",
+        # Large model files measured after upload (packaging advisor, T037).
+        "app.tasks.mesh_measure",
     ],
 )
 

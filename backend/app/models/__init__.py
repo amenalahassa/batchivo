@@ -41,6 +41,7 @@ from app.models.external_listing import ExternalListing
 
 # Orders
 from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order_parcel import OrderParcel, OrderParcelItem
 
 # Discounts
 from app.models.discount import DiscountCode, DiscountType, DiscountUsage
@@ -169,6 +170,8 @@ __all__ = [
     # Orders
     "Order",
     "OrderItem",
+    "OrderParcel",
+    "OrderParcelItem",
     "OrderStatus",
     # Discounts
     "DiscountCode",

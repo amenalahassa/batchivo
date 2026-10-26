@@ -22,6 +22,7 @@ from app.models.external_listing import ExternalListing
 from app.core.money import pence_to_pounds, pounds_to_pence
 from app.models.product import Product
 from app.models.tenant import Tenant
+from app.services.item_dimensions import effective_dimensions
 
 logger = logging.getLogger(__name__)
 
@@ -415,7 +416,13 @@ class EtsySyncService:
         specs = []
         if product.weight_grams:
             specs.append(f"Weight: {product.weight_grams}g")
-        if product.size_cm:
+        # The measured or entered dimensions when there are some (research
+        # D12); otherwise the free-text size the listing always carried.
+        dims, _ = effective_dimensions(product)
+        if dims is not None:
+            d = dims.quantize()
+            specs.append(f"Size: {d.length} × {d.width} × {d.height} mm")
+        elif product.size_cm:
             specs.append(f"Size: {product.size_cm}cm")
         if product.print_time_hours:
             specs.append(f"Print time: {product.print_time_hours} hours")

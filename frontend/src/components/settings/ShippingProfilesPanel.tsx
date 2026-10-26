@@ -61,6 +61,9 @@ import type { ShippingProfile, ShippingProfileCreate } from '@/types/pricing'
 
 const amount = /^\d+(\.\d{1,2})?$/
 const grams = /^\d+(\.\d+)?$/
+// A positive length (or divisor) to at most one decimal place.
+const mm = /^(?!0+(\.0)?$)\d+(\.\d)?$/
+const MM_MESSAGE = 'Enter a size in mm, to at most one decimal place'
 
 const schema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(100),
@@ -75,7 +78,21 @@ const schema = z.object({
     .refine((v) => v === '' || grams.test(v), 'Enter a weight in grams, or leave it open'),
   postage_cost: z.string().trim().regex(amount, 'Enter an amount, e.g. 3.85'),
   carrier: z.string().trim().max(50),
-})
+  max_length_mm: z.string().trim().refine((v) => v === '' || mm.test(v), MM_MESSAGE),
+  max_width_mm: z.string().trim().refine((v) => v === '' || mm.test(v), MM_MESSAGE),
+  max_height_mm: z.string().trim().refine((v) => v === '' || mm.test(v), MM_MESSAGE),
+  volumetric_divisor: z
+    .string()
+    .trim()
+    .refine((v) => v === '' || mm.test(v), 'Enter the divisor, e.g. 5000, or leave it blank'),
+}).refine(
+  // A size class is all three limits or none (research D9).
+  (v) => {
+    const given = [v.max_length_mm, v.max_width_mm, v.max_height_mm].filter((x) => x !== '')
+    return given.length === 0 || given.length === 3
+  },
+  { message: 'Give all three size limits, or none', path: ['max_height_mm'] },
+)
 
 type FormValues = z.infer<typeof schema>
 
@@ -86,6 +103,15 @@ const EMPTY: FormValues = {
   weight_bracket_max_grams: '',
   postage_cost: '',
   carrier: '',
+  max_length_mm: '',
+  max_width_mm: '',
+  max_height_mm: '',
+  volumetric_divisor: '',
+}
+
+function sizeLabel(profile: ShippingProfile): string | null {
+  if (!profile.max_length_mm || !profile.max_width_mm || !profile.max_height_mm) return null
+  return `≤ ${profile.max_length_mm} × ${profile.max_width_mm} × ${profile.max_height_mm} mm`
 }
 
 function today(): string {
@@ -128,6 +154,10 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
             weight_bracket_max_grams: profile.weight_bracket_max_grams ?? '',
             postage_cost: profile.postage_cost,
             carrier: profile.carrier ?? '',
+            max_length_mm: profile.max_length_mm ?? '',
+            max_width_mm: profile.max_width_mm ?? '',
+            max_height_mm: profile.max_height_mm ?? '',
+            volumetric_divisor: profile.volumetric_divisor ?? '',
           },
     )
   }
@@ -141,6 +171,10 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
       postage_cost: values.postage_cost,
       carrier: values.carrier || null,
       effective_from: today(),
+      max_length_mm: values.max_length_mm || null,
+      max_width_mm: values.max_width_mm || null,
+      max_height_mm: values.max_height_mm || null,
+      volumetric_divisor: values.volumetric_divisor || null,
     }
     if (editing === 'new') {
       await create.mutateAsync(body)
@@ -270,6 +304,47 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
                   </FormItem>
                 )}
               />
+              <fieldset className="grid gap-3 sm:col-span-2 sm:grid-cols-3">
+                <legend className="text-sm font-medium mb-1">Size limits (mm)</legend>
+                {(
+                  [
+                    ['max_length_mm', 'Max length (mm)', '353'],
+                    ['max_width_mm', 'Max width (mm)', '250'],
+                    ['max_height_mm', 'Max height (mm)', '25'],
+                  ] as const
+                ).map(([name, label, placeholder]) => (
+                  <FormField
+                    key={name}
+                    control={form.control}
+                    name={name}
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{label}</FormLabel>
+                        <FormControl>
+                          <Input inputMode="decimal" placeholder={placeholder} {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                ))}
+              </fieldset>
+              <FormField
+                control={form.control}
+                name="volumetric_divisor"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Volumetric divisor</FormLabel>
+                    <FormControl>
+                      <Input inputMode="decimal" placeholder="None" {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      cm³ per kg, e.g. 5000. Leave blank if the carrier charges actual weight.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
               <FormDescription className="sm:col-span-2" data-testid="shipping-supersede-note">
                 {editing === 'new'
                   ? 'Applies from today.'
@@ -320,7 +395,12 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
                 <TableRow key={profile.id} data-testid={`shipping-profile-${profile.id}`}>
                   <TableCell className="font-medium">{profile.name}</TableCell>
                   <TableCell>{profile.destination_zone}</TableCell>
-                  <TableCell className="tabular-nums">{bracketLabel(profile)}</TableCell>
+                  <TableCell className="tabular-nums">
+                    {bracketLabel(profile)}
+                    {sizeLabel(profile) && (
+                      <div className="text-xs text-muted-foreground">{sizeLabel(profile)}</div>
+                    )}
+                  </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(profile.postage_cost, currency.symbol)}
                   </TableCell>

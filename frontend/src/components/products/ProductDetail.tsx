@@ -65,6 +65,9 @@ import { ProductCategoriesEditor } from './ProductCategoriesEditor'
 import { ProductionHistoryTable } from './ProductionHistoryTable'
 import { CostBreakdownSection } from '@/components/pricing/CostBreakdownSection'
 import { MarginBasisLabel } from '@/components/pricing/MarginBasisLabel'
+import { ProductPackagingCard } from './ProductPackagingCard'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 interface ProductDetailProps {
   productId: string
@@ -108,6 +111,10 @@ export function ProductDetail({ productId }: ProductDetailProps) {
   const queryClient = useQueryClient()
   const { currency } = useCurrency()
   const currencySymbol = currency.symbol
+  // Dimensions and the accepted box are measurements a member records; a
+  // viewer reads them (FR-023).
+  const { user } = useAuth()
+  const canEditFigures = canEditOperationalFigures(user)
 
   const { data: product, isLoading, error } = useQuery({
     queryKey: ['product', productId],
@@ -557,6 +564,9 @@ export function ProductDetail({ productId }: ProductDetailProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Dimensions, fragility and packaging, per product and size (feature 003) */}
+      <ProductPackagingCard product={product} canEdit={canEditFigures} />
 
       {/* Product Images */}
       <Card>

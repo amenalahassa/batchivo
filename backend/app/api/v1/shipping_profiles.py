@@ -22,6 +22,7 @@ the administrator who set it (FR-001, task T229).
 import logging
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Optional
 from uuid import UUID
 
@@ -41,10 +42,12 @@ from app.core import clock
 from app.models.order import Order
 from app.models.shipping_profile import ShippingProfile
 from app.schemas.shipping_profile import (
+    SIZE_LIMIT_FIELDS,
     ShippingProfileCreate,
     ShippingProfileListResponse,
     ShippingProfileResponse,
     ShippingProfileUpdate,
+    check_size_limits,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,8 +96,24 @@ def _brackets_overlap(
 #: The fields that say what a parcel costs to post. Changing any of them
 #: supersedes the profile; a name or a carrier is corrected in place.
 POSTAGE_FIELDS: frozenset[str] = frozenset(
-    {"postage_cost", "weight_bracket_min_grams", "weight_bracket_max_grams", "destination_zone"}
+    {
+        "postage_cost",
+        "weight_bracket_min_grams",
+        "weight_bracket_max_grams",
+        "destination_zone",
+        # A size class or divisor decides which parcels a profile prices.
+        *SIZE_LIMIT_FIELDS,
+        "volumetric_divisor",
+    }
 )
+
+
+def _limits(source: object) -> Optional[tuple[Decimal, ...]]:
+    """A profile's size class, sorted, or None for a weight-only profile."""
+    values = [getattr(source, name, None) for name in SIZE_LIMIT_FIELDS]
+    if any(v is None for v in values):
+        return None
+    return tuple(sorted((Decimal(str(v)) for v in values), reverse=True))
 
 
 def _dates_overlap(from_a: date, to_a: Optional[date], from_b: date, to_b: Optional[date]) -> bool:
@@ -131,7 +150,14 @@ async def _refuse_overlapping_bracket(
     effective_from: date,
     effective_to: Optional[date] = None,
     exclude_id: Optional[UUID] = None,
+    limits: Optional[tuple[Decimal, ...]] = None,
 ) -> None:
+    """Refuse a bracket another profile of the same size class already prices.
+
+    A large-letter service and a parcel service may both cover 0-100 g in one
+    zone: the size decides between them (research D9). Two profiles of the
+    same class claiming one weight would not be decided by anything.
+    """
     result = await db.execute(
         select(ShippingProfile).where(
             ShippingProfile.tenant_id == tenant_id,
@@ -139,7 +165,7 @@ async def _refuse_overlapping_bracket(
         )
     )
     for existing in result.scalars().all():
-        if existing.id == exclude_id:
+        if existing.id == exclude_id or _limits(existing) != limits:
             continue
         # Two profiles in force on different dates may claim the same parcel:
         # that is what a repricing is.
@@ -220,6 +246,7 @@ async def create_shipping_profile(
         minimum=payload.weight_bracket_min_grams,
         maximum=payload.weight_bracket_max_grams,
         effective_from=payload.effective_from,
+        limits=_limits(payload),
     )
 
     profile = ShippingProfile(tenant_id=tenant.id, **payload.model_dump())
@@ -299,6 +326,17 @@ async def update_shipping_profile(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="weight_bracket_max_grams must be above weight_bracket_min_grams",
         )
+    sizing = {
+        name: changes.get(name, getattr(profile, name))
+        for name in (*SIZE_LIMIT_FIELDS, "volumetric_divisor")
+    }
+    try:
+        check_size_limits(sizing)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    limits = _limits(SimpleNamespace(**sizing))
 
     if not supersedes:
         await _refuse_overlapping_bracket(
@@ -310,6 +348,7 @@ async def update_shipping_profile(
             effective_from=changes.get("effective_from", profile.effective_from),
             effective_to=profile.effective_to,
             exclude_id=profile.id,
+            limits=limits,
         )
         for field, value in changes.items():
             setattr(profile, field, value)
@@ -337,6 +376,7 @@ async def update_shipping_profile(
         carrier=changes.get("carrier", profile.carrier),
         effective_from=opens_on,
         effective_to=profile.effective_to,
+        **sizing,
     )
     profile.effective_to = opens_on - timedelta(days=1)
     await db.flush()
@@ -349,6 +389,7 @@ async def update_shipping_profile(
         effective_from=successor.effective_from,
         effective_to=successor.effective_to,
         exclude_id=profile.id,
+        limits=limits,
     )
     db.add(successor)
     await db.flush()

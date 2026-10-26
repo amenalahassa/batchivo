@@ -2,10 +2,21 @@
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -148,16 +159,78 @@ class ModelFile(Base, UUIDMixin, TimestampMixin):
         comment="User who uploaded the file",
     )
 
+    # Bounding box measured from the file's geometry (packaging advisor, research
+    # D4). Stored rather than recomputed: a file's bytes never change after
+    # upload (a new version is a new row), so the figure cannot go stale; it goes
+    # when the row does. A suggestion only -- it reaches a model's dimensions
+    # through `item_dimensions.apply_measurement`, which never overwrites an
+    # operator's entry (FR-003).
+    measured_length_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Measured build length in mm"
+    )
+    measured_width_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Measured build width in mm"
+    )
+    measured_height_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Measured build height in mm"
+    )
+    measured_objects: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        comment="Per-object sizes: [{name, length_mm, width_mm, height_mm}] as decimal strings",
+    )
+    measured_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, comment="When the file was measured"
+    )
+    measurement_note: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Why the file was not measured, or the multi-object warning",
+    )
+    measurement_status: Mapped[Optional[str]] = mapped_column(
+        String(10),
+        nullable=True,
+        comment="done | pending (queued, file > 25 MB) | skipped | failed",
+    )
+
     # Relationships
     model: Mapped["Model"] = relationship(
         "Model",
         back_populates="files",
+        foreign_keys=[model_id],
         lazy="select",
     )
 
     uploaded_by: Mapped[Optional["User"]] = relationship(
         "User",
         lazy="select",
+    )
+
+    #: Which records took this file's measurement on upload; set by the
+    #: service for the response only, never stored.
+    measurement_applied_to: list[str] = []
+
+    @property
+    def measurement(self) -> Optional[dict]:
+        """The measurement as the API reports it, or None for a file never measured."""
+        if self.measurement_status is None:
+            return None
+        return {
+            "length_mm": self.measured_length_mm,
+            "width_mm": self.measured_width_mm,
+            "height_mm": self.measured_height_mm,
+            "objects": self.measured_objects or [],
+            "note": self.measurement_note,
+            "status": self.measurement_status,
+            "applied_to": list(self.measurement_applied_to),
+        }
+
+    __table_args__ = (
+        CheckConstraint(
+            "measurement_status IS NULL OR "
+            "measurement_status IN ('done', 'pending', 'skipped', 'failed')",
+            name="ck_model_files_measurement_status",
+        ),
     )
 
     def __repr__(self) -> str:

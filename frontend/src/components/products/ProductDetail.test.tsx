@@ -58,8 +58,13 @@ import {
   normaliseMoney,
   sameMakeCost,
 } from '@/lib/pricing/makeCost'
-import type { ProductPricing } from '@/lib/api/products'
+import type {
+  ProductDetail as ProductDetailData,
+  ProductPricing,
+  ProductVariant,
+} from '@/lib/api/products'
 import { ProductPricingEditor } from './ProductPricingEditor'
+import { ProductPackagingCard } from './ProductPackagingCard'
 
 // ---------------------------------------------------------------------------
 // The shared accessor
@@ -378,5 +383,94 @@ describe('the product screens derive no price of their own', () => {
     }
     // A control: the construct being banned is one the checker can see.
     expect(/parseFloat\s*\(/.test('const x = parseFloat(y)')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Dimensions and packaging (feature 003)
+// ---------------------------------------------------------------------------
+
+function packagingProduct(variants: ProductVariant[], warnings: string[] = []): ProductDetailData {
+  return {
+    id: 'prod-1',
+    sku: 'DRG',
+    name: 'Dragon',
+    is_fragile: false,
+    dimensions: {
+      length_mm: '120.0',
+      width_mm: '80.0',
+      height_mm: '45.0',
+      source: 'entered',
+      source_file_id: null,
+      set_at: '2026-10-25T10:00:00Z',
+      inherited: false,
+    },
+    packaging_warnings: warnings,
+    variants,
+  } as unknown as ProductDetailData
+}
+
+function variantRow(overrides: Partial<ProductVariant> = {}): ProductVariant {
+  return {
+    id: 'v-l',
+    product_id: 'prod-1',
+    size: 'L',
+    display_order: 0,
+    sku: 'DRG-L',
+    is_active: true,
+    dimensions: null,
+    packaging_consumable_id: null,
+    packaging_quantity: null,
+    effective_packaging: null,
+    packaging_notes: [],
+    packaging_warnings: [],
+    ...overrides,
+  }
+}
+
+describe('ProductPackagingCard', () => {
+  it('is mounted on the product detail screen', () => {
+    expect(sourceOf('ProductDetail.tsx')).toContain('<ProductPackagingCard')
+  })
+
+  it("says a variant's own packaging is not what the breakdown costs (FR-039)", () => {
+    renderWithQueryClient(
+      <ProductPackagingCard
+        product={packagingProduct([
+          variantRow({
+            packaging_consumable_id: 'box-l',
+            packaging_quantity: 1,
+            effective_packaging: { consumable_id: 'box-l', name: 'Box L', quantity: 1, inherited: false },
+            packaging_notes: ['variant_packaging_not_costed'],
+          }),
+          variantRow({
+            id: 'v-s',
+            size: 'S',
+            sku: 'DRG-S',
+            effective_packaging: { consumable_id: 'box-s', name: 'Box S', quantity: 1, inherited: true },
+          }),
+        ])}
+        canEdit
+      />,
+    )
+    expect(screen.getAllByText("Cost breakdown uses the product's packaging")).toHaveLength(1)
+    expect(screen.getByText("(the product's)")).toBeInTheDocument()
+  })
+
+  it('warns when the accepted packaging no longer fits (FR-024)', () => {
+    renderWithQueryClient(
+      <ProductPackagingCard
+        product={packagingProduct([], ['accepted_packaging_does_not_fit'])}
+        canEdit
+      />,
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent('no longer fits')
+  })
+
+  it('leaves a viewer the figures and no Save', () => {
+    renderWithQueryClient(<ProductPackagingCard product={packagingProduct([])} canEdit={false} />)
+    expect(screen.getByText('120.0 × 80.0 × 45.0 mm')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    expect(screen.getByRole('switch')).toBeDisabled()
   })
 })

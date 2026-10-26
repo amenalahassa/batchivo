@@ -11,12 +11,13 @@ import { EtsySettings } from '@/components/settings/EtsySettings'
 import { ShippingProfilesPanel } from '@/components/settings/ShippingProfilesPanel'
 import { GeneralSettings } from '@/components/settings/GeneralSettings'
 import { PricingPolicySettings } from '@/components/settings/PricingPolicySettings'
+import { PackagingSettings } from '@/components/settings/PackagingSettings'
 import { MarginDivergencePanel } from '@/components/pricing/MarginDivergencePanel'
 import { SquareSettings } from '@/components/settings/SquareSettings'
 import { TeamSettings } from '@/components/settings/TeamSettings'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAuth } from '@/contexts/AuthContext'
-import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
+import { canEditMonetaryPolicy, canEditOperationalFigures } from '@/lib/pricing/permissions'
 import { Building2, Coins, CreditCard, Store, Users } from 'lucide-react'
 
 export function Settings() {
@@ -24,6 +25,8 @@ export function Settings() {
   // A viewer or member reads the policy and meets disabled controls, rather
   // than a tab that is not there (FR-007a, FR-007c).
   const canEditPricing = canEditMonetaryPolicy(user)
+  // Clearance is an operational figure, not money: a member may set it.
+  const canEditPackaging = canEditOperationalFigures(user)
 
   return (
     <AppLayout>
@@ -89,6 +92,8 @@ export function Settings() {
             <ExchangeRatePanel canEdit={canEditPricing} />
             {/* Postage every margin deducts, by zone and weight (FR-024, T245). */}
             <ShippingProfilesPanel canEdit={canEditPricing} />
+            {/* Clearance the packaging advisor keeps around an item (FR-015). */}
+            <PackagingSettings canEdit={canEditPackaging} />
           </TabsContent>
 
           <TabsContent value="payments">

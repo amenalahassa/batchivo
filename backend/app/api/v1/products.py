@@ -78,6 +78,7 @@ from app.schemas.product_image import (
     ProductImageUpdate,
     ProductImageListResponse,
 )
+from app.api.v1.packaging import product_packaging_fields, variant_response
 from app.services.currency_edge import CostConversion, books_to_channel, channel_currency
 from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
@@ -281,6 +282,12 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
         "designer_logo_url": designer.logo_url if designer else None,
         # Categories
         "categories": category_responses,
+        # Packaging advisor: dimensions, the fragile flag and drift warnings,
+        # and each variant's effective dimensions and packaging (feature 003).
+        **product_packaging_fields(product, tenant),
+        "variants": [
+            variant_response(product, variant, tenant) for variant in (product.variants or [])
+        ],
     }
 
 
@@ -517,6 +524,7 @@ async def list_products(
                 "designer_name": designer.name if designer else None,
                 "designer_slug": designer.slug if designer else None,
                 "designer_logo_url": designer.logo_url if designer else None,
+                **product_packaging_fields(product, tenant),
             }
             product_responses.append(ProductResponse(**product_dict))
 
@@ -612,6 +620,7 @@ async def list_products(
             "designer_name": designer.name if designer else None,
             "designer_slug": designer.slug if designer else None,
             "designer_logo_url": designer.logo_url if designer else None,
+            **product_packaging_fields(product, tenant),
         }
         product_responses.append(ProductResponse(**product_dict))
 
@@ -3005,7 +3014,7 @@ async def list_product_variants(
     db: TenantDB,
 ) -> list[ProductVariantResponse]:
     """List all size variants for a product."""
-    await _get_product_for_tenant(product_id, tenant.id, db)
+    product = await _get_product_for_tenant(product_id, tenant.id, db)
 
     result = await db.execute(
         select(ProductVariant)
@@ -3016,7 +3025,7 @@ async def list_product_variants(
         .order_by(ProductVariant.display_order)
     )
     variants = result.scalars().all()
-    return [ProductVariantResponse.model_validate(v) for v in variants]
+    return [variant_response(product, v, tenant) for v in variants]
 
 
 @router.post(
@@ -3072,7 +3081,7 @@ async def create_product_variant(
     db.add(variant)
     await db.commit()
     await db.refresh(variant)
-    return ProductVariantResponse.model_validate(variant)
+    return variant_response(product, variant, tenant)
 
 
 @router.put(
@@ -3089,7 +3098,7 @@ async def update_product_variant(
     db: TenantDB,
 ) -> ProductVariantResponse:
     """Update a size variant."""
-    await _get_product_for_tenant(product_id, tenant.id, db)
+    product = await _get_product_for_tenant(product_id, tenant.id, db)
 
     result = await db.execute(
         select(ProductVariant).where(
@@ -3107,7 +3116,7 @@ async def update_product_variant(
 
     await db.commit()
     await db.refresh(variant)
-    return ProductVariantResponse.model_validate(variant)
+    return variant_response(product, variant, tenant)
 
 
 @router.delete(

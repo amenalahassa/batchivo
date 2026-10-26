@@ -7,6 +7,7 @@
 
 import { apiClient } from '../api'
 import type { Money } from '@/types/pricing'
+import type { ConfirmedParcel } from '@/types/packaging'
 
 // ==================== Types ====================
 
@@ -89,6 +90,10 @@ export interface Order {
   created_at: string
   updated_at: string
   items: OrderItem[]
+  /** Parcels confirmed at dispatch, as stored (packaging advisor). */
+  parcels?: ConfirmedParcel[]
+  /** True while no parcel is confirmed and the postage is derived: an estimate. */
+  postage_is_estimate?: boolean
 }
 
 /**

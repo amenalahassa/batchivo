@@ -100,8 +100,10 @@ async def upload_file(
             notes=notes,
         )
 
+        response = ModelFileResponse.model_validate(model_file)
         return ModelFileUploadResponse(
-            file=ModelFileResponse.model_validate(model_file),
+            file=response,
+            measurement=response.measurement,
             message=f"File '{file.filename}' uploaded successfully",
         )
 
@@ -147,8 +149,10 @@ async def link_local_file(
             notes=data.notes,
         )
 
+        response = enrich_file_response(model_file, service)
         return ModelFileUploadResponse(
-            file=enrich_file_response(model_file, service),
+            file=response,
+            measurement=response.measurement,
             message=f"Local file linked: '{data.local_path}'",
         )
 

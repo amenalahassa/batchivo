@@ -9,6 +9,7 @@ import { apiClient } from '../api'
 import { config } from '../config'
 import { getAuthTokens } from '../auth'
 import { detailText } from '../apiError'
+import type { Dimensions, FileMeasurement } from '@/types/packaging'
 
 /** Bearer header for the raw `fetch()` calls below (multipart uploads the
  * shared axios client doesn't carry), reading the same token store the
@@ -99,6 +100,8 @@ export interface ThreeMFParseResponse {
   thumbnail_available: boolean
   /** Per-plate breakdown (Bambu/Orca only; empty for PrusaSlicer or single-plate files). */
   plates: ThreeMFPlateInfo[]
+  /** The build's bounding box, measured but not stored (packaging advisor). */
+  measurement?: FileMeasurement | null
 }
 
 export interface ModelFile {
@@ -120,6 +123,8 @@ export interface ModelFile {
   uploaded_by_user_id?: string
   created_at: string
   updated_at: string
+  /** Bounding box measured from the file; null for G-code (packaging advisor). */
+  measurement?: FileMeasurement | null
 }
 
 export interface LocalPathValidationResponse {
@@ -168,6 +173,8 @@ export interface Model {
   actual_production_cost?: string
   production_cost_count: number
   production_cost_updated_at?: string
+  /** Length × width × height with where they came from (packaging advisor, FR-001). */
+  dimensions?: Dimensions | null
 }
 
 export interface ModelDetail extends Model {

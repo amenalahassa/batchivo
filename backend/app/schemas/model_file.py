@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.dimensions import Tenth
+
 
 class ModelFileType(str, Enum):
     """Types of 3D model files."""
@@ -73,6 +75,33 @@ class ModelFileUpdate(BaseModel):
     notes: Optional[str] = Field(None, description="User notes about the file")
 
 
+class MeasuredObjectOut(BaseModel):
+    """One object's size in a multi-object 3MF."""
+
+    name: str
+    length_mm: Tenth
+    width_mm: Tenth
+    height_mm: Tenth
+
+
+class FileMeasurementOut(BaseModel):
+    """A file's measured bounding box (research D3, contracts: model file upload).
+
+    Sizes are absent while ``status`` is ``pending`` and when the file could not
+    be measured; ``note`` then says why.
+    """
+
+    length_mm: Optional[Tenth] = None
+    width_mm: Optional[Tenth] = None
+    height_mm: Optional[Tenth] = None
+    objects: list[MeasuredObjectOut] = Field(default_factory=list)
+    note: Optional[str] = None
+    status: str = Field(..., description="done | pending | skipped | failed")
+    applied_to: list[str] = Field(
+        default_factory=list, description="Records that took it automatically"
+    )
+
+
 class ModelFileResponse(BaseModel):
     """Schema for file response."""
 
@@ -100,6 +129,9 @@ class ModelFileResponse(BaseModel):
     notes: Optional[str] = Field(None, description="User notes")
     uploaded_at: datetime = Field(..., description="When the file was uploaded")
     uploaded_by_user_id: Optional[UUID] = Field(None, description="User who uploaded")
+    measurement: Optional[FileMeasurementOut] = Field(
+        None, description="Measured bounding box; null for G-code"
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -117,6 +149,9 @@ class ModelFileUploadResponse(BaseModel):
     """Response after successful file upload."""
 
     file: ModelFileResponse = Field(..., description="Uploaded file details")
+    measurement: Optional[FileMeasurementOut] = Field(
+        None, description="The file's measurement; null for G-code"
+    )
     message: str = Field("File uploaded successfully", description="Success message")
 
 
@@ -179,4 +214,7 @@ class ThreeMFParseResponse(BaseModel):
             "empty for PrusaSlicer or single-plate files). Lets the caller combine "
             "multiple plates instead of only using the first."
         ),
+    )
+    measurement: Optional[FileMeasurementOut] = Field(
+        None, description="The file's measured bounding box, not stored"
     )

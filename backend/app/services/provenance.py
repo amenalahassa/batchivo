@@ -246,6 +246,20 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
         "current_cost_per_unit",
         "Unit cost of a consumable, such as the packaging a product ships in",
     ),
+    # A container's size, wall and empty weight (packaging advisor, FR-038).
+    # Postage is priced from the parcel they make, so each is a cost input:
+    # measured with a ruler and scale, or assumed from a supplier listing.
+    # Never observed -- no feed reports a box.
+    *(
+        _entry("consumable_type", field, description)
+        for field, description in (
+            ("inner_length_mm", "A box or mailer's inner length, which sets the parcel's size"),
+            ("inner_width_mm", "A box or mailer's inner width, which sets the parcel's size"),
+            ("inner_height_mm", "A box's inner height or a mailer's thickness"),
+            ("wall_mm", "The container's wall, added twice to each inner side"),
+            ("empty_weight_grams", "What the empty container adds to the parcel's weight"),
+        )
+    ),
     # The books currency (T272). Every cost input is entered in it and every
     # sale converts to it, so changing it is a monetary policy decision.
     _entry(
@@ -264,6 +278,10 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
             ("postage_cost", "What the operator pays to post one parcel in this bracket"),
             ("weight_bracket_min_grams", "Lowest parcel weight in this bracket"),
             ("weight_bracket_max_grams", "Highest parcel weight in this bracket"),
+            ("max_length_mm", "Longest side a parcel may have for this service"),
+            ("max_width_mm", "Middle side a parcel may have for this service"),
+            ("max_height_mm", "Shortest side a parcel may have for this service"),
+            ("volumetric_divisor", "The carrier's volumetric divisor, cm³ per kg"),
         )
     ),
 )

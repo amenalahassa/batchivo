@@ -32,6 +32,8 @@ PRICING_MODULES: frozenset[str] = frozenset(
         "fx_rates",
         "models",
         "orders",
+        # Accepting a container sets the packaging line of a product's cost.
+        "packaging",
         "pricing_policy",
         "printers",
         "production_runs",

@@ -2,17 +2,22 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.api.provenance_http import record_operator_origins
 from app.auth.dependencies import (
     CurrentTenant,
     CurrentUser,
     RequireAdmin,
+    RequireMember,
     TenantDB,
     role_in_tenant,
 )
 from app.database import get_db
+from app.models.tenant import Tenant
 from app.models.user import UserRole
+from app.schemas.dimensions import PackagingSettings, PackagingSettingsUpdate
+from app.services.packaging_advisor import get_packaging_settings
 from app.schemas.tenant_settings import (
     BrandingSettingsResponse,
     BrandingSettingsUpdate,
@@ -282,6 +287,56 @@ async def update_shop_settings(
 
     service = TenantSettingsService(db)
     return await service.update_shop_settings(tenant.id, data)
+
+
+# =============================================================================
+# Packaging Settings (packaging advisor, research D8)
+# =============================================================================
+
+
+def _packaging_settings(tenant: Tenant) -> PackagingSettings:
+    clearance, fragile_clearance, configured = get_packaging_settings(tenant)
+    return PackagingSettings(
+        clearance_mm=clearance, fragile_clearance_mm=fragile_clearance, configured=configured
+    )
+
+
+@router.get("/packaging", response_model=PackagingSettings)
+async def get_packaging_settings_endpoint(
+    tenant: CurrentTenant,
+    user: CurrentUser,
+    db: TenantDB,
+) -> PackagingSettings:
+    """The clearance kept around an item, standard and fragile (FR-015).
+
+    Until the operator saves their own, the defaults are returned and
+    ``configured`` is false, so a screen can say they are defaults.
+    """
+    row = await db.get(Tenant, tenant.id)
+    return _packaging_settings(row or tenant)
+
+
+@router.put("/packaging", response_model=PackagingSettings)
+async def update_packaging_settings(
+    data: PackagingSettingsUpdate,
+    tenant: CurrentTenant,
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
+) -> PackagingSettings:
+    """Save the clearances, as decimal strings in the tenant's settings."""
+    row = await db.get(Tenant, tenant.id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    settings = dict(row.settings or {})
+    settings["packaging"] = {
+        "clearance_mm": str(data.clearance_mm),
+        "fragile_clearance_mm": str(data.fragile_clearance_mm),
+    }
+    row.settings = settings
+    flag_modified(row, "settings")
+    await db.commit()
+    return _packaging_settings(row)
 
 
 # =============================================================================

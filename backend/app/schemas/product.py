@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.product_variant import FulfilmentType
+from app.schemas.dimensions import DimensionsOut
 
 
 # Product Model (join table) schemas
@@ -230,6 +231,9 @@ class ProductBase(BaseModel):
     weight_grams: Optional[int] = Field(None, ge=0, description="Product weight in grams")
     size_cm: Optional[Decimal] = Field(None, ge=0, description="Product size/length in centimeters")
     print_time_hours: Optional[Decimal] = Field(None, ge=0, description="Print time in hours")
+    is_fragile: bool = Field(
+        False, description="Needs the fragile clearance and protective wrap (FR-020)"
+    )
     # Multi-channel publishing fields
     tags: list[str] = Field(
         default_factory=list, description="Keyword tags for Shopify/Etsy discoverability"
@@ -291,6 +295,7 @@ class ProductUpdate(BaseModel):
     weight_grams: Optional[int] = Field(None, ge=0)
     size_cm: Optional[Decimal] = Field(None, ge=0)
     print_time_hours: Optional[Decimal] = Field(None, ge=0)
+    is_fragile: Optional[bool] = None
     # Multi-channel publishing fields
     tags: Optional[list[str]] = None
     product_type: Optional[str] = Field(None, max_length=100)
@@ -334,6 +339,14 @@ class ProductResponse(ProductBase):
     designer_name: Optional[str] = Field(None, description="Designer name")
     designer_slug: Optional[str] = Field(None, description="Designer slug for URLs")
     designer_logo_url: Optional[str] = Field(None, description="Designer logo URL")
+    # Packaging advisor (feature 003). `size_cm` above is kept unchanged (FR-005).
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="Length × width × height in mm, with source and date (FR-001/002)"
+    )
+    packaging_warnings: list[str] = Field(
+        default_factory=list,
+        description="e.g. 'accepted_packaging_does_not_fit', computed on read (FR-024)",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -477,5 +490,38 @@ class ProductVariantResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    # Packaging advisor overrides (clarification Q1). Null inherits the product's.
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="The variant's dimensions, or the product's marked inherited"
+    )
+    packaging_consumable_id: Optional[UUID] = Field(
+        None, description="The variant's own packaging (null = the product's)"
+    )
+    packaging_quantity: Optional[int] = Field(
+        None, description="The variant's own packaging quantity (null = the product's)"
+    )
+    effective_packaging: Optional["EffectivePackaging"] = Field(
+        None, description="The packaging in force for one unit of this size"
+    )
+    packaging_notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "'variant_packaging_not_costed' when this size's packaging differs from the "
+            "product's, whose packaging the cost breakdown uses (FR-039)"
+        ),
+    )
+    packaging_warnings: list[str] = Field(default_factory=list, description="FR-024")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EffectivePackaging(BaseModel):
+    """The container and quantity one unit ships in, and whether it is the product's."""
+
+    consumable_id: UUID
+    name: str
+    quantity: int
+    inherited: bool
+
+
+ProductVariantResponse.model_rebuild()

@@ -13,6 +13,8 @@
  * A quantity, a reorder point and a lead time stay numbers: they count things.
  */
 
+import type { PackagingKind } from './packaging'
+
 /** A money amount as the exact decimal string the API sent, e.g. "20.30". */
 type Money = string
 
@@ -46,10 +48,29 @@ export interface ConsumableTypeBase {
 
   // Status
   is_active: boolean // Whether this consumable is active
+
+  // Packaging attributes (packaging advisor). Decimal strings, all optional:
+  // a consumable that is not packaging leaves them null (FR-013).
+  packaging_kind?: PackagingKind | null
+  inner_length_mm?: string | null
+  inner_width_mm?: string | null
+  /** For a mailer, its maximum usable thickness. */
+  inner_height_mm?: string | null
+  wall_mm?: string | null
+  empty_weight_grams?: string | null
+  /** Void fill only: the volume one unit fills. */
+  fill_volume_ml?: string | null
+}
+
+/** How a container's size, wall and weight are known (FR-038). Never "observed". */
+export interface PackagingProvenanceInput {
+  source: 'measured' | 'assumed'
 }
 
 // Create consumable type request (POST /api/v1/consumables/types)
-export type ConsumableTypeCreate = ConsumableTypeBase
+export interface ConsumableTypeCreate extends ConsumableTypeBase {
+  packaging_provenance?: PackagingProvenanceInput | null
+}
 
 // Update consumable type request (PUT /api/v1/consumables/types/{id})
 export interface ConsumableTypeUpdate {
@@ -67,6 +88,14 @@ export interface ConsumableTypeUpdate {
   supplier_url?: string | null
   typical_lead_days?: number | null
   is_active?: boolean
+  packaging_kind?: PackagingKind | null
+  inner_length_mm?: string | null
+  inner_width_mm?: string | null
+  inner_height_mm?: string | null
+  wall_mm?: string | null
+  empty_weight_grams?: string | null
+  fill_volume_ml?: string | null
+  packaging_provenance?: PackagingProvenanceInput | null
 }
 
 // Consumable type response
@@ -83,6 +112,10 @@ export interface ConsumableTypeResponse extends ConsumableTypeBase {
   priced_by_purchase_id?: string | null
   priced_by_purchase_date?: string | null
   stock_value: Money // Total value of stock on hand
+  /** A box or mailer without its inner size: the advisor cannot use it (FR-013). */
+  packaging_incomplete?: boolean
+  /** Where each packaging figure came from: 'measured' | 'assumed' | null. */
+  packaging_provenance?: Record<string, string | null>
 }
 
 // List response for consumable types
@@ -101,6 +134,8 @@ export interface ConsumableTypeListParams {
   category?: string
   is_active?: boolean
   low_stock_only?: boolean
+  /** Comma-separated packaging kinds, e.g. "box,mailer". */
+  packaging_kind?: string
 }
 
 // =============================================================================

@@ -10,7 +10,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { ArrowLeft, Edit, Loader2, SlidersHorizontal, Trash2, Package, TrendingUp, TrendingDown, Minus } from 'lucide-react'
 
-import { getModel, deleteModel } from '@/lib/api/models'
+import { getModel, getModelFiles, deleteModel } from '@/lib/api/models'
+import { fileNamesOf, latestMeasurementOffer } from '@/lib/packaging'
+import { DimensionsEditor } from '@/components/products/DimensionsEditor'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -82,6 +84,12 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
   const { data: model, isLoading, error } = useQuery({
     queryKey: ['model', modelId],
     queryFn: () => getModel(modelId),
+  })
+
+  // The files' measurements name a measured source and can be adopted.
+  const { data: files } = useQuery({
+    queryKey: ['model-files', modelId],
+    queryFn: () => getModelFiles(modelId),
   })
 
   const deleteMutation = useMutation({
@@ -392,6 +400,19 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
               <p className="font-medium text-foreground">{new Date(model.updated_at).toLocaleDateString()}</p>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Dimensions (feature 003): entered, or measured from an uploaded file */}
+      <Card>
+        <CardContent className="pt-6">
+          <DimensionsEditor
+            target={{ kind: 'model', modelId }}
+            dimensions={model.dimensions}
+            canEdit={canEditProfile}
+            fileNames={fileNamesOf(files)}
+            offer={latestMeasurementOffer(files)}
+          />
         </CardContent>
       </Card>
 

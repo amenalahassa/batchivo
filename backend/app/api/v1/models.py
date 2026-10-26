@@ -51,6 +51,7 @@ from app.schemas.model import (
 )
 from app.core import clock
 from app.services.cost_resolution import model_cost_breakdown, with_landed_cost
+from app.services.item_dimensions import dimensions_out
 from app.services.production_run import realised_unit_costs
 from app.services.costing import CostingService
 from app.services.pricing_policy import resolve_cost_policy
@@ -97,6 +98,7 @@ async def model_with_cost(model: Model, tenant: Tenant, db: AsyncSession) -> dic
         "actual_production_cost": realised.average if realised else None,
         "production_cost_count": realised.units if realised else 0,
         "production_cost_updated_at": realised.last_completed_at if realised else None,
+        "dimensions": dimensions_out(model),
     }
 
 
@@ -261,6 +263,7 @@ async def list_models(
             **m.__dict__,
             "total_cost": cost_breakdown.total_cost,
             "incomplete_reasons": cost_breakdown.incomplete_reasons,
+            "dimensions": dimensions_out(m),
         }
         # Remove SQLAlchemy internal state
         model_dict.pop("_sa_instance_state", None)

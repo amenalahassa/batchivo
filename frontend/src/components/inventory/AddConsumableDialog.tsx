@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2, RefreshCw } from 'lucide-react'
+import { PackagingFieldsSection } from './PackagingFieldsSection'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
@@ -345,6 +346,8 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
               />
             </div>
           </div>
+
+          <PackagingFieldsSection value={formData} onChange={handleInputChange} />
 
           {/* Status */}
           <div className="border-t pt-4">

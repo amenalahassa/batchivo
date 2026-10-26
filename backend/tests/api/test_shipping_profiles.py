@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.shipping_profile import ShippingProfile
 from app.models.user import UserRole
+from app.services.dims import Parcel
 
 pytestmark = pytest.mark.asyncio
 
@@ -368,6 +369,11 @@ class TestDeletingAShippingProfile:
 # ============================================================================
 
 
+def _parcel(grams: str) -> Parcel:
+    """A weight-only parcel, as a profile without size limits sees one."""
+    return Parcel(grams=Decimal(grams), outer=None)
+
+
 class TestTheBracketLookup:
     async def test_a_parcel_on_a_boundary_belongs_to_the_upper_bracket(
         self, client: AsyncClient, db_session: AsyncSession
@@ -387,9 +393,9 @@ class TestTheBracketLookup:
         stored = sorted(await _stored(db_session), key=lambda p: p.weight_bracket_min_grams)
         light, heavy = stored
 
-        assert light.covers(Decimal("249.99")) is True
-        assert light.covers(Decimal("250")) is False
-        assert heavy.covers(Decimal("250")) is True
+        assert light.covers(_parcel("249.99")) is True
+        assert light.covers(_parcel("250")) is False
+        assert heavy.covers(_parcel("250")) is True
 
     async def test_an_open_ended_bracket_covers_any_heavier_parcel(
         self, client: AsyncClient, db_session: AsyncSession
@@ -401,8 +407,8 @@ class TestTheBracketLookup:
 
         profile = (await _stored(db_session))[0]
 
-        assert profile.covers(Decimal("50000")) is True
-        assert profile.covers(Decimal("1999")) is False
+        assert profile.covers(_parcel("50000")) is True
+        assert profile.covers(_parcel("1999")) is False
 
 
 # ============================================================================
@@ -518,3 +524,88 @@ class TestARepricingSupersedesTheProfile:
         assert str(origin.entity_id) == created["id"]
         assert origin.source == "measured"
         assert origin.authorised_by_role in {"admin", "owner"}
+
+
+# ============================================================================
+# Size classes and volumetric weight (packaging advisor, T046)
+# ============================================================================
+
+LARGE_LETTER = {
+    "name": "Large letter",
+    "max_length_mm": "353",
+    "max_width_mm": "250",
+    "max_height_mm": "25",
+    "weight_bracket_max_grams": "750",
+    "postage_cost": "2.70",
+}
+
+
+class TestSizeClasses:
+    async def test_limits_and_divisor_are_saved(self, client: AsyncClient) -> None:
+        response = await client.post(URL, json=_body(**LARGE_LETTER, volumetric_divisor="5000"))
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        assert (body["max_length_mm"], body["max_width_mm"], body["max_height_mm"]) == (
+            "353.0",
+            "250.0",
+            "25.0",
+        )
+        assert body["volumetric_divisor"] == "5000.0"
+
+    async def test_a_size_class_may_share_a_weight_bracket(self, client: AsyncClient) -> None:
+        """A large letter and a parcel both take 100 g; the size decides between them."""
+        assert (await client.post(URL, json=_body())).status_code == 201
+        assert (await client.post(URL, json=_body(**LARGE_LETTER))).status_code == 201
+        # Two profiles of the same class claiming one weight are still refused.
+        assert (await client.post(URL, json=_body(**LARGE_LETTER))).status_code == 422
+
+    async def test_partial_limits_are_a_422(self, client: AsyncClient) -> None:
+        response = await client.post(URL, json=_body(max_length_mm="353", max_width_mm="250"))
+        assert response.status_code == 422
+        assert "max_height_mm" in response.text
+
+    async def test_a_zero_limit_or_divisor_is_a_422(self, client: AsyncClient) -> None:
+        assert (
+            await client.post(URL, json=_body(**{**LARGE_LETTER, "max_height_mm": "0"}))
+        ).status_code == 422
+        assert (await client.post(URL, json=_body(volumetric_divisor="0"))).status_code == 422
+
+    async def test_an_update_leaving_partial_limits_is_a_422(self, client: AsyncClient) -> None:
+        created = (await client.post(URL, json=_body(**LARGE_LETTER))).json()
+        response = await client.put(f"{URL}/{created['id']}", json={"max_height_mm": None})
+        assert response.status_code == 422
+
+    async def test_changing_a_limit_supersedes_a_profile_in_force(
+        self, client: AsyncClient
+    ) -> None:
+        created = (await client.post(URL, json=_body(**LARGE_LETTER))).json()
+        response = await client.put(
+            f"{URL}/{created['id']}",
+            json={"max_height_mm": "30", "effective_from": "2026-06-01"},
+        )
+
+        assert response.status_code == 200, response.text
+        successor = response.json()
+        assert successor["id"] != created["id"]
+        assert successor["max_height_mm"] == "30.0"
+        assert successor["max_length_mm"] == "353.0"
+        assert successor["effective_from"] == "2026-06-01"
+        old = (await client.get(f"{URL}/{created['id']}")).json()
+        assert old["effective_to"] == "2026-05-31"
+        assert old["max_height_mm"] == "25.0"
+
+    async def test_a_member_is_refused(self, client: AsyncClient, as_role) -> None:
+        async with as_role(UserRole.MEMBER) as member:
+            response = await member.post(URL, json=_body(**LARGE_LETTER))
+        assert response.status_code == 403
+
+    async def test_an_unauthenticated_create_is_a_401(
+        self, unauthenticated_client: AsyncClient
+    ) -> None:
+        response = await unauthenticated_client.post(URL, json=_body(**LARGE_LETTER))
+        assert response.status_code == 401
+
+    async def test_an_unknown_profile_is_a_404(self, client: AsyncClient) -> None:
+        response = await client.put(f"{URL}/{uuid4()}", json={"max_height_mm": "30"})
+        assert response.status_code == 404

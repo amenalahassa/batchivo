@@ -13,6 +13,11 @@ const sidebars: SidebarsConfig = {
       label: 'How Pricing Works',
     },
     {
+      type: 'doc',
+      id: 'packaging',
+      label: 'Packaging & Parcels',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,

@@ -473,6 +473,12 @@ export interface ShippingProfile {
   effective_from: string
   /** Set once superseded or withdrawn; the profile stays for orders it costed. */
   effective_to?: string | null
+  /** A size class in mm (all three or none); null for a weight-only service. */
+  max_length_mm?: string | null
+  max_width_mm?: string | null
+  max_height_mm?: string | null
+  /** The carrier's volumetric divisor, cm³ per kg; null charges actual weight. */
+  volumetric_divisor?: string | null
 }
 
 export interface ShippingProfileCreate {
@@ -483,6 +489,10 @@ export interface ShippingProfileCreate {
   postage_cost: Money
   carrier?: string | null
   effective_from: string
+  max_length_mm?: string | null
+  max_width_mm?: string | null
+  max_height_mm?: string | null
+  volumetric_divisor?: string | null
 }
 
 export type ShippingProfileUpdate = Partial<ShippingProfileCreate>

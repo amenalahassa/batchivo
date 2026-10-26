@@ -303,6 +303,11 @@ export function ConsumableList() {
                         {consumable.is_low_stock && (
                           <Badge variant="warning">Low</Badge>
                         )}
+                        {consumable.packaging_incomplete && (
+                          <Badge variant="outline" title="Set its inner size so the advisor can suggest it">
+                            Incomplete
+                          </Badge>
+                        )}
                       </div>
                     </div>
 
@@ -426,6 +431,11 @@ export function ConsumableList() {
                             )}
                             {consumable.is_low_stock && (
                               <Badge variant="warning">Low</Badge>
+                            )}
+                            {consumable.packaging_incomplete && (
+                              <Badge variant="outline" title="Set its inner size so the advisor can suggest it">
+                                Incomplete
+                              </Badge>
                             )}
                           </div>
                         </TableCell>

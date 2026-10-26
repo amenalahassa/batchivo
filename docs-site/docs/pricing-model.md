@@ -145,6 +145,31 @@ point: free shipping is a cost, and it should appear as one.
 Shipping revenue is never netted out before fees are applied — a marketplace
 charging its percentage on item-plus-shipping charges it on what you collected.
 
+#### How postage is worked out
+
+Postage comes from your shipping profiles, priced for the **packed parcel**:
+the items' weight plus the empty weight of the box and any void fill, and the
+box's outer size (its inner size plus twice its wall). A profile with size
+limits — a carrier's large-letter or small-parcel class — is tried before a
+weight-only one, cheapest first, and only for a parcel that fits it whichever
+way round. A profile with a volumetric divisor charges the larger of the
+actual weight and the volume weight (L × W × H in cm³ ÷ divisor, in kg). If
+you have no size-limited profiles, postage is chosen exactly as before.
+
+- **One item** ships in the packaging you accepted for it.
+- **Several items** are packed together by the
+  [packaging advisor](./packaging.md), into as few boxes as hold them, and
+  each box's postage is added up.
+- A product with no accepted packaging, or an order the advisor cannot pack
+  (an item without dimensions), is priced by weight alone, and the order says
+  so.
+- A box without an empty weight makes the postage **unknown**, never zero.
+
+Until you confirm the parcels at dispatch the postage is an **estimate**. When
+you confirm them, the postage is set from the boxes you actually used — unless
+you entered the postage yourself, which is never replaced. A settled order
+keeps its postage when a profile or a box changes afterwards.
+
 ### Sales tax
 
 Margin is always computed on tax-exclusive amounts. Each channel records who

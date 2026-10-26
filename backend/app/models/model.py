@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+from app.models.dimensions import DimensionsMixin, dimension_constraints
 
 if TYPE_CHECKING:
     from app.models.model_component import ModelComponent
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from app.models.production_run_plate import ProductionRunPlate
 
 
-class Model(Base, UUIDMixin, TimestampMixin):
+class Model(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
     """
     Model represents a 3D printed item (individual printed part).
 
@@ -327,6 +328,7 @@ class Model(Base, UUIDMixin, TimestampMixin):
     files: Mapped[list["ModelFile"]] = relationship(
         "ModelFile",
         back_populates="model",
+        foreign_keys="ModelFile.model_id",
         cascade="all, delete-orphan",
         lazy="selectin",
     )
@@ -345,6 +347,7 @@ class Model(Base, UUIDMixin, TimestampMixin):
             "failure_mode IN ('per_part', 'per_plate')",
             name="check_model_failure_mode",
         ),
+        *dimension_constraints("models"),
         {"comment": "3D printed model/part with Bill of Materials and cost tracking"},
     )
 

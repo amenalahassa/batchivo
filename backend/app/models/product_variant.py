@@ -5,13 +5,23 @@ from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    JSON,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+from app.models.dimensions import DimensionsMixin, dimension_constraints
 
 if TYPE_CHECKING:
+    from app.models.consumable import ConsumableType
     from app.models.product import Product
 
 
@@ -72,7 +82,7 @@ def get_size_options(size_system: ProductSizeSystem) -> list[str]:
     return SIZE_PRESETS.get(size_system, [])
 
 
-class ProductVariant(Base, UUIDMixin, TimestampMixin):
+class ProductVariant(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
     """
     Product variant representing a sized version of a product.
 
@@ -198,15 +208,39 @@ class ProductVariant(Base, UUIDMixin, TimestampMixin):
         comment="Whether this variant is available",
     )
 
+    # Packaging override (clarification Q1). Null inherits the product's; one
+    # helper resolves it (`item_dimensions.effective_packaging`). Packing and
+    # postage only -- costing has no variant path (research D11, FR-039).
+    packaging_consumable_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("consumable_types.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Packaging consumable for this size (null = the product's)",
+    )
+    packaging_quantity: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Quantity of the packaging consumable (null = the product's)",
+    )
+
     # Relationships
     product: Mapped["Product"] = relationship(
         back_populates="variants",
+    )
+    packaging_consumable: Mapped[Optional["ConsumableType"]] = relationship(
+        "ConsumableType",
+        foreign_keys=[packaging_consumable_id],
+        lazy="selectin",
     )
 
     # Constraints
     __table_args__ = (
         UniqueConstraint("product_id", "size", name="uq_variant_product_size"),
         UniqueConstraint("product_id", "sku", name="uq_variant_product_sku"),
+        *dimension_constraints("product_variants"),
+        CheckConstraint(
+            "packaging_quantity IS NULL OR packaging_quantity > 0",
+            name="ck_product_variants_packaging_quantity",
+        ),
         {
             "comment": "Size variants for products with per-size pricing and stock/print-to-order flags"
         },

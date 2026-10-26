@@ -134,6 +134,7 @@ module = [
     # postage on every margin and snapshot, realised refunds, the cost-input
     # estimates, and a run's frozen and realised filament cost.
     "app.services.postage",
+    "app.services.order_parcel_service",
     "app.services.refund_actuals",
     "app.services.variance_service",
     "app.services.run_costs",

@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone, date
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
@@ -13,7 +13,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order_parcel import OrderParcel
 from app.models.product import Product
+from app.schemas.packaging import (
+    ConfirmParcelsRequest,
+    ConfirmParcelsResponse,
+    EstimatedPostageOut,
+    OrderPackagingSuggestionsResponse,
+    OrderParcelOut,
+    OrderParcelSuggestionOut,
+    OrderWarningOut,
+    ParcelContentOut,
+    SizeOut,
+    StockWarningOut,
+    VoidFillOut,
+)
+from app.services.order_parcel_service import (
+    InvalidParcels,
+    OrderParcelService,
+    ParcelRequest,
+    ParcelsAlreadyConfirmed,
+)
 from app.models.sales_channel import SalesChannel
 from app.models.user import User
 from app.core.money import pence_to_pounds, pounds_to_pence
@@ -162,6 +182,11 @@ class OrderResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[OrderItemResponse] = []
+    # The parcels confirmed at dispatch, as stored (packaging advisor, D10).
+    parcels: list[OrderParcelOut] = []
+    # True while no parcel is confirmed and the postage is the system's
+    # derivation from the products' packaging -- an estimate, not a label.
+    postage_is_estimate: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -306,9 +331,13 @@ async def _generate_order_number(db: AsyncSession, tenant: CurrentTenant) -> str
     return f"{order_prefix}-{today}-{order_seq:03d}"
 
 
-def _order_response(order: Order) -> OrderResponse:
+def _order_response(order: Order, parcels: Sequence[OrderParcel] = ()) -> OrderResponse:
     """Convert an order model into the API response shape."""
     return OrderResponse(
+        parcels=[OrderParcelOut.of(parcel) for parcel in parcels],
+        postage_is_estimate=(
+            not parcels and order.postage_paid is not None and order.actuals_source == "derived"
+        ),
         id=str(order.id),
         order_number=order.order_number,
         status=order.status,
@@ -630,44 +659,123 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    return OrderResponse(
-        id=str(order.id),
-        order_number=order.order_number,
-        status=order.status,
-        customer_email=order.customer_email,
-        customer_name=order.customer_name,
-        customer_phone=order.customer_phone,
-        shipping_address_line1=order.shipping_address_line1,
-        shipping_address_line2=order.shipping_address_line2,
-        shipping_city=order.shipping_city,
-        shipping_county=order.shipping_county,
-        shipping_postcode=order.shipping_postcode,
-        shipping_country=order.shipping_country,
-        shipping_method=order.shipping_method,
-        shipping_cost=order.shipping_cost,
-        postage_paid=order.postage_paid,
-        sales_tax_collected=order.sales_tax_collected,
-        tax_exclusive_derived=bool(order.tax_exclusive_derived),
-        actuals_source=order.actuals_source,
-        actuals_recorded_by_user_id=(
-            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+    return _order_response(order, await _parcels_of(db, tenant, order))
+
+
+async def _parcels_of(db: AsyncSession, tenant: CurrentTenant, order: Order) -> list[OrderParcel]:
+    rows = await db.execute(
+        select(OrderParcel)
+        .where(OrderParcel.order_id == order.id, OrderParcel.tenant_id == tenant.id)
+        .order_by(OrderParcel.sequence)
+    )
+    return list(rows.scalars().all())
+
+
+async def _order_or_404(db: AsyncSession, tenant: CurrentTenant, order_id: UUID) -> Order:
+    order = (
+        await db.execute(
+            select(Order)
+            .where(Order.id == order_id, Order.tenant_id == tenant.id)
+            .options(selectinload(Order.items))
+        )
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+@router.get("/{order_id}/packaging-suggestions", response_model=OrderPackagingSuggestionsResponse)
+async def get_order_packaging_suggestions(
+    order_id: UUID,
+    db: TenantDB,
+    tenant: CurrentTenant = None,
+) -> OrderPackagingSuggestionsResponse:
+    """How the order's units would be packed and what posting them would cost (US6).
+
+    Computed on read and never stored (FR-022); the postage is an estimate
+    until the parcels are confirmed.
+    """
+    order = await _order_or_404(db, tenant, order_id)
+    suggestion = await OrderParcelService(db, tenant).suggest(order)
+    lines = suggestion.lines
+    parcels = []
+    for planned in suggestion.plan.parcels:
+        fill = next(((c, q) for c, q in planned.packing if c.packaging_kind == "void_fill"), None)
+        outer = planned.parcel.outer
+        parcels.append(
+            OrderParcelSuggestionOut(
+                consumable_id=planned.container.id,
+                name=planned.container.name,
+                contents=[
+                    ParcelContentOut(
+                        product_id=lines[index][0].id,  # type: ignore[union-attr]
+                        sku=lines[index][2],
+                        quantity=quantity,
+                    )
+                    for index, quantity in planned.contents
+                ],
+                outer_mm=(
+                    SizeOut(length_mm=outer.length, width_mm=outer.width, height_mm=outer.height)
+                    if outer is not None
+                    else None
+                ),
+                packed_weight_grams=planned.parcel.grams,
+                void_fill=(
+                    VoidFillOut(consumable_id=fill[0].id, name=fill[0].name, quantity=fill[1])
+                    if fill is not None
+                    else None
+                ),
+                notes=list(planned.parcel.reasons),
+            )
+        )
+    estimate = suggestion.estimate
+    return OrderPackagingSuggestionsResponse(
+        parcels=parcels,
+        estimated_postage=EstimatedPostageOut(
+            amount=estimate.amount,
+            zone=estimate.zone,
+            reason=estimate.reason,
+            notes=list(estimate.notes),
         ),
-        subtotal=order.subtotal,
-        total=order.total,
-        currency=order.currency,
-        payment_provider=order.payment_provider,
-        payment_id=order.payment_id,
-        payment_status=order.payment_status,
-        tracking_number=order.tracking_number,
-        tracking_url=order.tracking_url,
-        shipped_at=order.shipped_at,
-        delivered_at=order.delivered_at,
-        fulfilled_at=order.fulfilled_at,
-        customer_notes=order.customer_notes,
-        internal_notes=order.internal_notes,
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        items=[_item_response(item, order) for item in order.items],
+        warnings=[OrderWarningOut(**w) for w in suggestion.plan.warnings],
+    )
+
+
+@router.post("/{order_id}/parcels", response_model=ConfirmParcelsResponse, status_code=201)
+async def confirm_order_parcels(
+    order_id: UUID,
+    body: ConfirmParcelsRequest,
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
+    tenant: CurrentTenant = None,
+) -> ConfirmParcelsResponse:
+    """Record the parcels the order was sent in, once (FR-028, D10).
+
+    Takes their packaging from stock and sets the postage they determine,
+    unless an operator entered the postage.
+    """
+    order = await _order_or_404(db, tenant, order_id)
+    requests = [
+        ParcelRequest(
+            items=[(item.consumable_id, item.quantity) for item in parcel.items],
+            contents=([(c.sku, c.quantity) for c in parcel.contents] if parcel.contents else None),
+        )
+        for parcel in body.parcels
+    ]
+    try:
+        confirmed = await OrderParcelService(db, tenant, user).confirm(order, requests)
+    except ParcelsAlreadyConfirmed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidParcels as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    found = confirmed.postage
+    return ConfirmParcelsResponse(
+        parcels=[OrderParcelOut.of(parcel) for parcel in confirmed.parcels],
+        postage=EstimatedPostageOut(
+            amount=found.amount, zone=found.zone, reason=found.reason, is_estimate=False
+        ),
+        warnings=[StockWarningOut(**w) for w in confirmed.warnings],
     )
 
 

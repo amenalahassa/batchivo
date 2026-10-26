@@ -124,6 +124,17 @@ describe('the model screens derive no price of their own', () => {
   })
 })
 
+describe('model dimensions (feature 003)', () => {
+  it('mounts the dimensions editor with the files a measurement can come from', () => {
+    const source = sourceOf('ModelDetail.tsx')
+    expect(source).toContain('<DimensionsEditor')
+    expect(source).toContain("target={{ kind: 'model', modelId }}")
+    expect(source).toContain('offer={latestMeasurementOffer(files)}')
+    // A viewer gets the same rule as the cost profile: read, not write.
+    expect(source).toContain('canEdit={canEditProfile}')
+  })
+})
+
 describe('the product wizard sums no make-cost of its own', () => {
   /**
    * The file with its comments taken out.

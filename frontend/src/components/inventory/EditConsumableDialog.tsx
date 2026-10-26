@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2 } from 'lucide-react'
+import { PackagingFieldsSection } from './PackagingFieldsSection'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 import { useCurrency } from '@/hooks/useCurrency'
@@ -70,6 +71,20 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
         supplier_url: consumable.supplier_url,
         typical_lead_days: consumable.typical_lead_days,
         is_active: consumable.is_active,
+        packaging_kind: consumable.packaging_kind ?? null,
+        inner_length_mm: consumable.inner_length_mm ?? null,
+        inner_width_mm: consumable.inner_width_mm ?? null,
+        inner_height_mm: consumable.inner_height_mm ?? null,
+        wall_mm: consumable.wall_mm ?? null,
+        empty_weight_grams: consumable.empty_weight_grams ?? null,
+        fill_volume_ml: consumable.fill_volume_ml ?? null,
+        // The select starts at what the stored figures say (FR-038).
+        packaging_provenance: {
+          source:
+            consumable.packaging_provenance?.inner_length_mm === 'measured'
+              ? 'measured'
+              : 'assumed',
+        },
       })
     }
   }, [consumable])
@@ -344,6 +359,12 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
                 />
               </div>
             </div>
+
+            <PackagingFieldsSection
+              value={formData}
+              onChange={handleInputChange}
+              origins={consumable?.packaging_provenance}
+            />
 
             {/* Status */}
             <div className="border-t pt-4">

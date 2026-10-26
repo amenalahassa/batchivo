@@ -221,6 +221,7 @@ from app.api.v1 import (
     newsletter,
     onboarding,
     orders,
+    packaging,
     pages,
     payments,
     platform,
@@ -294,6 +295,9 @@ app.include_router(
     tags=["print-queue"],
 )
 app.include_router(products.router, prefix=f"{settings.api_v1_prefix}/products", tags=["products"])
+# Packaging spans products, variants and models (dimensions, suggestions), so
+# it sits at the API root with the full paths in the router (feature 003).
+app.include_router(packaging.router, prefix=settings.api_v1_prefix, tags=["packaging"])
 app.include_router(
     categories.router, prefix=f"{settings.api_v1_prefix}/categories", tags=["categories"]
 )

@@ -20,8 +20,14 @@ from app.models.model import Model
 from app.models.model_file import FileLocation, ModelFile, ModelFileType
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.schemas.model_file import ThreeMFParseResponse, ThreeMFPlateMetadata
+from app.schemas.model_file import (
+    FileMeasurementOut,
+    ThreeMFParseResponse,
+    ThreeMFPlateMetadata,
+)
+from app.services import mesh_bounds
 from app.services.image_storage import ImageStorageError, get_image_storage
+from app.services.item_dimensions import apply_measurement, record_measurement
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +235,28 @@ def _parse_prusaslicer_config(raw: bytes) -> Optional[ThreeMFParseResponse]:
 
 
 def parse_3mf_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """Slicer metadata plus the file's measured bounding box (T036), never stored."""
+    result = _parse_3mf_slicer_metadata(file_content)
+    measurement = mesh_bounds.measure(file_content, ".3mf")
+    if measurement is not None:
+        result.measurement = measurement_out(measurement)
+    return result
+
+
+def measurement_out(measurement: "mesh_bounds.Measurement") -> FileMeasurementOut:
+    """A transient measurement in the API's shape (contracts: model file upload)."""
+    overall = measurement.overall
+    return FileMeasurementOut(
+        length_mm=overall.length if overall else None,
+        width_mm=overall.width if overall else None,
+        height_mm=overall.height if overall else None,
+        objects=mesh_bounds.objects_json(measurement.objects),
+        note=measurement.note,
+        status=measurement.status,
+    )
+
+
+def _parse_3mf_slicer_metadata(file_content: bytes) -> ThreeMFParseResponse:
     """
     Parse embedded slicer metadata (print time, filament weight, plate count)
     from a 3MF file.
@@ -465,8 +493,11 @@ class ModelFileService:
         )
 
         self.db.add(model_file)
+        queue = await self._measure(model, model_file, extension, file_content, len(file_content))
         await self.db.commit()
         await self.db.refresh(model_file)
+        if queue:
+            await self._queue_measurement(model_file)
 
         logger.info(
             f"Uploaded file '{original_filename}' for model {model_id} "
@@ -550,14 +581,79 @@ class ModelFileService:
         )
 
         self.db.add(model_file)
+        content = None
+        if (
+            file_size is not None
+            and file_size <= mesh_bounds.INLINE_MEASURE_BYTES
+            and mesh_bounds.is_measurable(extension)
+        ):
+            content = path_obj.read_bytes()
+        queue = await self._measure(model, model_file, extension, content, file_size)
         await self.db.commit()
         await self.db.refresh(model_file)
+        if queue:
+            await self._queue_measurement(model_file)
 
         logger.info(
             f"Created local reference for model {model_id}: '{local_path}' "
             f"(file_id={model_file.id})"
         )
         return model_file
+
+    async def _measure(
+        self,
+        model: Model,
+        model_file: ModelFile,
+        extension: str,
+        content: Optional[bytes],
+        size: Optional[int],
+    ) -> bool:
+        """Measure an STL or 3MF and offer it to the model (research D3, FR-007 to FR-010).
+
+        Up to ``INLINE_MEASURE_BYTES`` the file is measured here; a larger one
+        is marked ``pending`` and the caller queues it, which this returns True
+        for. Nothing here can fail the upload: a bad mesh is recorded as
+        ``failed`` with its reason.
+        """
+        if not mesh_bounds.is_measurable(extension):
+            return False
+        if size is None:
+            record_measurement(
+                model_file,
+                mesh_bounds.Measurement(
+                    overall=None, note="The linked file was not found", status="failed"
+                ),
+            )
+            return False
+        if size > mesh_bounds.MAX_MEASURE_BYTES:
+            record_measurement(model_file, mesh_bounds.skipped(size))
+            return False
+        if content is None or size > mesh_bounds.INLINE_MEASURE_BYTES:
+            model_file.measurement_status = "pending"
+            return True
+
+        measurement = mesh_bounds.measure(content, extension)
+        if measurement is None:  # pragma: no cover - is_measurable said it was a mesh
+            return False
+        record_measurement(model_file, measurement)
+        await self.db.flush()
+        model_file.measurement_applied_to = await apply_measurement(
+            self.db, self.tenant, model, model_file
+        )
+        return False
+
+    async def _queue_measurement(self, model_file: ModelFile) -> None:
+        """Hand a large file to the worker; a broker that cannot be reached is recorded."""
+        from app.tasks.mesh_measure import measure_model_file
+
+        try:
+            measure_model_file.delay(str(self.tenant.id), str(model_file.id))
+        except Exception as exc:  # noqa: BLE001 - the upload has already succeeded
+            logger.warning(f"Could not queue measurement of file {model_file.id}: {exc}")
+            model_file.measurement_status = "failed"
+            model_file.measurement_note = "Could not queue the measurement; upload it again later"
+            await self.db.commit()
+            await self.db.refresh(model_file)
 
     def _get_content_type_from_extension(self, extension: str) -> Optional[str]:
         """Get MIME content type from file extension."""

@@ -111,6 +111,55 @@ describe('ShippingProfilesPanel', () => {
     expect(api.updateShippingProfile.mock.calls[0][1]).toMatchObject({ postage_cost: '4.10' })
   })
 
+  it('sends a size class and volumetric divisor as decimal strings (T054)', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    await user.click(await screen.findByRole('button', { name: /Add postage/ }))
+    await user.type(screen.getByLabelText('Name'), 'Large letter')
+    await user.type(screen.getByLabelText('Zone'), 'UK')
+    await user.type(screen.getByLabelText('Postage paid'), '2.70')
+    await user.type(screen.getByLabelText('Max length (mm)'), '353')
+    await user.type(screen.getByLabelText('Max width (mm)'), '250')
+    await user.type(screen.getByLabelText('Max height (mm)'), '25')
+    await user.type(screen.getByLabelText('Volumetric divisor'), '5000')
+    await user.click(screen.getByRole('button', { name: 'Save postage' }))
+
+    await waitFor(() => expect(api.createShippingProfile).toHaveBeenCalled())
+    expect(api.createShippingProfile.mock.calls[0][0]).toMatchObject({
+      max_length_mm: '353',
+      max_width_mm: '250',
+      max_height_mm: '25',
+      volumetric_divisor: '5000',
+    })
+  })
+
+  it('refuses a size class with a limit missing', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    await user.click(await screen.findByRole('button', { name: /Add postage/ }))
+    await user.type(screen.getByLabelText('Name'), 'Large letter')
+    await user.type(screen.getByLabelText('Zone'), 'UK')
+    await user.type(screen.getByLabelText('Postage paid'), '2.70')
+    await user.type(screen.getByLabelText('Max length (mm)'), '353')
+    await user.click(screen.getByRole('button', { name: 'Save postage' }))
+
+    expect(await screen.findByText('Give all three size limits, or none')).toBeInTheDocument()
+    expect(api.createShippingProfile).not.toHaveBeenCalled()
+  })
+
+  it('shows a profile’s size class beside its weight', async () => {
+    api.listShippingProfiles.mockResolvedValue({
+      profiles: [
+        profile({ max_length_mm: '353.0', max_width_mm: '250.0', max_height_mm: '25.0' }),
+      ],
+      total: 1,
+    })
+    renderPanel(<ShippingProfilesPanel />)
+    expect(await screen.findByText('≤ 353.0 × 250.0 × 25.0 mm')).toBeInTheDocument()
+  })
+
   it('refuses an amount that is not money', async () => {
     const user = userEvent.setup({ delay: null })
     renderPanel(<ShippingProfilesPanel canEdit />)

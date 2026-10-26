@@ -31,6 +31,7 @@ from app.schemas.print_queue import (
 )
 from app.core import clock
 from app.services.currency_edge import books_to_channel
+from app.services.dims import Dims
 from app.services.commerce_job_ownership import (
     protect_commerce_job_identity,
     verify_commerce_job_work,
@@ -642,9 +643,17 @@ class PrintQueueService:
             if config.printer_id == printer.id:
                 return True
 
-        # Check bed size (if model has dimension requirements)
-        # This would require model dimensions to be stored
-        # For now, assume compatibility if no specific config
+        # The model must fit the bed (research D12): its height under the
+        # printer's Z, its footprint on X × Y either way round. Without the
+        # model's dimensions or all three bed sizes, nothing is known to rule
+        # the printer out.
+        if not fits_bed(model, printer):
+            logger.info(
+                f"Printer {printer.name} excluded for model {model.sku}: "
+                f"{model.length_mm} × {model.width_mm} × {model.height_mm} mm does not fit "
+                f"its {printer.bed_size_str} mm bed"
+            )
+            return False
 
         # Check material compatibility from capabilities. Capability codes are
         # typed by hand, so they are compared without regard to case.
@@ -981,3 +990,22 @@ def _material_code(material: ModelMaterial) -> Optional[str]:
     filament_type = spool.filament_type if spool else None
     material_type = filament_type.material_type if filament_type else None
     return material_type.code if material_type else None
+
+
+def fits_bed(model: Model, printer: Printer) -> bool:
+    """Whether the model fits the printer's build volume (research D12, US7).
+
+    Height against Z; the footprint against X × Y as placed or turned 90°.
+    True when either side's sizes are not all known: missing data is not a
+    reason to rule a printer out.
+    """
+    dims = Dims.from_row(model)
+    bed = [getattr(printer, f"bed_size_{axis}_mm", None) for axis in "xyz"]
+    if dims is None or any(side is None for side in bed):
+        return True
+    bed_x, bed_y, bed_z = (Decimal(str(side)) for side in bed)
+    if dims.height > bed_z:
+        return False
+    return (dims.length <= bed_x and dims.width <= bed_y) or (
+        dims.width <= bed_x and dims.length <= bed_y
+    )

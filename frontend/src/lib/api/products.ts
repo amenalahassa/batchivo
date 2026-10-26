@@ -6,6 +6,7 @@
  */
 
 import { apiClient } from '../api'
+import type { Dimensions, EffectivePackaging } from '@/types/packaging'
 
 // ==================== Types ====================
 
@@ -138,6 +139,37 @@ export interface Product {
   weight_grams?: number
   size_cm?: string
   print_time_hours?: string
+  // Packaging advisor (feature 003). `size_cm` above keeps working (FR-005).
+  /** Length × width × height in mm with where they came from (FR-001, FR-002). */
+  dimensions?: Dimensions | null
+  /** Takes the fragile clearance and protective wrap (FR-020). */
+  is_fragile?: boolean
+  /** e.g. "accepted_packaging_does_not_fit", computed on read (FR-024). */
+  packaging_warnings?: string[]
+}
+
+/**
+ * A size variant, with its effective dimensions and packaging (research D11).
+ */
+export interface ProductVariant {
+  id: string
+  product_id: string
+  size: string
+  display_order: number
+  sku: string
+  is_active: boolean
+  /** The variant's own, or the product's marked `inherited`. */
+  dimensions: Dimensions | null
+  /** The variant's own packaging; null inherits the product's. */
+  packaging_consumable_id: string | null
+  packaging_quantity: number | null
+  effective_packaging: EffectivePackaging | null
+  /**
+   * "variant_packaging_not_costed" when this size ships in different
+   * packaging from the product: the cost breakdown uses the product's (FR-039).
+   */
+  packaging_notes: string[]
+  packaging_warnings: string[]
 }
 
 /**
@@ -177,6 +209,8 @@ export interface ProductDetail extends Product {
   categories: ProductCategoryBrief[]
   // External marketplace listings
   external_listings: ExternalListing[]
+  // Size variants
+  variants?: ProductVariant[]
 }
 
 export interface ProductListResponse {
@@ -257,6 +291,7 @@ export interface ProductUpdateRequest {
   weight_grams?: number | null
   size_cm?: string | null
   print_time_hours?: string | null
+  is_fragile?: boolean
 }
 
 /**

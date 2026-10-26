@@ -76,12 +76,16 @@ NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
         "reorder_point": "a restocking trigger, not money",
         "reorder_quantity": "a restocking quantity, not money",
         "typical_lead_days": "supplier lead time, not money",
+        "fill_volume_ml": "a volume the advisor fills with; postage never reads it",
     },
     "fee_rule": {
         "sort_order": "evaluation and presentation order, not money",
     },
     "model": {
         "units_in_stock": "inventory, not a cost input",
+        "length_mm": "a dimension",
+        "width_mm": "a dimension",
+        "height_mm": "a dimension",
     },
     "model_printer_config": {
         "bed_temperature": "a slicer setting, not money or time",
@@ -94,6 +98,9 @@ NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
         "low_stock_threshold": "inventory policy, not a cost input",
         "weight_grams": "shipping weight of the finished item, used for postage not cost",
         "size_cm": "a dimension, not a cost input",
+        "length_mm": "a dimension",
+        "width_mm": "a dimension",
+        "height_mm": "a dimension",
         "review_count": "a storefront figure",
         "average_rating": "a storefront figure",
         "print_time_hours": (

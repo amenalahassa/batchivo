@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.dimensions import DimensionsOut
+
 
 # Risk class: whether a cost is exposed to print failure. The failure premium
 # reaches only the at-risk portion — packaging materials and packing labor are
@@ -322,6 +324,9 @@ class ModelResponse(ModelBase):
     )
     production_cost_updated_at: Optional[datetime] = Field(
         None, description="When the latest completed run in the average finished"
+    )
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="Length × width × height in mm, with source and date (FR-001/002)"
     )
 
     model_config = ConfigDict(from_attributes=True)

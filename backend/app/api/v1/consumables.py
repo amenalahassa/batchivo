@@ -11,8 +11,16 @@ from sqlalchemy.orm import selectinload
 
 from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
-from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
+from app.models.consumable import (
+    CONTAINER_KINDS,
+    PACKAGING_KINDS,
+    ConsumablePurchase,
+    ConsumableType,
+    ConsumableUsage,
+)
+from app.services.dims import Dims
 from app.services.costing import consumable_unit_cost, pricing_purchase
+from app.services.provenance import origins_for_entity, record_origin
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
     ConsumablePurchaseListResponse,
@@ -55,6 +63,56 @@ def consumable_type_to_response(consumable: ConsumableType) -> dict:
         "priced_by_purchase_date": purchase.purchase_date if purchase is not None else None,
         "is_low_stock": consumable.is_low_stock,
         "stock_value": Decimal(consumable.quantity_on_hand or 0) * unit_cost,
+        # A box or mailer without all three inner dimensions is never
+        # suggested; the list says so (spec edge case, research D5).
+        "packaging_incomplete": consumable.packaging_kind in CONTAINER_KINDS
+        and Dims.from_row(consumable, prefix="inner_") is None,
+    }
+
+
+#: A container's figures whose origin the operator states (FR-038): measured
+#: with a ruler and scale, or assumed from a supplier listing.
+PACKAGING_PROVENANCE_FIELDS = (
+    "inner_length_mm",
+    "inner_width_mm",
+    "inner_height_mm",
+    "wall_mm",
+    "empty_weight_grams",
+)
+
+
+async def _record_packaging_origins(
+    db: AsyncSession,
+    tenant,
+    user,
+    consumable: ConsumableType,
+    fields: list[str],
+    provenance: Optional[dict],
+) -> None:
+    """Record where each packaging figure just saved came from -- never ``observed``."""
+    source = (provenance or {}).get("source") or "assumed"
+    for name in fields:
+        await record_origin(
+            db,
+            tenant,
+            entity_type="consumable_type",
+            entity_id=consumable.id,
+            field_name=name,
+            source=source,
+            measured_by_user_id=user.id if user is not None and source == "measured" else None,
+        )
+
+
+async def _packaging_provenance(
+    db: AsyncSession, tenant, consumable: ConsumableType
+) -> dict[str, Optional[str]]:
+    """Each packaging figure's origin, for the response; absent figures have none."""
+    if consumable.packaging_kind not in CONTAINER_KINDS:
+        return {}
+    origins = await origins_for_entity(db, tenant, "consumable_type", consumable.id)
+    return {
+        name: origins[name].source if getattr(consumable, name) is not None else None
+        for name in PACKAGING_PROVENANCE_FIELDS
     }
 
 
@@ -121,6 +179,13 @@ async def create_consumable_type(
         supplier_url=consumable_data.supplier_url,
         typical_lead_days=consumable_data.typical_lead_days,
         is_active=consumable_data.is_active,
+        packaging_kind=consumable_data.packaging_kind,
+        inner_length_mm=consumable_data.inner_length_mm,
+        inner_width_mm=consumable_data.inner_width_mm,
+        inner_height_mm=consumable_data.inner_height_mm,
+        wall_mm=consumable_data.wall_mm,
+        empty_weight_grams=consumable_data.empty_weight_grams,
+        fill_volume_ml=consumable_data.fill_volume_ml,
     )
 
     db.add(consumable)
@@ -135,11 +200,28 @@ async def create_consumable_type(
             fields=["current_cost_per_unit"],
             user=user,
         )
+    packaging_fields = [
+        name for name in PACKAGING_PROVENANCE_FIELDS if getattr(consumable, name) is not None
+    ]
+    if packaging_fields:
+        await db.flush()
+        provenance = consumable_data.packaging_provenance
+        await _record_packaging_origins(
+            db,
+            tenant,
+            user,
+            consumable,
+            packaging_fields,
+            provenance.model_dump() if provenance is not None else None,
+        )
     await db.commit()
     await db.refresh(consumable)
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    return ConsumableTypeResponse(
+        **consumable_type_to_response(consumable),
+        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
+    )
 
 
 @router.get("/types", response_model=ConsumableTypeListResponse)
@@ -153,6 +235,9 @@ async def list_consumable_types(
     category: Optional[str] = Query(None, description="Filter by category"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     low_stock_only: bool = Query(False, description="Show only low stock items"),
+    packaging_kind: Optional[str] = Query(
+        None, description="Comma-separated packaging kinds, e.g. 'box,mailer'"
+    ),
 ) -> ConsumableTypeListResponse:
     """List all consumable types for current tenant."""
     # Base query
@@ -171,6 +256,16 @@ async def list_consumable_types(
 
     if is_active is not None:
         query = query.where(ConsumableType.is_active == is_active)
+
+    if packaging_kind:
+        kinds = [kind.strip() for kind in packaging_kind.split(",") if kind.strip()]
+        unknown = sorted(set(kinds) - set(PACKAGING_KINDS))
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown packaging kind: {', '.join(unknown)}",
+            )
+        query = query.where(ConsumableType.packaging_kind.in_(kinds))
 
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
@@ -223,7 +318,10 @@ async def get_consumable_type(
         )
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    return ConsumableTypeResponse(
+        **consumable_type_to_response(consumable),
+        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
+    )
 
 
 @router.put("/types/{consumable_id}", response_model=ConsumableTypeResponse)
@@ -253,6 +351,7 @@ async def update_consumable_type(
 
     # Update fields
     update_data = consumable_data.model_dump(exclude_unset=True)
+    packaging_provenance = update_data.pop("packaging_provenance", None)
     if "current_cost_per_unit" in update_data:
         # A purchase on record prices the unit (T273), so a typed figure would
         # be stored and ignored. Refuse it and say which purchase to change
@@ -277,14 +376,28 @@ async def update_consumable_type(
             value = value.upper()
         setattr(consumable, field, value)
 
+    # A container's figures carry the origin the operator states (FR-038);
+    # every other figure is recorded as the operator's measurement.
+    packaging_fields = [f for f in fields if f in PACKAGING_PROVENANCE_FIELDS]
     await record_operator_origins(
-        db, tenant, entity_type="consumable_type", entity_id=consumable.id, fields=fields, user=user
+        db,
+        tenant,
+        entity_type="consumable_type",
+        entity_id=consumable.id,
+        fields=[f for f in fields if f not in PACKAGING_PROVENANCE_FIELDS],
+        user=user,
+    )
+    await _record_packaging_origins(
+        db, tenant, user, consumable, packaging_fields, packaging_provenance
     )
     await db.commit()
     await db.refresh(consumable)
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    return ConsumableTypeResponse(
+        **consumable_type_to_response(consumable),
+        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
+    )
 
 
 @router.delete("/types/{consumable_id}", status_code=status.HTTP_204_NO_CONTENT)

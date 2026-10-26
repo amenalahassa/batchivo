@@ -104,3 +104,51 @@ describe('AddConsumableDialog for a viewer', () => {
     expect(screen.getByRole('button', { name: /create consumable/i })).toBeDisabled()
   })
 })
+
+describe('AddConsumableDialog packaging (T029)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.create.mockResolvedValue({} as never)
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+  })
+
+  const kindSelect = () =>
+    screen.getByRole('option', { name: 'Not packaging' }).closest('select') as HTMLSelectElement
+
+  it('sends a box with its inner size as decimal strings', async () => {
+    renderDialog(<AddConsumableDialog open onOpenChange={() => {}} />)
+    await fillRequired()
+
+    fireEvent.change(kindSelect(), { target: { value: 'box' } })
+    fireEvent.change(screen.getByLabelText('Inner length (mm)'), { target: { value: '150' } })
+    fireEvent.change(screen.getByLabelText('Inner width (mm)'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('Inner height (mm)'), { target: { value: '80.5' } })
+    fireEvent.change(screen.getByLabelText('Empty weight (g)'), { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: /create consumable/i }))
+
+    await waitFor(() => expect(api.create).toHaveBeenCalled())
+    const sent = api.create.mock.calls[0][0]
+    expect(sent.packaging_kind).toBe('box')
+    expect(sent.inner_length_mm).toBe('150')
+    expect(sent.inner_height_mm).toBe('80.5')
+    expect(sent.empty_weight_grams).toBe('45')
+  })
+
+  it('shows fill volume only for void fill', async () => {
+    renderDialog(<AddConsumableDialog open onOpenChange={() => {}} />)
+    await screen.findByRole('option', { name: 'Not packaging' })
+
+    expect(screen.queryByLabelText(/Fill volume/)).not.toBeInTheDocument()
+    fireEvent.change(kindSelect(), { target: { value: 'void_fill' } })
+    expect(screen.getByLabelText(/Fill volume/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('Inner length (mm)')).not.toBeInTheDocument()
+  })
+
+  it('labels a mailer height as its thickness', async () => {
+    renderDialog(<AddConsumableDialog open onOpenChange={() => {}} />)
+    await screen.findByRole('option', { name: 'Not packaging' })
+
+    fireEvent.change(kindSelect(), { target: { value: 'mailer' } })
+    expect(screen.getByLabelText('Max thickness (mm)')).toBeInTheDocument()
+  })
+})

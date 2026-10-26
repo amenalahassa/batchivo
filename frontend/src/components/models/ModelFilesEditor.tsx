@@ -61,6 +61,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { FileMeasurementSummary } from './FileMeasurementSummary'
+import { anyMeasurementPending } from '@/lib/packaging'
+
+const MEASUREMENT_POLL_MS = 5000
 
 interface ModelFilesEditorProps {
   modelId: string
@@ -115,6 +119,9 @@ export function ModelFilesEditor({ modelId }: ModelFilesEditorProps) {
   const { data: files = [], isLoading } = useQuery({
     queryKey: ['model-files', modelId],
     queryFn: () => getModelFiles(modelId),
+    // A large file is measured after upload; poll until its size arrives (T039).
+    refetchInterval: (query) =>
+      anyMeasurementPending(query.state.data ?? []) ? MEASUREMENT_POLL_MS : false,
   })
 
   // Upload mutation
@@ -554,6 +561,7 @@ export function ModelFilesEditor({ modelId }: ModelFilesEditorProps) {
                       </>
                     )}
                   </div>
+                  <FileMeasurementSummary measurement={file.measurement} />
                 </div>
 
                 {/* Actions */}

@@ -48,6 +48,11 @@ NOT_MONEY_PATHS: dict[str, str] = {
     "inventory_transaction": "moves grams between spools; the money is `run_costs`'",
     "print_queue_service": "ranks jobs by the margin the engine serves; computes none",
     "production_run": "the run workflow; its money lives in `run_costs`, which is listed",
+    "item_dimensions": "reads a product's and its packaging's sizes; computes no money",
+    "packaging_advisor": (
+        "ranks containers by the unit cost `costing.consumable_unit_cost` serves and shows "
+        "no cost (FR-021); computes none"
+    ),
 }
 
 

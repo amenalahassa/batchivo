@@ -22,10 +22,12 @@ MIGRATION = (
     / "versions"
     / "20261025_create_product_variants.py"
 )
+# Revisions after the creating one that add product_variants columns.
+LATER = [MIGRATION.with_name("20261026_packaging_advisor_v1.py")]
 
 
-def _load_migration(op: MagicMock) -> ModuleType:
-    spec = importlib.util.spec_from_file_location("create_product_variants", MIGRATION)
+def _load_migration(op: MagicMock, path: Path = MIGRATION) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -39,6 +41,18 @@ def _op(table_exists: bool) -> MagicMock:
     return op
 
 
+def _added_later() -> set[str]:
+    """The product_variants columns later revisions add with ``op.add_column``."""
+    added: set[str] = set()
+    for path in LATER:
+        op = MagicMock()
+        _load_migration(op, path).upgrade()
+        added |= {
+            c.args[1].name for c in op.add_column.call_args_list if c.args[0] == "product_variants"
+        }
+    return added
+
+
 def test_creates_the_table_with_every_column_the_model_maps() -> None:
     op = _op(table_exists=False)
     _load_migration(op).upgrade()
@@ -47,7 +61,8 @@ def test_creates_the_table_with_every_column_the_model_maps() -> None:
     name, *elements = op.create_table.call_args.args
     assert name == "product_variants"
     created = {element.name for element in elements if hasattr(element, "type")}
-    assert created == {column.name for column in ProductVariant.__table__.columns}
+    mapped = {column.name for column in ProductVariant.__table__.columns}
+    assert created == mapped - _added_later()
 
 
 @pytest.mark.parametrize("nullable_column", ["lead_time_days", "material_cost_pence"])

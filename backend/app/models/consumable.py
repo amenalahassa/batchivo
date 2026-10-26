@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,6 +16,11 @@ if TYPE_CHECKING:
     from app.models.model_component import ModelComponent
     from app.models.production_run import ProductionRun
     from app.models.tenant import Tenant
+
+#: The kinds of packaging a consumable can be (research D5).
+PACKAGING_KINDS = ("box", "mailer", "void_fill", "wrap")
+#: The kinds an item is packed *in*; only these can be accepted as packaging.
+CONTAINER_KINDS = ("box", "mailer")
 
 
 class ConsumableType(Base, UUIDMixin, TimestampMixin):
@@ -129,6 +134,59 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
         server_default="true",
         nullable=False,
         comment="Whether this consumable type is active",
+    )
+
+    # Packaging attributes (packaging advisor, research D5). All optional, so a
+    # consumable that is not packaging is untouched (FR-013). A box or mailer
+    # missing an inner dimension is incomplete and never suggested.
+    packaging_kind: Mapped[Optional[str]] = mapped_column(
+        String(12),
+        nullable=True,
+        comment="Packaging kind: box, mailer, void_fill, wrap (null = not packaging)",
+    )
+    inner_length_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Inner length in mm"
+    )
+    inner_width_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Inner width in mm"
+    )
+    inner_height_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1),
+        nullable=True,
+        comment="Inner height in mm (a mailer's maximum usable thickness)",
+    )
+    wall_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 1),
+        nullable=True,
+        comment="Wall thickness in mm; outer size = inner + 2 x wall (absent = 0)",
+    )
+    empty_weight_grams: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 1), nullable=True, comment="Weight of one unit, empty, in grams"
+    )
+    fill_volume_ml: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 1),
+        nullable=True,
+        comment="Void fill only: the volume one unit fills, in ml",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "packaging_kind IS NULL OR packaging_kind IN ('box', 'mailer', 'void_fill', 'wrap')",
+            name="ck_consumable_types_packaging_kind",
+        ),
+        CheckConstraint(
+            "(inner_length_mm IS NULL AND inner_width_mm IS NULL AND inner_height_mm IS NULL)"
+            " OR (inner_length_mm IS NOT NULL AND inner_width_mm IS NOT NULL"
+            " AND inner_height_mm IS NOT NULL AND inner_length_mm > 0"
+            " AND inner_width_mm > 0 AND inner_height_mm > 0)",
+            name="ck_consumable_types_inner_dims",
+        ),
+        CheckConstraint(
+            "(wall_mm IS NULL OR wall_mm >= 0)"
+            " AND (empty_weight_grams IS NULL OR empty_weight_grams >= 0)"
+            " AND (fill_volume_ml IS NULL OR fill_volume_ml >= 0)",
+            name="ck_consumable_types_packaging_non_negative",
+        ),
     )
 
     # Relationships
@@ -297,6 +355,15 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         nullable=True,
         index=True,
         comment="Model that used this consumable",
+    )
+
+    # Packaging an order consumed at dispatch, recorded with usage_type
+    # 'shipping' (packaging advisor, research D10).
+    order_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL", name="fk_consumable_usage_order"),
+        nullable=True,
+        index=True,
+        comment="Order whose parcels used this consumable (usage_type='shipping')",
     )
 
     # Usage details

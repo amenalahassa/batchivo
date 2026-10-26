@@ -182,3 +182,56 @@ describe('EditConsumableDialog currency (T276)', () => {
     expect(await screen.findByLabelText('Cost per Unit (C$)')).toBeInTheDocument()
   })
 })
+
+describe('EditConsumableDialog packaging (T029)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    api.get.mockResolvedValue(
+      consumable({
+        packaging_kind: 'box',
+        inner_length_mm: '150.0',
+        inner_width_mm: '100.0',
+        inner_height_mm: '80.0',
+        wall_mm: '3.0',
+        empty_weight_grams: '45.0',
+        packaging_provenance: {
+          inner_length_mm: 'measured',
+          inner_width_mm: 'measured',
+          inner_height_mm: 'measured',
+          wall_mm: 'measured',
+          empty_weight_grams: 'measured',
+        },
+      }),
+    )
+    api.update.mockResolvedValue(consumable())
+  })
+
+  it('shows where the figures came from and sends the stated origin', async () => {
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    expect(await screen.findByText('Measured', { selector: 'div,span' })).toBeInTheDocument()
+    const origin = screen
+      .getByRole('option', { name: 'Estimated (supplier listing)' })
+      .closest('select') as HTMLSelectElement
+    await waitFor(() => expect(origin).toHaveValue('measured'))
+    fireEvent.change(origin, { target: { value: 'assumed' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(api.update).toHaveBeenCalled())
+    expect(api.update.mock.calls[0][1].packaging_provenance).toEqual({ source: 'assumed' })
+  })
+
+  it('loads the stored packaging figures and sends them back unchanged', async () => {
+    renderDialog(<EditConsumableDialog open onOpenChange={() => {}} consumableId="consumable-uuid" />)
+
+    await waitFor(() => expect(screen.getByLabelText('Inner length (mm)')).toHaveValue(150))
+    fireEvent.change(screen.getByLabelText('Wall (mm)'), { target: { value: '4' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(api.update).toHaveBeenCalled())
+    const sent = api.update.mock.calls[0][1]
+    expect(sent.packaging_kind).toBe('box')
+    expect(sent.inner_length_mm).toBe('150.0')
+    expect(sent.wall_mm).toBe('4')
+  })
+})

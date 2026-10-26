@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     ForeignKey,
     Index,
     Integer,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeEngine
@@ -69,6 +71,7 @@ class StringArrayType(TypeDecorator):
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+from app.models.dimensions import DimensionsMixin, dimension_constraints
 
 if TYPE_CHECKING:
     from app.models.category import Category
@@ -85,7 +88,7 @@ if TYPE_CHECKING:
     from app.models.review import Review
 
 
-class Product(Base, UUIDMixin, TimestampMixin):
+class Product(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
     """
     Product represents a sellable item composed of one or more Models and/or other Products.
 
@@ -269,6 +272,15 @@ class Product(Base, UUIDMixin, TimestampMixin):
         Numeric(6, 2),
         nullable=True,
         comment="Print time in hours (auto-captured from production run or manual)",
+    )
+
+    # Packaging advisor: chooses the fragile clearance and suggests wrap (FR-020).
+    is_fragile: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+        comment="Whether the item needs the fragile clearance and protective wrap",
     )
 
     # Review statistics (cached for performance)
@@ -477,6 +489,7 @@ class Product(Base, UUIDMixin, TimestampMixin):
             "search_vector",
             postgresql_using="gin",
         ),
+        *dimension_constraints("products"),
         {"comment": "Sellable products composed of one or more printed models"},
     )
 
