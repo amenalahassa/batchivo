@@ -191,3 +191,6 @@ TESTING_SUMMARY.md
 
 # Beads hook generated files
 issues.jsonl
+
+# Celery beat schedule state (dev.ps1 -Services beat)
+celerybeat-schedule*
