@@ -298,7 +298,7 @@ export interface BOMSpoolSuggestion {
   color_hex?: string
   /** Grams on the bill of materials: one whole plate run. */
   weight_grams: string
-  /** Grams one item takes: the line divided by items per plate, by the server. */
+  /** Grams one item takes from this line, as the cost reads them (per-printer weight or bill ÷ items per plate), by the server. */
   weight_grams_per_item: string
   cost_per_gram: string | null
   current_weight: string

@@ -628,6 +628,40 @@ class TestASuccessfulItemWeighsItsShareOfThePlate:
         assert await service._get_model_weight(test_model.id) == Decimal("10")
 
     @pytest.mark.asyncio
+    async def test_the_run_printers_measured_weight_wins(
+        self, db_session, test_tenant, test_spool, test_model, test_printer
+    ):
+        """On a printer whose per-printer row has a weight, an item weighs that."""
+        from app.models.model_material import ModelMaterial
+        from app.models.model_printer_config import ModelPrinterConfig
+
+        test_model.prints_per_plate = 4
+        db_session.add_all(
+            [
+                ModelMaterial(
+                    id=uuid4(),
+                    model_id=test_model.id,
+                    spool_id=test_spool.id,
+                    weight_grams=Decimal("84"),
+                    cost_per_gram=Decimal("0.025"),
+                ),
+                ModelPrinterConfig(
+                    id=uuid4(),
+                    model_id=test_model.id,
+                    printer_id=test_printer.id,
+                    prints_per_plate=4,
+                    material_weight_grams=Decimal("18"),
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        service = ProductionRunService(db_session, test_tenant)
+        assert await service._get_model_weight(test_model.id, test_printer.id) == Decimal("18")
+        # Printed elsewhere (no row for that printer): the bill's share.
+        assert await service._get_model_weight(test_model.id, uuid4()) == Decimal("21")
+
+    @pytest.mark.asyncio
     async def test_another_tenants_model_weighs_nothing(self, db_session, test_tenant):
         service = ProductionRunService(db_session, test_tenant)
         assert await service._get_model_weight(uuid4()) == Decimal("0")

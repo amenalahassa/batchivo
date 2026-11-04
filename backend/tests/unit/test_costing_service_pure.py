@@ -369,35 +369,85 @@ class TestCalculateCostPerGramFromSpool:
 # ---------------------------------------------------------------------------
 
 
-class TestBomGramsPerItem:
+class TestGramsPerItem:
     """The bill holds a whole plate run; one item takes its share."""
 
     def test_the_bill_is_divided_by_items_per_plate(self):
-        from app.services.costing import bom_grams_per_item
+        from app.services.costing import grams_per_item
 
         model = make_model(
             prints_per_plate=4, materials=[make_material(60, 0), make_material(24, 0)]
         )
-        assert bom_grams_per_item(model) == Decimal("21")
+        assert grams_per_item(model) == Decimal("21")
 
     def test_one_line_alone(self):
-        from app.services.costing import bom_grams_per_item
+        from app.services.costing import grams_per_item
 
         model = make_model(prints_per_plate=8, materials=[make_material(60, 0)])
-        assert bom_grams_per_item(model, Decimal("60")) == Decimal("7.5")
+        assert grams_per_item(model, line_grams=Decimal("60")) == Decimal("7.5")
 
     def test_no_items_per_plate_counts_as_one(self):
-        from app.services.costing import bom_grams_per_item
+        from app.services.costing import grams_per_item
 
         for per_plate in (None, 0):
             model = make_model(prints_per_plate=per_plate, materials=[make_material(30, 0)])
-            assert bom_grams_per_item(model) == Decimal("30")
+            assert grams_per_item(model) == Decimal("30")
 
     def test_agrees_with_the_material_line(self):
         """The same divisor as the cost: grams per item x per-gram = material cost."""
-        from app.services.costing import bom_grams_per_item
+        from app.services.costing import grams_per_item
 
         per_gram = Decimal("0.025")
         model = make_model(prints_per_plate=4, materials=[make_material(100, per_gram)])
         cost = CostingService.calculate_model_cost(model, labor_rate=RATE)
-        assert (bom_grams_per_item(model) * per_gram).quantize(MILLE) == cost.material_cost
+        assert (grams_per_item(model) * per_gram).quantize(MILLE) == cost.material_cost
+
+    def test_a_printers_measured_weight_is_one_items(self):
+        """The per-printer row's weight wins, undivided, as the cost uses it."""
+        from uuid import uuid4
+
+        from app.services.costing import grams_per_item
+
+        a1, p1s = uuid4(), uuid4()
+        config = SimpleNamespace(
+            printer_id=a1, material_weight_grams=Decimal("18"), prints_per_plate=None
+        )
+        model = make_model(
+            prints_per_plate=4,
+            materials=[make_material(60, 0), make_material(24, 0)],
+            printer_configs=[config],
+        )
+        assert grams_per_item(model, a1) == Decimal("18")
+        # Another printer has no row: the bill's share.
+        assert grams_per_item(model, p1s) == Decimal("21")
+        # One line's share of the measured weight, in the bill's proportion.
+        assert grams_per_item(model, a1, line_grams=Decimal("60")) == Decimal("18") * 60 / 84
+
+    def test_a_printers_own_items_per_plate_divides_the_bill(self):
+        from uuid import uuid4
+
+        from app.services.costing import grams_per_item
+
+        a1 = uuid4()
+        config = SimpleNamespace(printer_id=a1, material_weight_grams=None, prints_per_plate=6)
+        model = make_model(
+            prints_per_plate=4, materials=[make_material(84, 0)], printer_configs=[config]
+        )
+        assert grams_per_item(model, a1) == Decimal("14")
+
+    def test_no_printer_means_the_planned_one(self):
+        from uuid import uuid4
+
+        from app.services.costing import grams_per_item
+
+        a1 = uuid4()
+        config = SimpleNamespace(
+            printer_id=a1, material_weight_grams=Decimal("18"), prints_per_plate=None
+        )
+        model = make_model(
+            prints_per_plate=4,
+            materials=[make_material(84, 0)],
+            printer_configs=[config],
+            planned_printer_id=a1,
+        )
+        assert grams_per_item(model) == Decimal("18")

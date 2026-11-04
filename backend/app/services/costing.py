@@ -308,29 +308,50 @@ def _positive(value: Optional[Decimal]) -> Optional[Decimal]:
     return value if value is not None and value > ZERO else None
 
 
-def bom_grams_per_item(model: Any, line_grams: Any = None) -> Decimal:
-    """Grams of filament one item takes, from the bill of materials.
+def _items_per_plate(model: Any, config: Optional["ModelPrinterConfig"]) -> Decimal:
+    """Items one plate run makes: the printer's own figure, else the model's, else one."""
+    config_per_plate = _positive(_as_decimal(getattr(config, "prints_per_plate", None)))
+    model_per_plate = _positive(_as_decimal(getattr(model, "prints_per_plate", None)))
+    return config_per_plate or model_per_plate or ONE
 
-    A bill-of-materials line holds the grams of one whole plate run, which the
-    cost divides by the model's items per plate (see the material line of
-    :func:`_item_lines`). Anything that weighs or plans filament per item --
-    a production run's estimate, its successful weight -- reads it here, so it
-    divides by the same figure instead of taking the plate's grams for one item.
 
-    ``line_grams`` is one line's grams; without it, the whole bill is summed.
+def grams_per_item(
+    model: Any, printer_id: Optional[uuid.UUID] = None, line_grams: Any = None
+) -> Decimal:
+    """Grams of filament one item takes, read as the cost reads them.
+
+    On a printer whose per-printer row records a weight, that weight is one
+    item's, measured on that machine. Otherwise the bill of materials holds a
+    whole plate run, divided by items per plate -- the printer's own figure
+    when it has one, else the model's. :func:`_item_lines` costs the material
+    from the same choice, so a production run that weighs or plans filament
+    here agrees with the price.
+
+    ``printer_id`` is the machine the item is printed on; ``None`` means the
+    model's planned printer, as for the cost. ``line_grams`` asks for one bill
+    line's share instead of the whole item: with a per-printer weight, that is
+    the line's proportion of the bill applied to the measured weight.
+
+    The model needs ``materials`` and ``printer_configs`` loaded.
     """
-    if line_grams is None:
-        grams = sum(
-            (
-                _as_decimal(getattr(m, "weight_grams", None), ZERO) or ZERO
-                for m in getattr(model, "materials", None) or []
-            ),
-            ZERO,
-        )
-    else:
-        grams = _as_decimal(line_grams, ZERO) or ZERO
-    items = _positive(_as_decimal(getattr(model, "prints_per_plate", None))) or ONE
-    return grams / items
+    if printer_id is None:
+        printer_id = getattr(model, "planned_printer_id", None)
+    config = _printer_config_by_id(model, printer_id)
+    bill = sum(
+        (
+            _as_decimal(getattr(m, "weight_grams", None), ZERO) or ZERO
+            for m in getattr(model, "materials", None) or []
+        ),
+        ZERO,
+    )
+    line = bill if line_grams is None else (_as_decimal(line_grams, ZERO) or ZERO)
+
+    config_weight = _as_decimal(getattr(config, "material_weight_grams", None))
+    if config_weight is not None:
+        if line_grams is None:
+            return config_weight
+        return config_weight * line / bill if bill > ZERO else ZERO
+    return line / _items_per_plate(model, config)
 
 
 def _origin_of(
@@ -414,11 +435,20 @@ def _printer_config_for(
     """
     if printer is None:
         return None
+    return _printer_config_by_id(model, printer.id)
+
+
+def _printer_config_by_id(
+    model: Any, printer_id: Optional[uuid.UUID]
+) -> Optional["ModelPrinterConfig"]:
+    """The model's per-printer row for this printer id, from what is loaded."""
+    if printer_id is None:
+        return None
     configs = getattr(model, "printer_configs", None)
     if not configs:
         return None
     for config in configs:
-        if getattr(config, "printer_id", None) == printer.id:
+        if getattr(config, "printer_id", None) == printer_id:
             found: "ModelPrinterConfig" = config
             return found
     return None
@@ -546,8 +576,8 @@ def _item_lines(
 
     # ---------------------------------------------------------------- plate
     config_per_plate = _positive(_as_decimal(getattr(config, "prints_per_plate", None)))
-    model_per_plate = _positive(_as_decimal(getattr(model, "prints_per_plate", None)))
-    prints_per_plate = config_per_plate or model_per_plate or ONE
+    # The same choice production runs weigh by (grams_per_item).
+    prints_per_plate = _items_per_plate(model, config)
     result.prints_per_plate = prints_per_plate
 
     plate_origin = (

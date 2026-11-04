@@ -320,6 +320,44 @@ class TestModelsProductionDefaultsEndpoint:
         assert bom_red["is_active"] is True
 
     @pytest.mark.asyncio
+    async def test_the_planned_printers_measured_weight_is_shared_across_lines(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db_session: AsyncSession,
+        test_model_with_multi_material_bom: Model,
+        test_printer,
+    ):
+        """A per-printer weight is one item's; each line takes its bill share of it."""
+        from app.models.model_printer_config import ModelPrinterConfig
+
+        model = test_model_with_multi_material_bom
+        model.planned_printer_id = test_printer.id
+        db_session.add(
+            ModelPrinterConfig(
+                id=uuid4(),
+                model_id=model.id,
+                printer_id=test_printer.id,
+                prints_per_plate=5,
+                material_weight_grams=Decimal("8"),
+            )
+        )
+        await db_session.commit()
+        # The request shares this session; drop its stale, empty collection.
+        await db_session.refresh(model, ["printer_configs"])
+
+        response = await client.get(
+            f"/api/v1/models/{model.id}/production-defaults", headers=auth_headers
+        )
+        assert response.status_code == 200
+        lines = {
+            m["color"]: Decimal(m["weight_grams_per_item"])
+            for m in response.json()["bom_materials"]
+        }
+        # Bill 50 g + 30 g; the A1 measured 8 g an item: 5 g and 3 g.
+        assert lines == {"Blue": Decimal("5"), "Red": Decimal("3")}
+
+    @pytest.mark.asyncio
     async def test_get_production_defaults_inactive_spool(
         self,
         client: AsyncClient,

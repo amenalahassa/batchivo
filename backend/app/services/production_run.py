@@ -1478,7 +1478,9 @@ class ProductionRunService:
             ]
 
         for unit, quantity in units:
-            unit.model_weight_grams = await self._get_model_weight(unit.model_id)
+            # A plate names its printer; an item is printed on the run's.
+            printer_id = getattr(unit, "printer_id", None) or production_run.printer_id
+            unit.model_weight_grams = await self._get_model_weight(unit.model_id, printer_id)
             successful_weight += Decimal(str(quantity)) * unit.model_weight_grams
 
         self.record_actual_unit_costs(
@@ -1499,26 +1501,27 @@ class ProductionRunService:
             f"successful_weight={successful_weight}g"
         )
 
-    async def _get_model_weight(self, model_id: UUID) -> Decimal:
-        """Grams one item of the model takes, from its bill of materials.
+    async def _get_model_weight(self, model_id: UUID, printer_id: Optional[UUID] = None) -> Decimal:
+        """Grams one item of the model takes on this printer, as the cost reads them.
 
-        The bill holds the grams of a whole plate run; ``bom_grams_per_item``
-        divides them by the items per plate, as the cost does. A run's
-        successful quantity counts items, so it is multiplied by this.
+        ``grams_per_item`` takes the printer's measured per-item weight when its
+        per-printer row has one, else the bill's plate run divided by items per
+        plate. A run's successful quantity counts items, so it is multiplied by
+        this. Without a printer, the model's planned one is used, as for the cost.
         """
         from app.models.model import Model
-        from app.services.costing import bom_grams_per_item
+        from app.services.costing import grams_per_item
 
         model = (
             await self.db.execute(
                 select(Model)
                 .where(Model.id == model_id, Model.tenant_id == self.tenant.id)
-                .options(selectinload(Model.materials))
+                .options(selectinload(Model.materials), selectinload(Model.printer_configs))
                 # The model may already sit in the session with a stale bill.
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
-        return bom_grams_per_item(model) if model is not None else Decimal("0")
+        return grams_per_item(model, printer_id) if model is not None else Decimal("0")
 
     async def _load_relationships(self, production_run: ProductionRun) -> None:
         """
