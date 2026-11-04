@@ -31,8 +31,9 @@ export function WizardModelSelection({ selectedModels, onModelsChange }: WizardM
 
   // Fetch models
   const { data: modelsData, isLoading } = useQuery({
-    queryKey: ['models', { limit: 100, search: searchQuery || undefined }],
-    queryFn: () => listModels({ limit: 100, search: searchQuery || undefined }),
+    // Archived (deleted) models are not offered (bug model-soft-delete-listed).
+    queryKey: ['models', { limit: 100, is_active: true, search: searchQuery || undefined }],
+    queryFn: () => listModels({ limit: 100, is_active: true, search: searchQuery || undefined }),
   })
 
   const models = modelsData?.models || []

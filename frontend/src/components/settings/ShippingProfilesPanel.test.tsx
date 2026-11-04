@@ -7,6 +7,7 @@
  * admin (FR-007a).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AxiosError, AxiosHeaders } from 'axios'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -71,6 +72,32 @@ describe('ShippingProfilesPanel', () => {
     renderPanel(<ShippingProfilesPanel canEdit />)
 
     expect(await screen.findByTestId('shipping-profiles-empty')).toBeInTheDocument()
+  })
+
+  // Bug postage-error-raw-json: the alert showed axios' "Request failed with
+  // status code 422" while the reason was only readable in the raw response.
+  it("shows the server's reason when postage is not saved", async () => {
+    const reason = '"Canada colis" already covers 0 g to any weight in zone CA.'
+    api.createShippingProfile.mockRejectedValue(
+      new AxiosError('Request failed with status code 422', 'ERR_BAD_REQUEST', undefined, undefined, {
+        status: 422,
+        statusText: 'Unprocessable Content',
+        data: { detail: reason },
+        headers: {},
+        config: { headers: new AxiosHeaders() },
+      })
+    )
+    const user = userEvent.setup({ delay: null })
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    await user.click(await screen.findByRole('button', { name: /Add postage/ }))
+    await user.type(screen.getByLabelText('Name'), 'Canada colis 2')
+    await user.type(screen.getByLabelText('Zone'), 'CA')
+    await user.type(screen.getByLabelText('Postage paid'), '9.40')
+    await user.click(screen.getByRole('button', { name: 'Save postage' }))
+
+    expect(await screen.findByText(reason)).toBeInTheDocument()
+    expect(screen.queryByText(/status code 422/)).not.toBeInTheDocument()
   })
 
   it('lets an admin add postage, sent as decimal strings', async () => {

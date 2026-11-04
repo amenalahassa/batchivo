@@ -52,6 +52,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { spoolLabel } from '@/lib/spool'
 
 const materialFormSchema = z.object({
   spool_id: z.string().uuid('Must select a spool'),
@@ -280,9 +281,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
           {materials?.map((material) => {
             // Look up spool details from the spools data
             const spool = spoolsData?.spools.find((s) => s.id === material.spool_id)
-            const spoolDisplay = spool
-              ? `${spool.spool_id} - ${spool.material_type_name} (${spool.color})`
-              : material.spool_id
+            const spoolDisplay = spool ? spoolLabel(spool) : material.spool_id
             return (
             <div key={material.id} className="flex items-center justify-between rounded-lg border bg-card p-4">
               <div className="space-y-1">

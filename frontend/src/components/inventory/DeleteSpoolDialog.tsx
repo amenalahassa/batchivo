@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Loader2, AlertTriangle } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface DeleteSpoolDialogProps {
   open: boolean
@@ -70,20 +71,20 @@ export function DeleteSpoolDialog({ open, onOpenChange, spoolId }: DeleteSpoolDi
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Material</span>
-                <span>{spool.material_type_code}</span>
+                <span>{spool.filament_type?.material_type_code}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Brand</span>
-                <span>{spool.brand}</span>
+                <span>{spool.filament_type?.brand}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium">Colour</span>
-                <span>{spool.color}</span>
+                <span>{spool.filament_type?.color}</span>
               </div>
-              {spool.finish && (
+              {spool.filament_type?.finish && (
                 <div className="flex justify-between items-center">
                   <span className="text-sm font-medium">Finish</span>
-                  <span>{spool.finish}</span>
+                  <span>{spool.filament_type?.finish}</span>
                 </div>
               )}
               <div className="flex justify-between items-center">
@@ -107,7 +108,7 @@ export function DeleteSpoolDialog({ open, onOpenChange, spoolId }: DeleteSpoolDi
             {deleteMutation.isError && (
               <div className="bg-destructive/10 border border-destructive rounded-md p-3">
                 <p className="text-sm text-destructive">
-                  Failed to delete spool: {deleteMutation.error instanceof Error ? deleteMutation.error.message : 'Unknown error'}
+                  Failed to delete spool: {apiErrorDetail(deleteMutation.error)}
                 </p>
               </div>
             )}

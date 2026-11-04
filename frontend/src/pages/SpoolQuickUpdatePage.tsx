@@ -157,21 +157,21 @@ export function SpoolQuickUpdatePage() {
           <CardHeader className="pb-3">
             <CardTitle className="text-2xl font-mono">{spool.spool_id}</CardTitle>
             <CardDescription>
-              {spool.material_type_name} • {spool.brand}
+              {spool.filament_type?.material_type_name} • {spool.filament_type?.brand}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Color info */}
             <div className="flex items-center gap-3">
-              {spool.color_hex && (
+              {spool.filament_type?.color_hex && (
                 <div
                   className="w-8 h-8 rounded-full border-2 border-gray-200"
-                  style={{ backgroundColor: `#${spool.color_hex}` }}
+                  style={{ backgroundColor: `#${spool.filament_type?.color_hex}` }}
                 />
               )}
               <div>
-                <p className="font-medium">{spool.color}</p>
-                {spool.finish && <p className="text-sm text-muted-foreground">{spool.finish}</p>}
+                <p className="font-medium">{spool.filament_type?.color}</p>
+                {spool.filament_type?.finish && <p className="text-sm text-muted-foreground">{spool.filament_type?.finish}</p>}
               </div>
             </div>
 

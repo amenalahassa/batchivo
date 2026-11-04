@@ -317,3 +317,96 @@ class TestSendContactNotification:
                 assert result is True
                 # Should send 2 emails: one to owner, one to customer
                 assert mock_client.return_value.post.call_count == 2
+
+
+# ============================================
+# Bug hardcoded-gbp-emails-messages
+# ============================================
+
+
+def _patched_client(mock_client):
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()
+    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client.return_value)
+    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_client.return_value.post = AsyncMock(return_value=mock_response)
+
+
+def _sent_body(mock_client) -> str:
+    """Everything the email provider was sent, as one string."""
+    return str(mock_client.return_value.post.call_args)
+
+
+class TestEmailsUseTheTenantCurrency:
+    """Customer emails showed every amount in pounds whatever the tenant's currency."""
+
+    @pytest.mark.anyio
+    async def test_order_confirmation_uses_the_given_symbol(self):
+        from decimal import Decimal
+
+        with patch("app.services.email_service.get_settings") as mock_settings:
+            mock_settings.return_value = get_mock_settings()
+            with patch("app.services.email_service.httpx.AsyncClient") as mock_client:
+                _patched_client(mock_client)
+
+                result = await EmailService().send_order_confirmation(
+                    to_email="client@example.com",
+                    customer_name="Client",
+                    order_number="MF-1",
+                    order_items=[{"name": "Dragon", "quantity": 1, "price": Decimal("24.99")}],
+                    subtotal=Decimal("24.99"),
+                    shipping_cost=Decimal("4.99"),
+                    total=Decimal("29.98"),
+                    shipping_address={"address_line1": "1 Rue", "city": "Paris"},
+                    currency_symbol="€",
+                )
+
+                assert result is True
+                body = _sent_body(mock_client)
+                assert "€24.99" in body
+                assert "€29.98" in body
+                assert "£" not in body
+
+    @pytest.mark.anyio
+    async def test_order_confirmation_defaults_to_pounds(self):
+        from decimal import Decimal
+
+        with patch("app.services.email_service.get_settings") as mock_settings:
+            mock_settings.return_value = get_mock_settings()
+            with patch("app.services.email_service.httpx.AsyncClient") as mock_client:
+                _patched_client(mock_client)
+
+                await EmailService().send_order_confirmation(
+                    to_email="client@example.com",
+                    customer_name="Client",
+                    order_number="MF-1",
+                    order_items=[{"name": "Dragon", "quantity": 1, "price": Decimal("24.99")}],
+                    subtotal=Decimal("24.99"),
+                    shipping_cost=Decimal("4.99"),
+                    total=Decimal("29.98"),
+                    shipping_address={"address_line1": "1 Street", "city": "London"},
+                )
+
+                assert "£29.98" in _sent_body(mock_client)
+
+    @pytest.mark.anyio
+    async def test_return_completed_uses_the_given_symbol(self):
+        from decimal import Decimal
+
+        with patch("app.services.email_service.get_settings") as mock_settings:
+            mock_settings.return_value = get_mock_settings()
+            with patch("app.services.email_service.httpx.AsyncClient") as mock_client:
+                _patched_client(mock_client)
+
+                await EmailService().send_return_completed(
+                    to_email="client@example.com",
+                    customer_name="Client",
+                    rma_number="RMA-1",
+                    order_number="MF-1",
+                    refund_amount=Decimal("12.50"),
+                    currency_symbol="$",
+                )
+
+                body = _sent_body(mock_client)
+                assert "$12.50" in body
+                assert "£" not in body

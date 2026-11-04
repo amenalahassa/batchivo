@@ -338,7 +338,10 @@ async def validate_discount_code(
         return DiscountValidationResponse(
             valid=False,
             code=data.code,
-            message=f"Minimum order amount of £{discount_code.min_order_amount:.2f} required",
+            message=(
+                f"Minimum order amount of {tenant.currency_symbol}"
+                f"{discount_code.min_order_amount:.2f} required"
+            ),
         )
 
     # Calculate discount amount
@@ -359,7 +362,7 @@ async def validate_discount_code(
         code=data.code,
         discount_type=DiscountType(discount_code.discount_type),
         discount_amount=discount_amount,
-        message=f"Discount applied: £{discount_amount:.2f} off",
+        message=f"Discount applied: {tenant.currency_symbol}{discount_amount:.2f} off",
     )
 
 

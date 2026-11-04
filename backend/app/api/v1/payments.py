@@ -225,6 +225,7 @@ async def _create_order_record(
             subtotal=pence_to_pounds(items_total),
             shipping_cost=pence_to_pounds(request.shipping_cost),
             total=pence_to_pounds(request.amount),
+            currency_symbol=shop_tenant.currency_symbol,
             shipping_address={
                 "address_line1": request.shipping_address.address_line1,
                 "address_line2": request.shipping_address.address_line2,
@@ -528,6 +529,7 @@ async def process_payment(
                 subtotal=pence_to_pounds(items_total),
                 shipping_cost=pence_to_pounds(request.shipping_cost),
                 total=pence_to_pounds(request.amount),
+                currency_symbol=shop_tenant.currency_symbol,
                 shipping_address={
                     "address_line1": request.shipping_address.address_line1,
                     "address_line2": request.shipping_address.address_line2,

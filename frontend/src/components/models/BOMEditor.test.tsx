@@ -136,3 +136,65 @@ describe('BOMEditor for a viewer', () => {
     expect(await screen.findByRole('button', { name: /add material/i })).toBeDisabled()
   })
 })
+
+// Bug spool-flat-fields-undefined (bugcap #46): the line read
+// "FIL-002 - undefined (undefined)" because brand, colour and material are
+// nested under `filament_type` in the spool API.
+describe('BOMEditor material line label', () => {
+  it('names the spool from its filament type', async () => {
+    mockSpoolsApiList.mockResolvedValue({
+      spools: [
+        {
+          id: 'spool-uuid-2',
+          tenant_id: 'tenant',
+          spool_id: 'FIL-002',
+          filament_type_id: 'ft-1',
+          initial_weight: 1000,
+          current_weight: 800,
+          is_active: true,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          remaining_weight: 800,
+          remaining_percentage: 80,
+          filament_type: {
+            id: 'ft-1',
+            material_type_id: 'mat-1',
+            brand: 'Bambu Lab',
+            color: 'Jade White',
+            diameter: 1.75,
+            translucent: false,
+            glow: false,
+            material_type_code: 'PLA',
+            material_type_name: 'PLA Basic',
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BOMEditor
+          modelId={MODEL_ID}
+          materials={[
+            {
+              id: 'line-1',
+              spool_id: 'spool-uuid-2',
+              weight_grams: '12.00',
+              cost_per_gram: null,
+              resolved_cost_per_gram: '0.0250',
+              line_cost: '0.30',
+              created_at: '2026-01-01T00:00:00Z',
+              updated_at: '2026-01-01T00:00:00Z',
+            },
+          ]}
+        />
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByText('FIL-002 - PLA Basic (Jade White)')).toBeInTheDocument()
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument()
+  })
+})

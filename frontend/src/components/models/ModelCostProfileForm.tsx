@@ -63,6 +63,7 @@ import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 import { useModelCostProfile, useUpdateModelCostProfile } from '@/hooks/usePricing'
 import { getActivePrinters } from '@/lib/api/printers'
 import type { CostProfileFieldOrigin, ModelCostProfileUpdate } from '@/types/pricing'
+import { apiErrorDetail } from '@/lib/apiError'
 
 /** A blank field means "not entered", which is different from zero. */
 const optionalDecimal = (message: string) =>
@@ -279,7 +280,7 @@ export function ModelCostProfileForm({
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Not saved</AlertTitle>
-            <AlertDescription>{saveError.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
           </Alert>
         )}
 

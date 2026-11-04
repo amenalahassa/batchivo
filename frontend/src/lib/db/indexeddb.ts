@@ -8,6 +8,7 @@
 import { openDB } from 'idb'
 import type { DBSchema, IDBPDatabase } from 'idb'
 import type { SpoolResponse, MaterialType } from '@/types/spool'
+import { spoolBrand, spoolColor, spoolMaterialName } from '@/lib/spool'
 
 // Database version - increment when schema changes
 const DB_VERSION = 1
@@ -153,7 +154,7 @@ export async function getSpools(params?: {
   }
 
   if (params?.materialTypeId) {
-    spools = spools.filter((s) => s.material_type_id === params.materialTypeId)
+    spools = spools.filter((s) => s.filament_type?.material_type_id === params.materialTypeId)
   }
 
   if (params?.search) {
@@ -161,9 +162,9 @@ export async function getSpools(params?: {
     spools = spools.filter(
       (s) =>
         s.spool_id.toLowerCase().includes(searchLower) ||
-        s.brand.toLowerCase().includes(searchLower) ||
-        s.color.toLowerCase().includes(searchLower) ||
-        s.material_type_name.toLowerCase().includes(searchLower)
+        spoolBrand(s).toLowerCase().includes(searchLower) ||
+        spoolColor(s).toLowerCase().includes(searchLower) ||
+        spoolMaterialName(s).toLowerCase().includes(searchLower)
     )
   }
 

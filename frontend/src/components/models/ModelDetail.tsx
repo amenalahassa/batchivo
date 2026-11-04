@@ -199,7 +199,9 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete Model</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Are you sure you want to delete this model? This will set is_active to false.
+                  The model is archived: it disappears from the model list and pickers but
+                  stays on the products, plates and runs that already use it. Show it again
+                  with the Inactive filter.
                   This action can be reversed by editing the model.
                 </AlertDialogDescription>
               </AlertDialogHeader>

@@ -46,6 +46,7 @@ import { Switch } from '@/components/ui/switch'
 import { Loader2, Sparkles, Droplets, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { spoolBrand } from '@/lib/spool'
 
 interface AddSpoolDialogProps {
   open: boolean
@@ -199,9 +200,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
 
     const brandMap = new Map<string, string>()
     spoolData.spools.forEach(spool => {
-      const normalized = normalizeName(spool.brand)
+      const normalized = normalizeName(spoolBrand(spool))
       if (!brandMap.has(normalized)) {
-        brandMap.set(normalized, getDisplayName(spool.brand))
+        brandMap.set(normalized, getDisplayName(spoolBrand(spool)))
       }
     })
 

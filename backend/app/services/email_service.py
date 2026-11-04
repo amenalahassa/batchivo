@@ -176,6 +176,9 @@ class EmailService:
         total: Decimal,
         shipping_address: dict,
         receipt_url: Optional[str] = None,
+        # The tenant's own symbol; amounts were always shown in pounds
+        # (bug hardcoded-gbp-emails-messages).
+        currency_symbol: str = "£",
     ) -> bool:
         """
         Send order confirmation email to customer.
@@ -216,7 +219,7 @@ class EmailService:
             <tr>
                 <td style="padding: 10px; border-bottom: 1px solid #eee;">{html.escape(str(item["name"]))}</td>
                 <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: center;">{item["quantity"]}</td>
-                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">£{item["price"]:.2f}</td>
+                <td style="padding: 10px; border-bottom: 1px solid #eee; text-align: right;">{currency_symbol}{item["price"]:.2f}</td>
             </tr>
             """
 
@@ -279,15 +282,15 @@ class EmailService:
                     <table style="width: 100%;">
                         <tr>
                             <td style="padding: 5px 0;">Subtotal:</td>
-                            <td style="text-align: right;">£{subtotal:.2f}</td>
+                            <td style="text-align: right;">{currency_symbol}{subtotal:.2f}</td>
                         </tr>
                         <tr>
                             <td style="padding: 5px 0;">Shipping:</td>
-                            <td style="text-align: right;">£{shipping_cost:.2f}</td>
+                            <td style="text-align: right;">{currency_symbol}{shipping_cost:.2f}</td>
                         </tr>
                         <tr style="font-weight: bold; font-size: 1.1em;">
                             <td style="padding: 10px 0 5px;">Total:</td>
-                            <td style="text-align: right; padding: 10px 0 5px;">£{total:.2f}</td>
+                            <td style="text-align: right; padding: 10px 0 5px;">{currency_symbol}{total:.2f}</td>
                         </tr>
                     </table>
                 </div>
@@ -1388,6 +1391,7 @@ class EmailService:
         order_number: str,
         refund_amount: Decimal | None = None,
         replacement_order_number: str | None = None,
+        currency_symbol: str = "£",
     ) -> bool:
         """
         Send return completion email to customer.
@@ -1415,7 +1419,7 @@ class EmailService:
         if refund_amount:
             resolution_html = f"""
             <div style="background: #f0fdf4; border: 1px solid #22c55e; border-radius: 8px; padding: 15px; margin: 20px 0;">
-                <p style="margin: 0;"><strong>Refund Amount:</strong> £{refund_amount:.2f}</p>
+                <p style="margin: 0;"><strong>Refund Amount:</strong> {currency_symbol}{refund_amount:.2f}</p>
                 <p style="margin: 5px 0 0 0; color: #666; font-size: 0.9em;">Please allow 5-10 business days for the refund to appear on your statement.</p>
             </div>
             """

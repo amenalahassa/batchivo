@@ -43,6 +43,7 @@ import { usePrinterCostPolicy, useUpdatePrinterCostPolicy } from '@/hooks/usePri
 import { formatMoney } from '@/lib/money'
 import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 import type { CostProfileFieldOrigin, PrinterCostPolicyUpdate } from '@/types/pricing'
+import { apiErrorDetail } from '@/lib/apiError'
 
 /** Human wording for each input the derived rate can be missing. */
 const MISSING_LABEL: Record<string, string> = {
@@ -252,7 +253,7 @@ export function PrinterCostPolicyForm({
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Not saved</AlertTitle>
-            <AlertDescription>{saveError.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
           </Alert>
         )}
 

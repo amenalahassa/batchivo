@@ -97,6 +97,8 @@ export function useBulkCreateFilamentType() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['filament-types'] })
       queryClient.invalidateQueries({ queryKey: ['filament-type-spools'] })
+      // The Dashboard's spool list creates through this dialog too.
+      queryClient.invalidateQueries({ queryKey: ['spools'] })
     },
   })
 }
@@ -108,6 +110,7 @@ export function useBatchCreateFilamentTypes() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['filament-types'] })
       queryClient.invalidateQueries({ queryKey: ['filament-type-spools'] })
+      queryClient.invalidateQueries({ queryKey: ['spools'] })
     },
   })
 }

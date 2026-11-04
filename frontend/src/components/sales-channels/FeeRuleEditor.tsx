@@ -58,6 +58,7 @@ import {
   COUNT_BASES,
 } from '@/lib/pricing/feeBases'
 import type { FeeBasis, FeeRule, FeeRuleCreate } from '@/types/pricing'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface FeeRuleEditorProps {
   channelId: string
@@ -423,7 +424,7 @@ export function FeeRuleEditor({
 
             {create.error ? (
               <p className="text-sm text-destructive" data-testid="fee-rule-save-error">
-                {create.error.message}
+                {apiErrorDetail(create.error)}
               </p>
             ) : null}
 

@@ -99,8 +99,9 @@ export function ProductModelsEditor({
 
   // Fetch available models for selection
   const { data: availableModels } = useQuery({
-    queryKey: ['models', { limit: 100 }],
-    queryFn: () => listModels({ limit: 100 }),
+    // Archived (deleted) models are not offered (bug model-soft-delete-listed).
+    queryKey: ['models', { limit: 100, is_active: true }],
+    queryFn: () => listModels({ limit: 100, is_active: true }),
   })
 
   const form = useForm<z.input<typeof modelFormSchema>, unknown, ModelFormValues>({

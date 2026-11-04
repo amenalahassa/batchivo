@@ -475,6 +475,7 @@ async def complete_return_request(
             # what they were refunded (task T190, FR-047).
             refund_amount=return_request.refund_amount,
             replacement_order_number=replacement_order_number,
+            currency_symbol=tenant.currency_symbol if tenant else "£",
         )
     except Exception as e:
         import logging

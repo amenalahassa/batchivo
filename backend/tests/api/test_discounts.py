@@ -751,3 +751,23 @@ class TestOnlyAdminsMayChangeDiscountCodes:
         )
 
         assert response.status_code == 201, response.text
+
+
+# Bug hardcoded-gbp-emails-messages: the shop's discount messages were always
+# in pounds, whatever the tenant's currency.
+@pytest.mark.asyncio
+async def test_validate_discount_messages_use_the_tenant_currency(
+    client: AsyncClient, db_session: AsyncSession, test_tenant, test_discount_code
+):
+    test_tenant.currency_symbol = "€"
+    await db_session.commit()
+
+    applied = await client.post(
+        "/api/v1/discounts/validate", json={"code": "TEST10", "subtotal": "50.00"}
+    )
+    too_small = await client.post(
+        "/api/v1/discounts/validate", json={"code": "TEST10", "subtotal": "10.00"}
+    )
+
+    assert applied.json()["message"] == "Discount applied: €5.00 off"
+    assert too_small.json()["message"] == "Minimum order amount of €20.00 required"

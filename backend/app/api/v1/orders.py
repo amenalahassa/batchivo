@@ -1323,7 +1323,10 @@ async def refund_order(
         if refund_amount_pence > pounds_to_pence(order.total):
             raise HTTPException(
                 status_code=400,
-                detail=f"Refund amount £{request.amount} exceeds order total £{order.total}",
+                detail=(
+                    f"Refund amount {tenant.currency_symbol}{request.amount} exceeds "
+                    f"order total {tenant.currency_symbol}{order.total}"
+                ),
             )
     else:
         # Full refund
@@ -1420,7 +1423,9 @@ async def refund_order(
         logger.error(f"Failed to send refund confirmation email: {e}")
         # Don't fail the request - refund was successful
 
-    message = f"Order {order.order_number} has been refunded (£{refunded:.2f})"
+    message = (
+        f"Order {order.order_number} has been refunded ({tenant.currency_symbol}{refunded:.2f})"
+    )
     if inventory_reverted:
         message += " and inventory restored"
 
@@ -1574,6 +1579,7 @@ async def resend_order_email(
                 subtotal=order.subtotal or Decimal("0"),
                 shipping_cost=order.shipping_cost or Decimal("0"),
                 total=order.total or Decimal("0"),
+                currency_symbol=tenant.currency_symbol if tenant else "£",
                 shipping_address={
                     "address_line1": order.shipping_address_line1 or "",
                     "address_line2": order.shipping_address_line2 or "",

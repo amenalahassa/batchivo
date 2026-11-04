@@ -58,6 +58,7 @@ import {
 import { useCurrency } from '@/hooks/useCurrency'
 import { formatMoney } from '@/lib/money'
 import type { ShippingProfile, ShippingProfileCreate } from '@/types/pricing'
+import { apiErrorDetail } from '@/lib/apiError'
 
 const amount = /^\d+(\.\d{1,2})?$/
 const grams = /^\d+(\.\d+)?$/
@@ -176,12 +177,19 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
       max_height_mm: values.max_height_mm || null,
       volumetric_divisor: values.volumetric_divisor || null,
     }
-    if (editing === 'new') {
-      await create.mutateAsync(body)
-    } else if (editing) {
-      // effective_from is the successor's opening date when this reprices;
-      // the API ignores it for a name or carrier correction.
-      await update.mutateAsync({ profileId: editing.id, data: body })
+    try {
+      if (editing === 'new') {
+        await create.mutateAsync(body)
+      } else if (editing) {
+        // effective_from is the successor's opening date when this reprices;
+        // the API ignores it for a name or carrier correction.
+        await update.mutateAsync({ profileId: editing.id, data: body })
+      }
+    } catch {
+      // A refusal is shown in the "Not saved" alert from the mutation's own
+      // error; the form stays open so the operator can correct it rather than
+      // the rejection escaping unhandled (bug postage-error-raw-json).
+      return
     }
     setEditing(null)
   }
@@ -215,7 +223,7 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Not saved</AlertTitle>
-            <AlertDescription>{saveError.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
           </Alert>
         )}
 

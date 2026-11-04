@@ -36,57 +36,59 @@ const mockSpools: Spool[] = [
     id: '1',
     spool_id: 'FIL-001',
     tenant_id: 'test-tenant',
-    material_type_id: 'mat-1',
-    material_type_code: 'PLA',
-    material_type_name: 'PLA',
-    brand: 'Polymaker',
-    color: 'Galaxy Black',
-    finish: 'Matte',
-    diameter: 1.75,
-    translucent: false,
-    glow: false,
     initial_weight: 1000,
     current_weight: 750,
     remaining_weight: 250,
     remaining_percentage: 75,
-    purchased_quantity: 2,
-    spools_remaining: 2,
     purchase_date: '2024-11-01',
     purchase_price: '25.0',
     supplier: 'Amazon',
     storage_location: 'Shelf A',
-    notes: '',
     is_active: true,
     created_at: '2024-11-01T00:00:00Z',
     updated_at: '2024-11-01T00:00:00Z',
+    filament_type_id: 'ft-1',
+    filament_type: {
+      id: 'ft-1',
+      material_type_id: 'mat-1',
+      material_type_code: 'PLA',
+      material_type_name: 'PLA',
+      brand: 'Polymaker',
+      color: 'Galaxy Black',
+      finish: 'Matte',
+      diameter: 1.75,
+      translucent: false,
+      glow: false,
+    },
   },
   {
     id: '2',
     spool_id: 'FIL-002',
     tenant_id: 'test-tenant',
-    material_type_id: 'mat-2',
-    material_type_code: 'PETG',
-    material_type_name: 'PETG',
-    brand: 'eSun',
-    color: 'Red',
-    finish: null,
-    diameter: 1.75,
-    translucent: false,
-    glow: false,
     initial_weight: 1000,
     current_weight: 150,
     remaining_weight: 850,
     remaining_percentage: 15,
-    purchased_quantity: 1,
-    spools_remaining: 1,
     purchase_date: '2024-10-15',
     purchase_price: '22.0',
     supplier: null,
     storage_location: null,
-    notes: '',
     is_active: true,
     created_at: '2024-10-15T00:00:00Z',
     updated_at: '2024-11-15T00:00:00Z',
+    filament_type_id: 'ft-2',
+    filament_type: {
+      id: 'ft-2',
+      material_type_id: 'mat-2',
+      material_type_code: 'PETG',
+      material_type_name: 'PETG',
+      brand: 'eSun',
+      color: 'Red',
+      finish: null,
+      diameter: 1.75,
+      translucent: false,
+      glow: false,
+    },
   },
 ]
 
@@ -263,32 +265,18 @@ describe('SpoolList', () => {
     expect(editButtons.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('displays spool count badge for duplicate material/brand/color', async () => {
-    const duplicateSpools = [
-      ...mockSpools,
-      {
-        ...mockSpools[0],
-        id: '3',
-        spool_id: 'FIL-003',
-        current_weight: 500,
-      },
-    ]
-
-    mockSpoolsApiList.mockResolvedValue({
-      ...mockSpoolListResponse,
-      spools: duplicateSpools,
-      total: 3,
-    })
+  // The API has no batch fields (one record is one physical spool). The list
+  // computed its bar from `spools_remaining`, got NaN, and showed 0% for every
+  // spool (bug spool-flat-fields-undefined).
+  it("shows each spool's own remaining percentage", async () => {
+    mockSpoolsApiList.mockResolvedValue(mockSpoolListResponse)
     mockMaterialTypesApiList.mockResolvedValue(mockMaterialTypes)
 
     renderWithQueryClient(<SpoolList />)
 
-    // Wait for data to load
     await screen.findAllByText('FIL-001')
-
-    // Should show "×2" badge for Polymaker PLA Galaxy Black (may appear in mobile and desktop views)
-    const badges = await screen.findAllByText('×2')
-    expect(badges.length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('75%')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('15%')).length).toBeGreaterThan(0)
   })
 
   it('handles pagination correctly', async () => {
@@ -326,15 +314,12 @@ describe('SpoolList', () => {
     // Wait for data to load
     await screen.findAllByText('FIL-001')
 
-    // FIL-001 has spools_remaining: 2, so total weight = 750 + (1 * 1000) = 1750g / 2000g
-    // FIL-002 has spools_remaining: 1, so weight = 150g / 1000g
-    const weight1750 = await screen.findAllByText('1750g')
-    const weight2000 = await screen.findAllByText('/ 2000g')
+    // Each record is one spool: current / initial filament weight.
+    const weight750 = await screen.findAllByText('750g')
     const weight150 = await screen.findAllByText('150g')
     const weight1000 = await screen.findAllByText('/ 1000g')
 
-    expect(weight1750.length).toBeGreaterThan(0)
-    expect(weight2000.length).toBeGreaterThan(0)
+    expect(weight750.length).toBeGreaterThan(0)
     expect(weight150.length).toBeGreaterThan(0)
     expect(weight1000.length).toBeGreaterThan(0)
   })

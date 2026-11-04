@@ -51,7 +51,11 @@ export function ModelList() {
 
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState<string | undefined>(undefined)
-  const [isActive, setIsActive] = useState<boolean | undefined>(undefined)
+  // Active models by default: deleting a model archives it (is_active=false),
+  // and a list that also showed archived ones made a delete look like it had
+  // not happened (bug model-soft-delete-listed). "All" / "Inactive" still
+  // reach them.
+  const [isActive, setIsActive] = useState<boolean | undefined>(true)
   const [sortBy, setSortBy] = useState<SortOption>('recent')
   const [page, setPage] = useState(0)
   const [limit] = useState(50)
@@ -88,12 +92,12 @@ export function ModelList() {
   const clearFilters = () => {
     setSearch('')
     setCategory(undefined)
-    setIsActive(undefined)
+    setIsActive(true)
     setSortBy('recent')
     setPage(0)
   }
 
-  const hasActiveFilters = search || category || isActive !== undefined || sortBy !== 'recent'
+  const hasActiveFilters = search || category || isActive !== true || sortBy !== 'recent'
 
   // Sort models client-side (backend returns by recent first)
   const sortedModels = data?.models ? [...data.models].sort((a, b) => {

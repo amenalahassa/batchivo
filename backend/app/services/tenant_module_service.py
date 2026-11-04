@@ -25,6 +25,11 @@ DEFAULT_MODULES_BY_TYPE: dict[str, list[str]] = {
         "orders",
         "categories",
         "sales_channels",
+        # Packaging is set up on the consumables page; without this module a
+        # 3D-print tenant had no route to it at all (bug consumables-module-
+        # never-enabled).
+        "consumables",
+        "designers",
     ],
     TenantType.HAND_KNITTING.value: [
         "products",
@@ -46,7 +51,9 @@ DEFAULT_MODULES_BY_TYPE: dict[str, list[str]] = {
     ],
 }
 
-# All available modules in the system
+# All available modules in the system. Every module that has navigation in
+# `app/api/v1/modules.py:MODULE_NAVIGATION` must be listed here, or it is never
+# enabled, never shown and refused by the frontend's ModuleGuard.
 ALL_MODULES = [
     "spools",
     "models",
@@ -56,6 +63,8 @@ ALL_MODULES = [
     "orders",
     "categories",
     "sales_channels",
+    "consumables",
+    "designers",
 ]
 
 

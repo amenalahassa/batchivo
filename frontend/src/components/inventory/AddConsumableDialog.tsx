@@ -27,6 +27,7 @@ import { Loader2, RefreshCw } from 'lucide-react'
 import { PackagingFieldsSection } from './PackagingFieldsSection'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface AddConsumableDialogProps {
   open: boolean
@@ -368,7 +369,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             <div className="bg-destructive/10 border border-destructive rounded-md p-3">
               <p className="text-sm text-destructive">
                 Failed to create consumable:{' '}
-                {createMutation.error instanceof Error ? createMutation.error.message : 'Unknown error'}
+                {apiErrorDetail(createMutation.error)}
               </p>
             </div>
           )}

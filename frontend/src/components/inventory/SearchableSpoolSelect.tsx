@@ -41,7 +41,7 @@ export interface SearchableSpoolSelectProps {
  * The cmdk library filters on this value, so it includes all searchable fields.
  */
 function createSearchableValue(spool: SpoolResponse): string {
-  return `${spool.spool_id} ${spool.brand} ${spool.color} ${spool.material_type_code}`.toLowerCase()
+  return `${spool.spool_id} ${spool.filament_type?.brand} ${spool.filament_type?.color} ${spool.filament_type?.material_type_code}`.toLowerCase()
 }
 
 /**
@@ -79,11 +79,11 @@ function renderSpoolOption(
       </div>
 
       {/* Color swatch */}
-      {spool.color_hex ? (
+      {spool.filament_type?.color_hex ? (
         <div
           className="w-4 h-4 rounded-full border border-border flex-shrink-0"
-          style={{ backgroundColor: `#${spool.color_hex}` }}
-          title={spool.color}
+          style={{ backgroundColor: `#${spool.filament_type?.color_hex}` }}
+          title={spool.filament_type?.color}
         />
       ) : (
         <div className="w-4 h-4 rounded-full border border-dashed border-muted-foreground/50 flex-shrink-0" />
@@ -94,12 +94,12 @@ function renderSpoolOption(
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-medium">{spool.spool_id}</span>
           <Badge variant="outline" className="text-xs">
-            {spool.material_type_code}
+            {spool.filament_type?.material_type_code}
           </Badge>
         </div>
         <div className="text-xs text-muted-foreground truncate">
-          {spool.brand} {spool.color}
-          {spool.finish && ` (${spool.finish})`}
+          {spool.filament_type?.brand} {spool.filament_type?.color}
+          {spool.filament_type?.finish && ` (${spool.filament_type?.finish})`}
         </div>
       </div>
 
@@ -128,10 +128,10 @@ function renderSpoolValue(
   return (
     <div className="flex items-center gap-2">
       {/* Color swatch */}
-      {spool.color_hex ? (
+      {spool.filament_type?.color_hex ? (
         <div
           className="w-4 h-4 rounded-full border border-border flex-shrink-0"
-          style={{ backgroundColor: `#${spool.color_hex}` }}
+          style={{ backgroundColor: `#${spool.filament_type?.color_hex}` }}
         />
       ) : (
         <div className="w-4 h-4 rounded-full border border-dashed border-muted-foreground/50 flex-shrink-0" />
@@ -140,10 +140,10 @@ function renderSpoolValue(
       {/* Compact spool info */}
       <span className="font-mono text-sm">{spool.spool_id}</span>
       <span className="text-muted-foreground">
-        {spool.brand} {spool.color}
+        {spool.filament_type?.brand} {spool.filament_type?.color}
       </span>
       <Badge variant="outline" className="text-xs">
-        {spool.material_type_code}
+        {spool.filament_type?.material_type_code}
       </Badge>
     </div>
   )
@@ -192,7 +192,7 @@ const SearchableSpoolSelect = React.forwardRef<HTMLButtonElement, SearchableSpoo
         .filter((spool) => !excludeSpoolIds.includes(spool.id))
         .map((spool) => ({
           value: createSearchableValue(spool),
-          label: `${spool.spool_id} - ${spool.brand} ${spool.color} (${spool.material_type_code})`,
+          label: `${spool.spool_id} - ${spool.filament_type?.brand} ${spool.filament_type?.color} (${spool.filament_type?.material_type_code})`,
           disabled: !spool.is_active,
         }))
 

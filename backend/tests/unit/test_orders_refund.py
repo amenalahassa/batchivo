@@ -482,6 +482,30 @@ class TestRefundAmountCalculation:
         assert exc_info.value.status_code == 400
         assert "exceeds order total" in exc_info.value.detail
 
+    @pytest.mark.asyncio
+    async def test_refund_refusal_names_amounts_in_the_tenant_currency(
+        self, mock_user, mock_db, mock_tenant, mock_order
+    ):
+        """Bug hardcoded-gbp-emails-messages: the refusal was always in pounds."""
+        mock_order.total = Decimal("50.00")
+        mock_tenant.currency_symbol = "€"
+
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_order
+        mock_db.execute.return_value = mock_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await refund_order(
+                mock_order.id,
+                RefundOrderRequest(amount=Decimal("75.00")),
+                tenant=mock_tenant,
+                user=mock_user,
+                _=True,
+                db=mock_db,
+            )
+
+        assert exc_info.value.detail == "Refund amount €75.00 exceeds order total €50.00"
+
 
 # ============================================
 # Test Square API Integration

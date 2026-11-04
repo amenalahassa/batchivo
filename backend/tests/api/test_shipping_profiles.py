@@ -138,6 +138,20 @@ class TestValidation:
         assert response.status_code == 422
         assert "already covers" in str(response.json()["detail"])
 
+    async def test_the_overlap_refusal_is_worded_for_the_operator(
+        self, client: AsyncClient
+    ) -> None:
+        """Bug postage-error-raw-json: the panel shows this text as it is."""
+        assert (await client.post(URL, json=_body())).status_code == 201
+
+        response = await client.post(URL, json=_body(name="Overlapping"))
+
+        assert response.json()["detail"] == (
+            '"Canada Post Expedited" already covers 0 g to 250 g in zone domestic. '
+            "Change this profile's weight range so the two do not overlap, "
+            "or edit that profile instead."
+        )
+
     async def test_an_open_ended_bracket_overlapping_an_existing_one_is_a_422(
         self, client: AsyncClient
     ) -> None:

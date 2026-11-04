@@ -76,27 +76,29 @@ const mockUpdateSyncItemError = vi.mocked(updateSyncItemError)
 const mockSpool = {
   id: 'spool-1',
   spool_id: 'SPOOL-001',
-  material_type_id: 'mat-1',
-  material_type_name: 'PLA',
-  material_type_code: 'PLA',
   tenant_id: 'tenant-1',
-  diameter: 1.75,
-  translucent: false,
-  glow: false,
   initial_weight: 1000,
   current_weight: 800,
   remaining_weight: 800,
   remaining_percentage: 80,
-  purchased_quantity: 1,
-  spools_remaining: 1,
-  brand: 'TestBrand',
-  color: 'Red',
   is_active: true,
   initial_weight_grams: 1000,
   current_weight_grams: 800,
   cost_per_gram: '0.025',
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
+  filament_type_id: 'ft-1',
+  filament_type: {
+    id: 'ft-1',
+    material_type_id: 'mat-1',
+    material_type_name: 'PLA',
+    material_type_code: 'PLA',
+    diameter: 1.75,
+    translucent: false,
+    glow: false,
+    brand: 'TestBrand',
+    color: 'Red',
+  },
 }
 
 const mockSpoolsList = {
@@ -372,7 +374,7 @@ describe('useOfflineSpools', () => {
     it('updates spool when online', async () => {
       mockSpoolsApi.get.mockResolvedValue(mockSpool)
       mockSaveSpool.mockResolvedValue(undefined)
-      mockSpoolsApi.update.mockResolvedValue({ ...mockSpool, color: 'Blue' })
+      mockSpoolsApi.update.mockResolvedValue({ ...mockSpool, storage_location: 'Shelf B' })
 
       const { result } = renderHook(() => useOfflineSpool('spool-1'), {
         wrapper: createWrapper(queryClient),
@@ -381,11 +383,11 @@ describe('useOfflineSpools', () => {
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
       await act(async () => {
-        result.current.updateSpool({ color: 'Blue' })
+        result.current.updateSpool({ storage_location: 'Shelf B' })
       })
 
       await waitFor(() => {
-        expect(mockSpoolsApi.update).toHaveBeenCalledWith('spool-1', { color: 'Blue' })
+        expect(mockSpoolsApi.update).toHaveBeenCalledWith('spool-1', { storage_location: 'Shelf B' })
       })
     })
 
@@ -616,12 +618,12 @@ describe('useOfflineSpools', () => {
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
       await act(async () => {
-        result.current.updateSpool({ color: 'Blue' })
+        result.current.updateSpool({ storage_location: 'Shelf B' })
       })
 
       await waitFor(() => {
         expect(mockAddToSyncQueue).toHaveBeenCalledWith('spool', 'spool-1', 'update', {
-          color: 'Blue',
+          storage_location: 'Shelf B',
         })
       })
     })
@@ -766,7 +768,7 @@ describe('useOfflineSpools', () => {
         entityType: 'spool' as const,
         entityId: 'spool-1',
         operation: 'update' as const,
-        data: { color: 'Blue' },
+        data: { storage_location: 'Shelf B' },
         createdAt: '2024-01-01T00:00:00Z',
         retryCount: 0,
       }
@@ -774,7 +776,7 @@ describe('useOfflineSpools', () => {
       mockSpoolsApi.list.mockResolvedValue(mockSpoolsList)
       mockSaveSpools.mockResolvedValue(undefined)
       mockGetSyncQueue.mockResolvedValue([syncItem])
-      mockSpoolsApi.update.mockResolvedValue({ ...mockSpool, color: 'Blue' })
+      mockSpoolsApi.update.mockResolvedValue({ ...mockSpool, storage_location: 'Shelf B' })
       mockRemoveFromSyncQueue.mockResolvedValue(undefined)
       mockGetSyncQueueCount.mockResolvedValue(0)
 
@@ -789,7 +791,7 @@ describe('useOfflineSpools', () => {
       })
 
       await waitFor(() => {
-        expect(mockSpoolsApi.update).toHaveBeenCalledWith('spool-1', { color: 'Blue' })
+        expect(mockSpoolsApi.update).toHaveBeenCalledWith('spool-1', { storage_location: 'Shelf B' })
         expect(mockRemoveFromSyncQueue).toHaveBeenCalledWith('sync-1')
       })
     })
@@ -834,7 +836,7 @@ describe('useOfflineSpools', () => {
         entityType: 'spool' as const,
         entityId: 'spool-1',
         operation: 'update' as const,
-        data: { color: 'Blue' },
+        data: { storage_location: 'Shelf B' },
         createdAt: '2024-01-01T00:00:00Z',
         retryCount: 3, // MAX_SYNC_RETRIES
       }
@@ -864,7 +866,7 @@ describe('useOfflineSpools', () => {
         entityType: 'spool' as const,
         entityId: 'spool-1',
         operation: 'update' as const,
-        data: { color: 'Blue' },
+        data: { storage_location: 'Shelf B' },
         createdAt: '2024-01-01T00:00:00Z',
         retryCount: 0,
       }

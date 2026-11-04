@@ -1689,6 +1689,7 @@ async def complete_checkout(
             subtotal=pence_to_pounds(session.subtotal),
             shipping_cost=pence_to_pounds(session.shipping_cost),
             total=pence_to_pounds(session.total),
+            currency_symbol=shop_tenant.currency_symbol,
             shipping_address={
                 "address_line1": shipping["line1"],
                 "address_line2": shipping.get("line2"),

@@ -28,6 +28,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { FeeBreakdownTable } from '@/components/pricing/FeeBreakdownTable'
 import { useFeePreview } from '@/hooks/useFeeRules'
+import { apiErrorDetail } from '@/lib/apiError'
 
 const AMOUNT = /^\d+(\.\d{1,2})?$/
 
@@ -126,7 +127,7 @@ export function FeePreviewPanel({ channelId, currencySymbol }: FeePreviewPanelPr
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>No preview</AlertTitle>
-            <AlertDescription>{preview.error.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(preview.error)}</AlertDescription>
           </Alert>
         )}
 

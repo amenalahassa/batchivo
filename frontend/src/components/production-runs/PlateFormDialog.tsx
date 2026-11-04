@@ -34,6 +34,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Loader2 } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface PlateFormDialogProps {
   open: boolean
@@ -55,8 +56,9 @@ export function PlateFormDialog({
 
   // Fetch models for dropdown
   const { data: modelsData } = useQuery({
-    queryKey: ['models', { limit: 500 }],
-    queryFn: () => listModels({ limit: 500 }),
+    // Archived (deleted) models are not offered (bug model-soft-delete-listed).
+    queryKey: ['models', { limit: 500, is_active: true }],
+    queryFn: () => listModels({ limit: 500, is_active: true }),
     enabled: open,
   })
 
@@ -356,7 +358,7 @@ export function PlateFormDialog({
               <div className="bg-destructive/10 border border-destructive rounded-md p-3">
                 <p className="text-sm text-destructive">
                   Failed to {isEdit ? 'update' : 'create'} plate:{' '}
-                  {mutation.error instanceof Error ? mutation.error.message : 'Unknown error'}
+                  {apiErrorDetail(mutation.error)}
                 </p>
               </div>
             )}

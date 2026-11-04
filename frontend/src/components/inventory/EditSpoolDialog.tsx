@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useCurrency } from '@/hooks/useCurrency'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { spoolsApi, materialTypesApi } from '@/lib/api/spools'
+import { spoolsApi } from '@/lib/api/spools'
 import type { SpoolUpdate } from '@/types/spool'
+import { apiErrorDetail } from '@/lib/apiError'
 
 // Normalize brand/supplier names to prevent duplicates
 const normalizeName = (name: string): string => {
@@ -29,13 +30,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -63,13 +57,7 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
     enabled: !!spoolId && open,
   })
 
-  // Fetch material types for dropdown
-  const { data: materialTypes, isLoading: loadingMaterials } = useQuery({
-    queryKey: ['material-types'],
-    queryFn: () => materialTypesApi.list(),
-  })
-
-  // Fetch existing spools for brand/supplier autocomplete
+  // Fetch existing spools for supplier autocomplete
   const { data: spoolData } = useQuery({
     queryKey: ['spools', { page: 1, page_size: 100 }],
     queryFn: () => spoolsApi.list({ page: 1, page_size: 100 }),
@@ -92,20 +80,13 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
     if (spool && open) {
       setFormData({
         spool_id: spool.spool_id,
-        material_type_id: spool.material_type_id,
-        brand: spool.brand,
-        color: spool.color,
-        finish: spool.finish || '',
         initial_weight: spool.initial_weight,
         current_weight: spool.current_weight,
         empty_spool_weight: spool.empty_spool_weight || undefined,
         purchase_date: spool.purchase_date ? spool.purchase_date.split('T')[0] : undefined,
         purchase_price: spool.purchase_price || undefined,
         supplier: spool.supplier || '',
-        purchased_quantity: spool.purchased_quantity,
-        spools_remaining: spool.spools_remaining,
         storage_location: spool.storage_location || '',
-        notes: spool.notes || '',
         is_active: spool.is_active,
       })
       // Reset weight input mode and display value
@@ -113,33 +94,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
       setDisplayedWeight(spool.current_weight.toString())
     }
   }, [spool, open])
-
-  // Sort materials to show PLA, PETG, TPU first
-  const sortedMaterials = (materialTypes && Array.isArray(materialTypes)) ? [...materialTypes].sort((a, b) => {
-    const priority = { 'PLA': 1, 'PETG': 2, 'TPU': 3 }
-    const aPriority = priority[a.code as keyof typeof priority] || 999
-    const bPriority = priority[b.code as keyof typeof priority] || 999
-
-    if (aPriority !== bPriority) {
-      return aPriority - bPriority
-    }
-    return a.code.localeCompare(b.code)
-  }) : []
-
-  // Extract unique brands and suppliers from existing spools
-  const uniqueBrands = useMemo(() => {
-    if (!spoolData) return []
-
-    const brandMap = new Map<string, string>()
-    spoolData.spools.forEach(spool => {
-      const normalized = normalizeName(spool.brand)
-      if (!brandMap.has(normalized)) {
-        brandMap.set(normalized, getDisplayName(spool.brand))
-      }
-    })
-
-    return Array.from(brandMap.values()).sort()
-  }, [spoolData])
 
   const uniqueSuppliers = useMemo(() => {
     if (!spoolData) return []
@@ -175,9 +129,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
     // Validation
     if (
       !formData.spool_id ||
-      !formData.material_type_id ||
-      !formData.brand ||
-      !formData.color ||
       !formData.initial_weight ||
       formData.current_weight === undefined
     ) {
@@ -273,74 +224,25 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="material_type">
-                    Material Type <span className="text-destructive">*</span>
-                  </Label>
-                  <Select
-                    value={formData.material_type_id}
-                    onValueChange={(value) => handleInputChange('material_type_id', value)}
-                    disabled={loadingMaterials}
+                  <Label>Filament</Label>
+                  <div
+                    className="min-h-10 flex items-center px-3 py-1 bg-muted rounded-md text-sm"
+                    data-testid="spool-filament-type"
                   >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select material..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {sortedMaterials.length > 0 && sortedMaterials.map((mat) => (
-                        <SelectItem key={mat.id} value={mat.id}>
-                          {mat.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    {spool?.filament_type
+                      ? `${spool.filament_type.material_type_name} · ${spool.filament_type.brand} · ${spool.filament_type.color}${spool.filament_type.finish ? ` (${spool.filament_type.finish})` : ''}`
+                      : '—'}
+                  </div>
+                  {/* Material, brand and colour belong to the filament type, shared by
+                      every spool of it. The spool API does not take them, so they are
+                      shown, not offered as fields that would not save. */}
+                  <p className="text-xs text-muted-foreground">
+                    Edit material, brand and colour on the Filaments page.
+                  </p>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="brand">
-                    Brand <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="brand"
-                    list="brand-list"
-                    placeholder="Polymaker"
-                    value={formData.brand}
-                    onChange={(e) => handleInputChange('brand', getDisplayName(e.target.value))}
-                    onBlur={(e) => handleInputChange('brand', getDisplayName(e.target.value))}
-                    required
-                  />
-                  <datalist id="brand-list">
-                    {uniqueBrands.map((brand) => (
-                      <option key={brand} value={brand} />
-                    ))}
-                  </datalist>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="color">
-                    Colour <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    id="color"
-                    placeholder="Galaxy Black"
-                    value={formData.color}
-                    onChange={(e) => handleInputChange('color', e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="finish">Finish</Label>
-                  <Input
-                    id="finish"
-                    placeholder="Matte, Glossy, etc."
-                    value={formData.finish || ''}
-                    onChange={(e) => handleInputChange('finish', e.target.value)}
-                  />
-                </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="empty_spool_weight">
                     Empty Spool Weight (g)
@@ -449,44 +351,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
             <div className="border-t pt-4 space-y-4">
               <h4 className="text-sm font-medium">Purchase Information (Optional)</h4>
 
-              {/* Batch Tracking */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="purchased_quantity">
-                    Purchased Quantity <span className="text-muted-foreground text-xs">(spools)</span>
-                  </Label>
-                  <Input
-                    id="purchased_quantity"
-                    type="number"
-                    min="1"
-                    placeholder="1"
-                    value={formData.purchased_quantity || 1}
-                    onChange={(e) => handleInputChange('purchased_quantity', parseInt(e.target.value) || 1)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    How many spools were in this batch purchase?
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="spools_remaining">
-                    Spools Remaining <span className="text-muted-foreground text-xs">(spools)</span>
-                  </Label>
-                  <Input
-                    id="spools_remaining"
-                    type="number"
-                    min="0"
-                    max={formData.purchased_quantity || 1}
-                    placeholder="1"
-                    value={formData.spools_remaining || 1}
-                    onChange={(e) => handleInputChange('spools_remaining', parseInt(e.target.value) || 1)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    How many spools are left from this batch?
-                  </p>
-                </div>
-              </div>
-
               <div className="grid grid-cols-3 gap-4">
 
                 <div className="space-y-2">
@@ -551,16 +415,6 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
                 />
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="notes">Notes</Label>
-                <textarea
-                  id="notes"
-                  className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  placeholder="Any additional notes about this spool..."
-                  value={formData.notes || ''}
-                  onChange={(e) => handleInputChange('notes', e.target.value)}
-                />
-              </div>
 
               <div className="flex items-center space-x-2">
                 <input
@@ -580,7 +434,7 @@ export function EditSpoolDialog({ open, onOpenChange, spoolId }: EditSpoolDialog
             {updateMutation.isError && (
               <div className="bg-destructive/10 border border-destructive rounded-md p-3">
                 <p className="text-sm text-destructive">
-                  Failed to update spool: {updateMutation.error instanceof Error ? updateMutation.error.message : 'Unknown error'}
+                  Failed to update spool: {apiErrorDetail(updateMutation.error)}
                 </p>
               </div>
             )}

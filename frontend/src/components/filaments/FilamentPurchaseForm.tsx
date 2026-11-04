@@ -46,6 +46,7 @@ import { formatMoney } from '@/lib/money'
 import type { FilamentPurchase, SpoolLandedCost } from '@/types/pricing'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { apiErrorDetail } from '@/lib/apiError'
 
 const nonNegative = (message: string) =>
   z
@@ -296,7 +297,7 @@ export function FilamentPurchaseForm({
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Not saved</AlertTitle>
-            <AlertDescription>{saveError.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
           </Alert>
         )}
 

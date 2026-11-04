@@ -19,6 +19,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { useEntityProvenance, useReconfirmProvenance } from '@/hooks/usePricing'
 import { ProvenanceBadge } from './ProvenanceBadge'
+import { apiErrorDetail } from '@/lib/apiError'
 
 export interface ProvenanceFieldsPanelProps {
   entityType: string
@@ -67,7 +68,7 @@ export function ProvenanceFieldsPanel({ entityType, entityId }: ProvenanceFields
       {saveError && (
         <Alert variant="destructive">
           <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{saveError.message}</AlertDescription>
+          <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
         </Alert>
       )}
 

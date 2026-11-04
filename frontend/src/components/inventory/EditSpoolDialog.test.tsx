@@ -50,22 +50,26 @@ function spool(overrides: Partial<SpoolResponse> = {}): SpoolResponse {
     id: 'spool-uuid',
     tenant_id: 'tenant-uuid',
     spool_id: 'FIL-001',
-    material_type_id: 'pla-uuid',
-    material_type_code: 'PLA',
-    material_type_name: 'PLA',
-    brand: 'Bambu',
-    color: 'Black',
-    finish: null,
+    filament_type_id: 'ft-uuid',
+    filament_type: {
+      id: 'ft-uuid',
+      material_type_id: 'pla-uuid',
+      material_type_code: 'PLA',
+      material_type_name: 'PLA',
+      brand: 'Bambu',
+      color: 'Black',
+      finish: null,
+      diameter: 1.75,
+      translucent: false,
+      glow: false,
+    },
     initial_weight: 1000,
     current_weight: 800,
     empty_spool_weight: null,
     purchase_date: null,
     purchase_price: '8.30',
     supplier: null,
-    purchased_quantity: 1,
-    spools_remaining: 1,
     storage_location: null,
-    notes: null,
     is_active: true,
     remaining_weight: 800,
     remaining_percentage: 80,
@@ -149,5 +153,39 @@ describe('EditSpoolDialog for a viewer', () => {
     expect(price).toBeDisabled()
     expect(screen.getByTestId('read-only-notice')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /update spool/i })).toBeDisabled()
+  })
+})
+
+// Bug spool-create-missing-filament-type: the dialog edited brand, colour and
+// material, which the spool API ignores, so the change silently vanished.
+describe('EditSpoolDialog filament type', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    spools.get.mockResolvedValue(spool())
+    spools.list.mockResolvedValue({ spools: [], total: 0, page: 1, page_size: 100 } as never)
+    spools.update.mockResolvedValue(spool())
+    vi.spyOn(window, 'alert').mockImplementation(() => {})
+  })
+
+  it('shows the filament type read-only', async () => {
+    renderDialog(<EditSpoolDialog open onOpenChange={() => {}} spoolId="spool-uuid" />)
+
+    expect(await screen.findByTestId('spool-filament-type')).toHaveTextContent('PLA · Bambu · Black')
+    expect(screen.queryByLabelText(/^brand/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/^colour/i)).not.toBeInTheDocument()
+  })
+
+  it('sends only spool-level fields', async () => {
+    renderDialog(<EditSpoolDialog open onOpenChange={() => {}} spoolId="spool-uuid" />)
+    await screen.findByTestId('spool-filament-type')
+
+    fireEvent.click(screen.getByRole('button', { name: /update spool/i }))
+
+    await waitFor(() => expect(spools.update).toHaveBeenCalled())
+    const sent = spools.update.mock.calls[0][1] as Record<string, unknown>
+    for (const key of ['brand', 'color', 'material_type_id', 'finish', 'notes', 'spools_remaining', 'purchased_quantity']) {
+      expect(sent).not.toHaveProperty(key)
+    }
+    expect(sent.spool_id).toBe('FIL-001')
   })
 })

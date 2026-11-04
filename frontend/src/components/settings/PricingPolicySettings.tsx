@@ -51,6 +51,7 @@ import { usePricingPolicy, useUpdatePricingPolicy } from '@/hooks/usePricing'
 import { compareMoney, formatMoney } from '@/lib/money'
 import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 import type { PricingPolicyUpdate } from '@/types/pricing'
+import { apiErrorDetail } from '@/lib/apiError'
 
 const nonNegative = (message: string) =>
   z
@@ -249,7 +250,7 @@ export function PricingPolicySettings({ canEdit = true }: PricingPolicySettingsP
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Not saved</AlertTitle>
-            <AlertDescription>{saveError.message}</AlertDescription>
+            <AlertDescription>{apiErrorDetail(saveError)}</AlertDescription>
           </Alert>
         )}
 

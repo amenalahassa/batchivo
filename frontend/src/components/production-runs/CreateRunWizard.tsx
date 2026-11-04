@@ -76,6 +76,7 @@ import { Progress } from '@/components/ui/progress'
 import { SearchableSpoolSelect } from '@/components/inventory/SearchableSpoolSelect'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { spoolMaterialName, spoolName } from '@/lib/spool'
 
 
 // Wizard step type
@@ -400,8 +401,8 @@ export function CreateRunWizard() {
         ...formData.materials,
         {
           spool_id: spool.id,
-          spool_name: `${spool.brand} ${spool.color}`,
-          material_type: spool.material_type_name,
+          spool_name: spoolName(spool),
+          material_type: spoolMaterialName(spool),
           // Split filament tracking per spool
           estimated_model_weight_grams: 0,
           estimated_flushed_grams: 0,

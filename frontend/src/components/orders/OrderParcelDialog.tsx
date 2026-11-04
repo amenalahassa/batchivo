@@ -39,6 +39,7 @@ import { useConfirmOrderParcels, useOrderPackagingSuggestions } from '@/hooks/us
 import { consumablesApi } from '@/lib/api/consumables'
 import { draftFrom, toConfirmInput, type DraftParcel } from '@/lib/packaging'
 import type { ConfirmParcelsResult, ConfirmedParcel } from '@/types/packaging'
+import { apiErrorDetail } from '@/lib/apiError'
 
 function sizeOf(parcel: ConfirmedParcel): string | null {
   const { outer_length_mm: l, outer_width_mm: w, outer_height_mm: h } = parcel
@@ -243,7 +244,7 @@ export function OrderParcelDialog({
               <Alert variant="destructive">
                 <AlertDescription>
                   Not confirmed:{' '}
-                  {confirm.error instanceof Error ? confirm.error.message : 'unknown error'}
+                  {apiErrorDetail(confirm.error)}
                 </AlertDescription>
               </Alert>
             )}

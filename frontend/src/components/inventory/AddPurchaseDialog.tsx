@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2 } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface AddPurchaseDialogProps {
   open: boolean
@@ -260,7 +261,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
             <div className="bg-destructive/10 border border-destructive rounded-md p-3">
               <p className="text-sm text-destructive">
                 Failed to record purchase:{' '}
-                {createMutation.error instanceof Error ? createMutation.error.message : 'Unknown error'}
+                {apiErrorDetail(createMutation.error)}
               </p>
             </div>
           )}

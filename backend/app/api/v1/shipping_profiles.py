@@ -55,6 +55,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _grams(value: object) -> str:
+    """A bracket limit as an operator writes it: `0`, `250`, `1.5`, never `0.00`."""
+    return format(Decimal(str(value)).normalize(), "f")
+
+
+def _upper_limit(value: object | None) -> str:
+    """An upper bracket limit, or "any weight" for an open-ended one."""
+    return "any weight" if value is None else f"{_grams(value)} g"
+
+
 async def _profile_or_404(
     db: AsyncSession,
     tenant_id: UUID,
@@ -185,12 +195,15 @@ async def _refuse_overlapping_bracket(
         ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                # Worded for the operator who sees it in the postage panel
+                # (bug postage-error-raw-json): which profile, which range, and
+                # what to do about it.
                 detail=(
-                    f"{existing.name!r} already covers "
-                    f"{existing.weight_bracket_min_grams}g to "
-                    f"{existing.weight_bracket_max_grams or 'any weight'} in zone "
-                    f"{zone!r}; two profiles claiming one parcel would make its "
-                    "postage depend on which row was read first"
+                    f'"{existing.name}" already covers '
+                    f"{_grams(existing.weight_bracket_min_grams)} g to "
+                    f"{_upper_limit(existing.weight_bracket_max_grams)} in zone {zone}. "
+                    "Change this profile's weight range so the two do not overlap, "
+                    "or edit that profile instead."
                 ),
             )
 
