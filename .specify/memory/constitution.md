@@ -68,13 +68,21 @@ fiction.
 
 ### VII. Deployment Goes Through The Pipeline (NON-NEGOTIABLE)
 
-Changes MUST reach production exactly one way: push to `main`, Woodpecker CI builds and pushes
-images, ArgoCD syncs. Docker images MUST NOT be built or pushed by hand. `kubectl apply` MUST NOT be
-run directly against a cluster. Commits MUST follow `type: description` and MUST NOT carry AI markers
-or Co-Authored-By trailers.
+Every image that runs anywhere MUST be built and published by the CI pipeline from `main`. Docker
+images MUST NOT be built or pushed by hand. Commits MUST follow `type: description` and MUST NOT
+carry AI markers or Co-Authored-By trailers. Two delivery targets exist, each with exactly one path:
+
+- **Project cluster** (k3s): push to `main`, Woodpecker CI builds and pushes images, ArgoCD syncs.
+  `kubectl apply` MUST NOT be run directly against the cluster.
+- **Customer VPS instances** (single-tenant edition): an instance MUST run a versioned release
+  published by CI and MUST pin that version; a moving tag such as `latest` MUST NOT be used. An
+  instance MUST be installed and updated only through the documented install and update commands,
+  run by the provider, and an update MUST take a database backup before it migrates. Containers
+  MUST NOT be edited, rebuilt or patched in place on a VPS, and no cluster tooling is used there.
 
 **Why**: a manual deploy leaves the declared state and the running state disagreeing, and the next
-sync silently reverts it.
+sync silently reverts it; on a customer VPS there is no sync at all, so an unpinned or hand-patched
+instance drifts until nobody can say which release it runs or restore it.
 
 ## Additional Constraints
 
@@ -82,11 +90,13 @@ The stack is fixed for existing surfaces and MUST NOT be substituted without an 
 
 - Backend: FastAPI with async SQLAlchemy 2.0 over PostgreSQL.
 - Frontend: React with TypeScript, TanStack Query and shadcn/ui.
-- Delivery: k3s with ArgoCD, behind a Cloudflare Tunnel.
+- Delivery: k3s with ArgoCD, behind a Cloudflare Tunnel, for the project cluster; the documented
+  container bundle for customer VPS instances.
 
 Database changes MUST go through Alembic migrations, and a fresh database MUST be able to reach head
-after every migration lands. Secrets MUST live in Kubernetes secrets and MUST NOT be committed to the
-repository. A migration that changes computed values MUST report the per-record difference before the
+after every migration lands. Secrets MUST NOT be committed to the repository. On the project cluster
+they MUST live in Kubernetes secrets; on a customer VPS they MUST live in that instance's
+configuration file on the server, readable only by the account that runs the instance. A migration that changes computed values MUST report the per-record difference before the
 change is accepted.
 
 ## Development Workflow
@@ -111,4 +121,4 @@ code to comply. Version increments follow semantic versioning:
 `CLAUDE.md` remains the day-to-day operational guide and MUST NOT contradict this document. Where it
 does, this document wins and `CLAUDE.md` MUST be corrected.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-11
+**Version**: 1.1.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-03

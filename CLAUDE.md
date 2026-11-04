@@ -3,12 +3,21 @@
 ## Critical Rules (MANDATORY)
 
 ### Deployment
-**Only workflow for deploying changes:**
+Every image is built by Woodpecker CI from `main`. **NEVER manually build/push Docker images.**
+
+**Project cluster (k3s) — only workflow:**
 1. Push to GitHub (main branch)
 2. Woodpecker CI builds Docker images → pushes to k3s registry
 3. ArgoCD auto-syncs within 3 minutes
 
-**NEVER manually build/push Docker images. NEVER `kubectl apply` directly.**
+**NEVER `kubectl apply` directly.**
+
+**Customer VPS instances (single-tenant edition, `specs/005-single-tenant-vps`):**
+- Run a versioned release published by CI, pinned — never `latest`
+- Install and update only with the documented install/update commands, run by the provider;
+  an update backs up the database before migrating
+- Never edit, rebuild or patch containers on a VPS; secrets live in the instance config file
+  on the server (owner-only permissions), never in the repo
 
 - **CI**: https://ci.techize.co.uk (Woodpecker)
 - **CD**: https://argocd.techize.co.uk (ArgoCD)
