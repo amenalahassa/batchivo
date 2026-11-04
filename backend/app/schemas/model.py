@@ -382,6 +382,13 @@ class ModelProductionDefaults(BaseModel):
         None, description="Print time for full plate (minutes)"
     )
     prints_per_plate: int = Field(..., description="Number of items per plate")
+    print_minutes_per_item: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Print minutes one item takes on the planned printer, as the cost reads "
+            "them (plate time / items per plate, the printer's own figures first)"
+        ),
+    )
     bom_materials: list[BOMSpoolSuggestion] = Field(
         default_factory=list, description="Bill of Materials with current inventory"
     )

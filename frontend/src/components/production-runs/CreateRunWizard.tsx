@@ -666,8 +666,9 @@ function Step1BasicInfo({
     formData.items.forEach((item) => {
       const defaults = modelDefaults[item.model_id]
       if (defaults) {
-        // Time: (print_time_minutes / prints_per_plate) * quantity
-        const timePerItem = (defaults.print_time_minutes ?? 0) / Math.max(1, defaults.prints_per_plate)
+        // Time: one item's print minutes, from the server (the printer's own plate
+        // time and items per plate first, as the cost reads them) * quantity
+        const timePerItem = parseFloat(defaults.print_minutes_per_item ?? '0')
         totalTime += (timePerItem * item.quantity) / 60 // Convert to hours
 
         // Weight: one item's share of each bill line (the bill is a whole plate run) * quantity

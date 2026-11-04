@@ -294,6 +294,7 @@ class TestModelsProductionDefaultsEndpoint:
         assert data["machine"] == "Prusa XL"
         assert data["print_time_minutes"] == 480
         assert data["prints_per_plate"] == 5
+        assert Decimal(data["print_minutes_per_item"]) == Decimal("96")  # 480 / 5
 
         # Verify BOM has two materials
         assert len(data["bom_materials"]) == 2
@@ -356,6 +357,8 @@ class TestModelsProductionDefaultsEndpoint:
         }
         # Bill 50 g + 30 g; the A1 measured 8 g an item: 5 g and 3 g.
         assert lines == {"Blue": Decimal("5"), "Red": Decimal("3")}
+        # No per-printer time on the row: the model's 480 min over the row's 5 items.
+        assert Decimal(response.json()["print_minutes_per_item"]) == Decimal("96")
 
     @pytest.mark.asyncio
     async def test_get_production_defaults_inactive_spool(

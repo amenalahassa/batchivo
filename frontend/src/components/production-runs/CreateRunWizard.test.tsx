@@ -109,6 +109,7 @@ const mockProductionDefaults1: ModelProductionDefaults = {
   machine: 'Prusa i3 MK3S',
   print_time_minutes: 120,
   prints_per_plate: 5,
+  print_minutes_per_item: '24',
   bom_materials: [
     {
       spool_id: 'spool-1',
@@ -144,6 +145,7 @@ const mockProductionDefaults2: ModelProductionDefaults = {
   machine: 'Prusa XL',
   print_time_minutes: 300,
   prints_per_plate: 3,
+  print_minutes_per_item: '100',
   bom_materials: [
     {
       spool_id: 'spool-2',
@@ -193,6 +195,7 @@ const mockProductionDefaultsLowInventory: ModelProductionDefaults = {
   machine: 'Prusa i3 MK3S',
   print_time_minutes: 120,
   prints_per_plate: 5,
+  print_minutes_per_item: '24',
   bom_materials: [
     {
       spool_id: 'spool-low',
@@ -218,6 +221,7 @@ const mockProductionDefaultsInactive: ModelProductionDefaults = {
   machine: 'Prusa i3 MK3S',
   print_time_minutes: 120,
   prints_per_plate: 5,
+  print_minutes_per_item: '24',
   bom_materials: [
     {
       spool_id: 'spool-inactive',
@@ -422,6 +426,51 @@ describe('CreateRunWizard - Auto-Population Feature', () => {
       await waitFor(() => {
         expect(screen.getByText(/Model default:/i)).toBeInTheDocument()
         expect(screen.getByText(/4h 0m/i)).toBeInTheDocument()
+      })
+    })
+
+    it("plans time from the server's minutes per item, the planned printer's own figures first", async () => {
+      // The planned printer fits 4, not the model's 5: 120 / 4 = 30 min an item
+      mockGetModelProductionDefaults.mockResolvedValue({ ...mockProductionDefaults1, print_minutes_per_item: '30' })
+
+      renderWithProviders(<CreateRunWizard />)
+
+      await screen.findByText('Step 1 of 4: Basic Info')
+
+      // Navigate to Step 2
+      fireEvent.click(screen.getByRole('button', { name: /Next/i }))
+      await screen.findByText('Step 2 of 4: Models')
+
+      // Add model with quantity 10
+      const modelSelect = await screen.findByRole('combobox')
+      fireEvent.click(modelSelect)
+
+      const modelOption = await screen.findByText('MODEL-001')
+      fireEvent.click(modelOption)
+
+      const addButton = screen.getByRole('button', { name: /Add/i })
+      fireEvent.click(addButton)
+
+      // Set quantity to 10
+      await waitFor(() => {
+        expect(screen.getByText('Test Widget')).toBeInTheDocument()
+      })
+
+      // Find quantity input (first spinbutton in the table)
+      const quantityInputs = screen.getAllByRole('spinbutton')
+      const quantityInput = quantityInputs[0]
+      fireEvent.change(quantityInput, { target: { value: '10' } })
+
+      // Go back to Step 1 to see calculated defaults
+      const backButton = screen.getByRole('button', { name: /Back/i })
+      fireEvent.click(backButton)
+
+      await screen.findByText('Step 1 of 4: Basic Info')
+
+      // 30 min * 10 = 300 min = 5h 0m (the model-level 120 / 5 would say 4h 0m)
+      await waitFor(() => {
+        expect(screen.getByText(/Model default:/i)).toBeInTheDocument()
+        expect(screen.getByText(/5h 0m/i)).toBeInTheDocument()
       })
     })
 

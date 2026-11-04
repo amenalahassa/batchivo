@@ -315,6 +315,29 @@ def _items_per_plate(model: Any, config: Optional["ModelPrinterConfig"]) -> Deci
     return config_per_plate or model_per_plate or ONE
 
 
+def _plate_minutes(model: Any, config: Optional["ModelPrinterConfig"]) -> Optional[Decimal]:
+    """One plate run's print time: the printer's own figure, else the model's."""
+    config_minutes = _positive(_as_decimal(getattr(config, "print_time_minutes", None)))
+    model_minutes = _positive(_as_decimal(getattr(model, "print_time_minutes", None)))
+    return config_minutes or model_minutes
+
+
+def minutes_per_item(model: Any, printer_id: Optional[uuid.UUID] = None) -> Optional[Decimal]:
+    """Print minutes one item takes, read as the cost reads them.
+
+    A plate run's time -- the printer's own when its per-printer row has one,
+    else the model's -- divided by items per plate, the printer's figure first.
+    :func:`_item_lines` charges machine time from the same choice. ``None``
+    when no print time is recorded. ``printer_id`` ``None`` means the planned
+    printer. The model needs ``printer_configs`` loaded.
+    """
+    if printer_id is None:
+        printer_id = getattr(model, "planned_printer_id", None)
+    config = _printer_config_by_id(model, printer_id)
+    plate = _plate_minutes(model, config)
+    return None if plate is None else plate / _items_per_plate(model, config)
+
+
 def grams_per_item(
     model: Any, printer_id: Optional[uuid.UUID] = None, line_grams: Any = None
 ) -> Decimal:
@@ -676,8 +699,8 @@ def _item_lines(
 
     # -------------------------------------------------------------- machine
     config_minutes = _positive(_as_decimal(getattr(config, "print_time_minutes", None)))
-    model_minutes = _positive(_as_decimal(getattr(model, "print_time_minutes", None)))
-    plate_minutes = config_minutes or model_minutes
+    # The same choice the run wizard plans by (minutes_per_item).
+    plate_minutes = _plate_minutes(model, config)
 
     if plate_minutes is None:
         result.incomplete_reasons.append(

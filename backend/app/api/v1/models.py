@@ -53,7 +53,7 @@ from app.core import clock
 from app.services.cost_resolution import model_cost_breakdown, with_landed_cost
 from app.services.item_dimensions import dimensions_out
 from app.services.production_run import realised_unit_costs
-from app.services.costing import CostingService, grams_per_item
+from app.services.costing import CostingService, grams_per_item, minutes_per_item
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.provenance import (
     ProvenanceNotEditable,
@@ -695,6 +695,7 @@ async def get_model_production_defaults(
         machine=model.machine,
         print_time_minutes=model.print_time_minutes,
         prints_per_plate=model.prints_per_plate,
+        print_minutes_per_item=minutes_per_item(model),
         bom_materials=bom_suggestions,
     )
 

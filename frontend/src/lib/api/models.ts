@@ -312,6 +312,8 @@ export interface ModelProductionDefaults {
   machine?: string
   print_time_minutes?: number
   prints_per_plate: number
+  /** Print minutes one item takes on the planned printer, as the cost reads them; null when no time is recorded. */
+  print_minutes_per_item?: string | null
   bom_materials: BOMSpoolSuggestion[]
 }
 
