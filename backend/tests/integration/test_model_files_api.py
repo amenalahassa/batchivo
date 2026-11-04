@@ -20,6 +20,8 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
+from tests.utils.model_files import active_version_id
+
 FIXTURES_3MF_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "3mf"
 
 
@@ -504,9 +506,18 @@ class TestModelFileDelete:
 
     @pytest.mark.asyncio
     async def test_delete_file(self, client: AsyncClient, test_model):
-        """Test deleting a file."""
-        # Upload a file
+        """Test deleting a file.
+
+        The active version's last file cannot go (spec 004, FR-015), so a second
+        file keeps the version; that refusal is tested in
+        test_model_files_api_versions.py.
+        """
         stl_content = create_minimal_stl()
+        await client.post(
+            f"/api/v1/models/{test_model.id}/files",
+            files={"file": ("keep.stl", stl_content, "model/stl")},
+            data={"file_type": "source_stl"},
+        )
         upload_response = await client.post(
             f"/api/v1/models/{test_model.id}/files",
             files={"file": ("model.stl", stl_content, "model/stl")},
@@ -643,6 +654,7 @@ class TestTenantIsolation:
             id=uuid4(),
             tenant_id=other_tenant_id,
             model_id=other_model.id,
+            version_id=await active_version_id(db_session, other_tenant_id, other_model.id),
             file_type="source_stl",
             file_url="/uploads/models/other/file.stl",
             original_filename="other.stl",

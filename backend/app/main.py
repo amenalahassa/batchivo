@@ -215,6 +215,8 @@ from app.api.v1 import (
     provenance,
     scenarios,
     forecasting,
+    model_file_notes,
+    model_file_versions,
     model_files,
     models,
     modules,
@@ -279,6 +281,14 @@ app.include_router(
 app.include_router(models.router, prefix=f"{settings.api_v1_prefix}/models", tags=["models"])
 app.include_router(
     model_files.router, prefix=f"{settings.api_v1_prefix}/models", tags=["model-files"]
+)
+app.include_router(
+    model_file_versions.router,
+    prefix=f"{settings.api_v1_prefix}/models",
+    tags=["model-file-versions"],
+)
+app.include_router(
+    model_file_notes.router, prefix=f"{settings.api_v1_prefix}/models", tags=["model-file-notes"]
 )
 app.include_router(modules.router, prefix=f"{settings.api_v1_prefix}/modules", tags=["modules"])
 app.include_router(printers.router, prefix=f"{settings.api_v1_prefix}/printers", tags=["printers"])

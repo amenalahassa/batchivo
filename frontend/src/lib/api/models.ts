@@ -85,10 +85,19 @@ export type ModelFileType = 'source_stl' | 'source_3mf' | 'slicer_project' | 'gc
 export type FileLocation = 'uploaded' | 'local_reference'
 
 // Result of parsing a .3mf file's embedded slicer metadata (transient, not persisted)
+export interface ThreeMFFilamentUse {
+  type: string | null
+  color: string | null
+  grams: number | null
+}
+
 export interface ThreeMFPlateInfo {
   index: number
   print_time_minutes: number | null
   filament_weight_grams: number | null
+  /** Objects the plate prints (skipped ones excluded); null when the file does not list them. */
+  object_count?: number | null
+  filaments?: ThreeMFFilamentUse[]
 }
 
 export interface ThreeMFParseResponse {
@@ -125,6 +134,36 @@ export interface ModelFile {
   updated_at: string
   /** Bounding box measured from the file; null for G-code (packaging advisor). */
   measurement?: FileMeasurement | null
+  /** The version the file belongs to (spec 004). */
+  version_id?: string | null
+  /** A sliced plate (G-code or .gcode.3mf): it holds the print, not the part's shape. */
+  is_sliced?: boolean
+}
+
+/** What an upload returns: the file, and whether a new version was made for it (FR-009a). */
+export interface ModelFileUploadResult {
+  file: ModelFile
+  measurement?: FileMeasurement | null
+  version_created: boolean
+}
+
+/** Where an uploaded file goes: an existing version, or a new one. */
+export interface UploadVersionTarget {
+  versionId?: string
+  newVersionLabel?: string
+  newVersionNote?: string
+}
+
+/**
+ * The file type a file's name implies (T020). A `.gcode.3mf` is a sliced plate,
+ * so it is G-code even though it ends in `.3mf`.
+ */
+export function inferModelFileType(filename: string): ModelFileType | null {
+  const name = filename.toLowerCase()
+  if (name.endsWith('.gcode.3mf') || /\.(gcode|gco|g|bgcode)$/.test(name)) return 'gcode'
+  if (name.endsWith('.stl')) return 'source_stl'
+  if (name.endsWith('.3mf')) return 'source_3mf'
+  return null
 }
 
 export interface LocalPathValidationResponse {
@@ -425,26 +464,33 @@ export async function getModelFiles(modelId: string): Promise<ModelFile[]> {
 }
 
 /**
- * Upload a file for a model
+ * Upload a file for a model.
+ *
+ * Without a version target the file joins the active version, as before
+ * (no breaking change); `newVersionLabel` makes a new, inactive version for it.
+ * Returns the whole upload result so the caller can offer "Make active".
  */
-export async function uploadModelFile(
+export async function uploadModelFileWithResult(
   modelId: string,
   file: File,
-  fileType: ModelFileType,
+  fileType?: ModelFileType,
   options?: {
     partName?: string
     version?: string
     isPrimary?: boolean
     notes?: string
-  }
-): Promise<ModelFile> {
+  } & UploadVersionTarget
+): Promise<ModelFileUploadResult> {
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('file_type', fileType)
+  formData.append('file_type', fileType ?? inferModelFileType(file.name) ?? 'source_3mf')
   if (options?.partName) formData.append('part_name', options.partName)
   if (options?.version) formData.append('version', options.version)
   if (options?.isPrimary) formData.append('is_primary', 'true')
   if (options?.notes) formData.append('notes', options.notes)
+  if (options?.versionId) formData.append('version_id', options.versionId)
+  if (options?.newVersionLabel) formData.append('new_version_label', options.newVersionLabel)
+  if (options?.newVersionNote) formData.append('new_version_note', options.newVersionNote)
 
   let response: Response
   try {
@@ -462,7 +508,24 @@ export async function uploadModelFile(
   }
 
   const result = await response.json()
-  return result.file
+  return { ...result, version_created: Boolean(result.version_created) }
+}
+
+/**
+ * Upload a file for a model; resolves to the stored file.
+ */
+export async function uploadModelFile(
+  modelId: string,
+  file: File,
+  fileType?: ModelFileType,
+  options?: {
+    partName?: string
+    version?: string
+    isPrimary?: boolean
+    notes?: string
+  } & UploadVersionTarget
+): Promise<ModelFile> {
+  return (await uploadModelFileWithResult(modelId, file, fileType, options)).file
 }
 
 /**
@@ -534,7 +597,7 @@ export async function linkLocalModelFile(
     version?: string
     isPrimary?: boolean
     notes?: string
-  }
+  } & UploadVersionTarget
 ): Promise<ModelFile> {
   const response = await apiClient.post<{ file: ModelFile; message: string }>(
     `/api/v1/models/${modelId}/files/link-local`,
@@ -545,6 +608,9 @@ export async function linkLocalModelFile(
       version: options?.version,
       is_primary: options?.isPrimary ?? false,
       notes: options?.notes,
+      version_id: options?.versionId,
+      new_version_label: options?.newVersionLabel,
+      new_version_note: options?.newVersionNote,
     }
   )
   return response.file

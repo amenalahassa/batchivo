@@ -57,21 +57,56 @@ class Measurement:
     """What a file measured: the overall size, each object's, and any note.
 
     ``overall`` is None when the file could not be measured; ``status`` is then
-    ``failed`` or ``skipped`` and ``note`` says why.
+    ``failed`` or ``skipped``, ``note`` says why for a person and ``reason`` for
+    the screen that turns it into plain words (``no_geometry``, ``unreadable``,
+    ``too_large``).
     """
 
     overall: Optional[Dims]
     objects: list[tuple[str, Dims]] = field(default_factory=list)
     note: Optional[str] = None
     status: str = "done"
+    reason: Optional[str] = None
+
+
+#: Why a file could not be measured, as the API reports it (research D11).
+REASON_NO_GEOMETRY = "no_geometry"
+REASON_UNREADABLE = "unreadable"
+REASON_TOO_LARGE = "too_large"
 
 
 class _Unreadable(Exception):
     """A file the parser could not make sense of; its message is the note."""
 
+    def __init__(self, message: str, reason: str = REASON_UNREADABLE):
+        super().__init__(message)
+        self.reason = reason
+
 
 def is_measurable(filename_or_extension: str) -> bool:
     return filename_or_extension.lower().endswith(MEASURABLE_EXTENSIONS)
+
+
+def is_sliced(filename: str, content: Optional[bytes] = None) -> bool:
+    """Whether a file is a sliced plate: G-code, or a 3MF carrying plate G-code (research D3).
+
+    A sliced 3MF (Bambu Studio's ``.gcode.3mf``) is recognised by its
+    ``Metadata/plate_<n>.gcode`` entries whatever its name, so a renamed export
+    is still told apart from a project file. Without content, the name decides.
+    """
+    name = filename.lower()
+    if name.endswith((".gcode", ".gcode.3mf")):
+        return True
+    if content is None or not name.endswith(".3mf"):
+        return False
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as zf:
+            return any(
+                entry.lower().startswith("metadata/plate_") and entry.lower().endswith(".gcode")
+                for entry in zf.namelist()
+            )
+    except zipfile.BadZipFile:
+        return False
 
 
 def measure(file_bytes: bytes, extension: str) -> Optional[Measurement]:
@@ -88,13 +123,14 @@ def measure(file_bytes: bytes, extension: str) -> Optional[Measurement]:
             return _plausible(_measure_stl(file_bytes))
         return _plausible(_measure_3mf(file_bytes))
     except _Unreadable as exc:
-        return Measurement(overall=None, note=str(exc), status="failed")
+        return Measurement(overall=None, note=str(exc), status="failed", reason=exc.reason)
     except Exception as exc:  # noqa: BLE001 - a bad file must never fail an upload
         logger.warning(f"Could not measure {ext} file: {exc}")
         return Measurement(
             overall=None,
             note=f"Could not read the file's geometry ({type(exc).__name__})",
             status="failed",
+            reason=REASON_UNREADABLE,
         )
 
 
@@ -122,6 +158,7 @@ def skipped(size: int) -> Measurement:
         overall=None,
         note=f"Not measured: the file is {size / (1024 * 1024):.0f} MB, over the {limit_mb} MB limit",
         status="skipped",
+        reason=REASON_TOO_LARGE,
     )
 
 
@@ -209,7 +246,7 @@ def _ascii_stl_bounds(data: bytes) -> Bounds:
                 hi[axis] = v
         seen = True
     if not seen:
-        raise _Unreadable("The STL file has no vertices")
+        raise _Unreadable("The STL file has no vertices", REASON_NO_GEOMETRY)
     return (lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
 
 
@@ -372,7 +409,7 @@ def _measure_3mf(data: bytes) -> Measurement:
             overall = _union(overall, b)
 
     if overall is None:
-        raise _Unreadable("The 3MF build has no geometry")
+        raise _Unreadable("The 3MF build has no geometry", REASON_NO_GEOMETRY)
     note = None
     if len(objects) > 1:
         note = (

@@ -49,6 +49,10 @@ NOT_MONEY_PATHS: dict[str, str] = {
     "print_queue_service": "ranks jobs by the margin the engine serves; computes none",
     "production_run": "the run workflow; its money lives in `run_costs`, which is listed",
     "item_dimensions": "reads a product's and its packaging's sizes; computes no money",
+    "model_file_version_service": (
+        "copies a print file's minutes, plate count and grams into the cost inputs through "
+        "`provenance.record_operator_write` (spec 004); computes no money"
+    ),
     "packaging_advisor": (
         "ranks containers by the unit cost `costing.consumable_unit_cost` serves and shows "
         "no cost (FR-021); computes none"

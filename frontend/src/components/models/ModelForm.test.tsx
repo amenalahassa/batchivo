@@ -44,7 +44,8 @@ import { skuApi } from '@/lib/api/sku'
 import { pricingApi } from '@/lib/api/pricing'
 import { updateModel, type ModelDetail } from '@/lib/api/models'
 
-vi.mock('@/lib/api/models', () => ({
+vi.mock('@/lib/api/models', async (importOriginal) => ({
+  inferModelFileType: (await importOriginal<typeof import('@/lib/api/models')>()).inferModelFileType,
   createModel: vi.fn(),
   updateModel: vi.fn(),
   listModels: vi.fn(),
@@ -130,11 +131,11 @@ describe('ModelForm - 3MF import auto-fill', () => {
     mockParse3mfFile.mockResolvedValue({
       print_time_minutes: 125,
       filament_weight_grams: 15.5,
-      plate_count: 2,
+      plate_count: 1,
       source_plate_index: 1,
       slicer_detected: 'bambu_orca',
       thumbnail_available: true,
-      plates: [],
+      plates: [{ index: 1, print_time_minutes: 125, filament_weight_grams: 15.5, object_count: 2 }],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()
@@ -146,7 +147,10 @@ describe('ModelForm - 3MF import auto-fill', () => {
 
     // The parsed values are shown for review before touching the form.
     await screen.findByText(/print time: 2h 5m/i)
-    await screen.findByText(/plates: 2/i)
+    // Items per run are the objects on the plate, and the maker confirms them (T066).
+    const items = screen.getByLabelText(/how many finished items does this plate make/i)
+    expect(items).toHaveValue(2)
+    screen.getByText(/2 objects on this plate in the file\. per item: 1h 3m · 7\.75g/i)
     const hoursField = screen.getByLabelText('Plate Print Time')
     const minutesField = screen.getByLabelText('')
     const platesField = screen.getByLabelText('Items per Plate')
@@ -169,9 +173,9 @@ describe('ModelForm - 3MF import auto-fill', () => {
       slicer_detected: 'bambu_orca',
       thumbnail_available: false,
       plates: [
-        { index: 1, print_time_minutes: 60, filament_weight_grams: 10 },
-        { index: 2, print_time_minutes: 30, filament_weight_grams: 5 },
-        { index: 3, print_time_minutes: 15, filament_weight_grams: 2 },
+        { index: 1, print_time_minutes: 60, filament_weight_grams: 10, object_count: 1 },
+        { index: 2, print_time_minutes: 30, filament_weight_grams: 5, object_count: 1 },
+        { index: 3, print_time_minutes: 15, filament_weight_grams: 2, object_count: 2 },
       ],
     } satisfies ThreeMFParseResponse)
 
@@ -187,6 +191,8 @@ describe('ModelForm - 3MF import auto-fill', () => {
     screen.getByText(/plate 3: 15m · 2g/i)
     await screen.findByText(/combined print time: 1h 45m/i) // 60+30+15 = 105 min
     screen.getByText(/combined filament weight: 17g/i) // 10+5+2
+    const items = screen.getByLabelText(/how many finished items do these plates make/i)
+    expect(items).toHaveValue(4) // the objects, not the 3 plates
 
     // Deselecting plate 3 recomputes the combined totals from the remaining selection.
     const plate3Row = screen.getByText(/plate 3: 15m · 2g/i).closest('label')
@@ -194,7 +200,7 @@ describe('ModelForm - 3MF import auto-fill', () => {
 
     await screen.findByText(/combined print time: 1h 30m/i) // 60+30
     screen.getByText(/combined filament weight: 15g/i) // 10+5
-    screen.getByText(/plates: 2 selected/i)
+    expect(items).toHaveValue(2) // the default follows the selection
 
     await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
 
@@ -204,6 +210,120 @@ describe('ModelForm - 3MF import auto-fill', () => {
     await waitFor(() => expect(hoursField).toHaveValue(1))
     expect(minutesField).toHaveValue(30)
     expect(platesField).toHaveValue(2)
+  })
+
+  it('applies the items the maker enters, not the object count, when they differ', async () => {
+    // Two plates, one object each: a body and its base make ONE item.
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: 90,
+      filament_weight_grams: 30,
+      plate_count: 2,
+      source_plate_index: 1,
+      slicer_detected: 'bambu_orca',
+      thumbnail_available: false,
+      plates: [
+        { index: 1, print_time_minutes: 60, filament_weight_grams: 20, object_count: 1 },
+        { index: 2, print_time_minutes: 30, filament_weight_grams: 10, object_count: 1 },
+      ],
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), makeThreeMfFile())
+    const items = await screen.findByLabelText(/how many finished items do these plates make/i)
+    expect(items).toHaveValue(2)
+    await userEvent.clear(items)
+    await userEvent.type(items, '1')
+    screen.getByText(/per item: 1h 30m · 30g/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
+    await waitFor(() => expect(screen.getByLabelText('Items per Plate')).toHaveValue(1))
+  })
+
+  it('asks for the items when the file does not list its objects, and leaves the field alone if blank', async () => {
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: 60,
+      filament_weight_grams: 10,
+      plate_count: 1,
+      source_plate_index: 1,
+      slicer_detected: 'prusaslicer',
+      thumbnail_available: false,
+      plates: [],
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), makeThreeMfFile())
+    const items = await screen.findByLabelText(/how many finished items does this plate make/i)
+    expect(items).toHaveValue(null)
+    screen.getByText(/doesn't say how many objects it prints/i)
+
+    await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
+    await waitFor(() => expect(screen.getByLabelText('Plate Print Time')).toHaveValue(1))
+    expect(screen.getByLabelText('Items per Plate')).toHaveValue(1) // schema default, untouched
+  })
+
+  it('refuses to apply an item count that is not a whole number', async () => {
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: 60,
+      filament_weight_grams: 10,
+      plate_count: 1,
+      source_plate_index: 1,
+      slicer_detected: 'bambu_orca',
+      thumbnail_available: false,
+      plates: [{ index: 1, print_time_minutes: 60, filament_weight_grams: 10, object_count: 2 }],
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), makeThreeMfFile())
+    const items = await screen.findByLabelText(/how many finished items/i)
+    await userEvent.clear(items)
+    await userEvent.type(items, '0')
+    expect(screen.getByRole('button', { name: /apply to form/i })).toBeDisabled()
+  })
+
+  it('hands the BOM step the total and the grams of each filament', async () => {
+    mockParse3mfFile.mockResolvedValue({
+      print_time_minutes: 60,
+      filament_weight_grams: 84,
+      plate_count: 1,
+      source_plate_index: 1,
+      slicer_detected: 'bambu_orca',
+      thumbnail_available: false,
+      plates: [
+        {
+          index: 1,
+          print_time_minutes: 60,
+          filament_weight_grams: 84,
+          object_count: 4,
+          filaments: [
+            { type: 'PLA', color: '#FF0000', grams: 60 },
+            { type: 'PLA', color: '#000000', grams: 24 },
+          ],
+        },
+      ],
+    } satisfies ThreeMFParseResponse)
+
+    renderModelForm()
+
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), makeThreeMfFile())
+    await screen.findByText(/filament weight: 84g \(PLA #FF0000 60g, PLA #000000 24g\)/i)
+    await userEvent.click(screen.getByRole('button', { name: /apply to form/i }))
+    await userEvent.type(screen.getByLabelText('Name'), 'Two-tone dragon')
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+
+    await waitFor(() => expect(mockCreateModel).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(JSON.parse(sessionStorage.getItem('model-weight-suggestion:model-123')!)).toEqual({
+        total: 84,
+        filaments: [
+          { type: 'PLA', color: '#FF0000', grams: 60 },
+          { type: 'PLA', color: '#000000', grams: 24 },
+        ],
+      })
+    )
+    sessionStorage.clear()
   })
 
   it('shows a hint to slice the file first when nothing could be parsed', async () => {
@@ -234,11 +354,11 @@ describe('ModelForm - 3MF import auto-fill', () => {
     mockParse3mfFile.mockResolvedValue({
       print_time_minutes: 125,
       filament_weight_grams: null,
-      plate_count: 4,
+      plate_count: 1,
       source_plate_index: 1,
       slicer_detected: 'bambu_orca',
       thumbnail_available: false,
-      plates: [],
+      plates: [{ index: 1, print_time_minutes: 125, filament_weight_grams: null, object_count: 4 }],
     } satisfies ThreeMFParseResponse)
 
     renderModelForm()
@@ -319,6 +439,139 @@ describe('ModelForm - 3MF import auto-fill', () => {
     await waitFor(() => expect(mockCreateModel).toHaveBeenCalledTimes(1))
     await waitFor(() =>
       expect(mockUploadModelFile).toHaveBeenCalledWith('model-123', file, 'source_3mf')
+    )
+  })
+})
+
+describe('ModelForm - files kept on the model (spec 004, FR-001, FR-005)', () => {
+  const MODEL = {
+    id: 'model-1',
+    sku: 'MOD-001',
+    name: 'Dragon',
+    labor_hours: '0',
+    overhead_percentage: '0',
+    is_active: true,
+    prints_per_plate: 1,
+    units_in_stock: 0,
+  } as unknown as ModelDetail
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListModels.mockResolvedValue({ models: [], total: 0, skip: 0, limit: 500 })
+    mockListDesigners.mockResolvedValue({ designers: [], total: 0 })
+    mockGetNextSKU.mockResolvedValue({ next_sku: 'MOD-001', highest_existing: 0 })
+    mockCreateModel.mockResolvedValue({ id: 'model-123' })
+    ;(updateModel as Mock).mockResolvedValue({ id: 'model-1' })
+    ;(pricingApi.getModelCostProfile as Mock).mockResolvedValue({ origins: [] })
+    mockUploadModelFile.mockResolvedValue({ id: 'file-1' })
+    mockParse3mfFile.mockResolvedValue(ALL_NULL_PARSE_RESULT)
+  })
+
+  const stl = () => new File([new Uint8Array([1])], 'part.stl', { type: 'model/stl' })
+
+  it('uploads the chosen source file after the model is created', async () => {
+    renderModelForm()
+    const file = stl()
+    await userEvent.upload(await screen.findByLabelText(/model files/i), file)
+    await userEvent.type(screen.getByLabelText('Name'), 'Dragon')
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+
+    await waitFor(() =>
+      expect(mockUploadModelFile).toHaveBeenCalledWith('model-123', file, 'source_stl'),
+    )
+    expect(mockCreateModel.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUploadModelFile.mock.invocationCallOrder[0],
+    )
+  })
+
+  it('uploads the chosen source file after an edit is saved', async () => {
+    renderModelForm(<ModelForm mode="edit" model={MODEL} />)
+    const file = stl()
+    await userEvent.upload(await screen.findByLabelText(/model files/i), file)
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() =>
+      expect(mockUploadModelFile).toHaveBeenCalledWith('model-1', file, 'source_stl'),
+    )
+  })
+
+  it('takes several files of every kind and uploads them one after another', async () => {
+    const order: string[] = []
+    let release: () => void = () => {}
+    mockUploadModelFile.mockImplementation((_id: string, file: File) => {
+      order.push(`start ${file.name}`)
+      return new Promise((resolve) => {
+        release = () => {
+          order.push(`end ${file.name}`)
+          resolve({ id: file.name })
+        }
+      })
+    })
+    renderModelForm()
+    const part = stl()
+    const plate = new File([new Uint8Array([1])], 'plate.gcode.3mf')
+    const gcode = new File([new Uint8Array([1])], 'plate.gcode')
+    await userEvent.upload(await screen.findByLabelText(/model files/i), [part, plate, gcode])
+    expect(screen.queryByText(/is a sliced plate/)).not.toBeInTheDocument()
+    await userEvent.type(screen.getByLabelText('Name'), 'Dragon')
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+
+    for (const name of ['part.stl', 'plate.gcode.3mf', 'plate.gcode']) {
+      await waitFor(() => expect(order.at(-1)).toBe(`start ${name}`))
+      release()
+    }
+    expect(order).toEqual([
+      'start part.stl', 'end part.stl',
+      'start plate.gcode.3mf', 'end plate.gcode.3mf',
+      'start plate.gcode', 'end plate.gcode',
+    ])
+    expect(mockUploadModelFile).toHaveBeenNthCalledWith(1, 'model-123', part, 'source_stl')
+    expect(mockUploadModelFile).toHaveBeenNthCalledWith(2, 'model-123', plate, 'gcode')
+    expect(mockUploadModelFile).toHaveBeenNthCalledWith(3, 'model-123', gcode, 'gcode')
+  })
+
+  it('warns when the source file chosen is a sliced plate', async () => {
+    renderModelForm()
+    const sliced = new File([new Uint8Array([1])], 'plate.gcode.3mf')
+    await userEvent.upload(await screen.findByLabelText(/model files/i), sliced)
+    expect(screen.getByText(/is a sliced plate/)).toBeInTheDocument()
+  })
+
+  it('offers the auto-fill on edit and keeps its file by default', async () => {
+    renderModelForm(<ModelForm mode="edit" model={MODEL} />)
+    const file = makeThreeMfFile()
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), file)
+    await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+    expect(screen.getByRole('checkbox', { name: 'Keep this file on the model' })).toBeChecked()
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() =>
+      expect(mockUploadModelFile).toHaveBeenCalledWith('model-1', file, 'source_3mf'),
+    )
+  })
+
+  it('discards the auto-fill file when "Keep this file on the model" is unchecked', async () => {
+    renderModelForm()
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), makeThreeMfFile())
+    await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Keep this file on the model' }))
+    await userEvent.type(screen.getByLabelText('Name'), 'Dragon')
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+
+    await waitFor(() => expect(mockCreateModel).toHaveBeenCalledTimes(1))
+    expect(mockUploadModelFile).not.toHaveBeenCalled()
+  })
+
+  it('keeps a sliced auto-fill file as G-code, its print file', async () => {
+    renderModelForm()
+    const sliced = new File([new Uint8Array([1])], 'plate.gcode.3mf')
+    await userEvent.upload(await screen.findByLabelText(/auto-fill from \.3mf/i), sliced)
+    await waitFor(() => expect(mockParse3mfFile).toHaveBeenCalledTimes(1))
+    await userEvent.type(screen.getByLabelText('Name'), 'Dragon')
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+
+    await waitFor(() =>
+      expect(mockUploadModelFile).toHaveBeenCalledWith('model-123', sliced, 'gcode'),
     )
   })
 })

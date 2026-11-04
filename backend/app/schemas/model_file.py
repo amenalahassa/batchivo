@@ -62,6 +62,13 @@ class ModelFileLocalCreate(BaseModel):
     version: Optional[str] = Field(None, max_length=50, description="Version identifier")
     is_primary: bool = Field(False, description="Whether this is the primary file")
     notes: Optional[str] = Field(None, description="User notes about the file")
+    version_id: Optional[UUID] = Field(None, description="Version to add the file to")
+    new_version_label: Optional[str] = Field(
+        None, max_length=50, description="Create a new version with this label"
+    )
+    new_version_note: Optional[str] = Field(
+        None, max_length=2000, description="What changed in the new version"
+    )
 
 
 class ModelFileUpdate(BaseModel):
@@ -97,6 +104,9 @@ class FileMeasurementOut(BaseModel):
     objects: list[MeasuredObjectOut] = Field(default_factory=list)
     note: Optional[str] = None
     status: str = Field(..., description="done | pending | skipped | failed")
+    reason: Optional[str] = Field(
+        None, description="Why it was not measured: no_geometry | unreadable | too_large"
+    )
     applied_to: list[str] = Field(
         default_factory=list, description="Records that took it automatically"
     )
@@ -124,7 +134,11 @@ class ModelFileResponse(BaseModel):
     file_size: Optional[int] = Field(None, description="File size in bytes")
     content_type: Optional[str] = Field(None, description="MIME content type")
     part_name: Optional[str] = Field(None, description="Part name for multi-part models")
-    version: Optional[str] = Field(None, description="Version identifier")
+    version: Optional[str] = Field(
+        None, description="Label of the file's version (informational; grouping follows version_id)"
+    )
+    version_id: Optional[UUID] = Field(None, description="Version this file belongs to")
+    is_sliced: bool = Field(False, description="True for a sliced plate (G-code or .gcode.3mf)")
     is_primary: bool = Field(..., description="Whether this is the primary file")
     notes: Optional[str] = Field(None, description="User notes")
     uploaded_at: datetime = Field(..., description="When the file was uploaded")
@@ -152,6 +166,9 @@ class ModelFileUploadResponse(BaseModel):
     measurement: Optional[FileMeasurementOut] = Field(
         None, description="The file's measurement; null for G-code"
     )
+    version_created: bool = Field(
+        False, description="A new version was made for this file; offer to make it active"
+    )
     message: str = Field("File uploaded successfully", description="Success message")
 
 
@@ -171,6 +188,14 @@ class LocalPathValidationResponse(BaseModel):
     filename: Optional[str] = Field(None, description="Extracted filename from path")
 
 
+class ThreeMFFilamentUse(BaseModel):
+    """One filament a plate uses, as the slicer reports it (spec 004, T063)."""
+
+    type: Optional[str] = Field(None, description="Material, e.g. PLA")
+    color: Optional[str] = Field(None, description="Colour as #RRGGBB")
+    grams: Optional[float] = Field(None, description="Grams of this filament on the plate")
+
+
 class ThreeMFPlateMetadata(BaseModel):
     """Per-plate metadata for a single plate within a multi-plate 3MF file."""
 
@@ -180,6 +205,13 @@ class ThreeMFPlateMetadata(BaseModel):
     )
     filament_weight_grams: Optional[float] = Field(
         None, description="Filament weight in grams for this plate"
+    )
+    object_count: Optional[int] = Field(
+        None,
+        description="Objects printed on the plate (skipped ones excluded); null when not listed",
+    )
+    filaments: list[ThreeMFFilamentUse] = Field(
+        default_factory=list, description="Filaments the plate uses, with grams of each"
     )
 
 

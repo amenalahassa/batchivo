@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { FileMeasurement } from '@/types/packaging'
 import { FileMeasurementSummary } from './FileMeasurementSummary'
+import { NO_GEOMETRY, SLICED_NO_GEOMETRY, TOO_LARGE, UNREADABLE } from './fileMessages'
 import { anyMeasurementPending } from '@/lib/packaging'
 
 const done: FileMeasurement = {
@@ -53,5 +54,43 @@ describe('FileMeasurementSummary', () => {
   it('knows when a file is still pending', () => {
     expect(anyMeasurementPending([{ measurement: done }])).toBe(false)
     expect(anyMeasurementPending([{ measurement: { ...done, status: 'pending' } }])).toBe(true)
+  })
+
+  describe('a file that could not be measured (spec 004, FR-004)', () => {
+    const failed = (reason: FileMeasurement['reason']): FileMeasurement => ({
+      ...done,
+      length_mm: null,
+      width_mm: null,
+      height_mm: null,
+      objects: [],
+      note: 'The 3MF build has no geometry',
+      status: 'failed',
+      reason,
+    })
+
+    it('tells the operator a sliced plate holds the print, and what to upload instead', () => {
+      render(<FileMeasurementSummary measurement={failed('no_geometry')} isSliced />)
+      expect(
+        screen.getByText(
+          "This is a sliced plate. It holds the print, not the part's shape, so it can't be measured. " +
+            'Upload the project .3mf (Bambu Studio: File → Save project) or the .stl.',
+        ),
+      ).toBeInTheDocument()
+      expect(screen.queryByText('The 3MF build has no geometry')).not.toBeInTheDocument()
+    })
+
+    it('has a message for an unsliced file with no part in it', () => {
+      render(<FileMeasurementSummary measurement={failed('no_geometry')} isSliced={false} />)
+      expect(screen.getByText(NO_GEOMETRY)).toBeInTheDocument()
+      expect(screen.queryByText(SLICED_NO_GEOMETRY)).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['unreadable', UNREADABLE],
+      ['too_large', TOO_LARGE],
+    ] as const)('explains %s in plain words', (reason, text) => {
+      render(<FileMeasurementSummary measurement={failed(reason)} />)
+      expect(screen.getByText(text)).toBeInTheDocument()
+    })
   })
 })

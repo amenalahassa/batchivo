@@ -31,6 +31,9 @@ PRICING_MODULES: frozenset[str] = frozenset(
         "filament_purchases",
         "fx_rates",
         "models",
+        # Making a version active writes print time, parts per plate, weight and
+        # dimensions, each through the provenance registry (spec 004, FR-011).
+        "model_file_versions",
         "orders",
         # Accepting a container sets the packaging line of a product's cost.
         "packaging",
@@ -66,6 +69,7 @@ NOT_PRICING_MODULES: frozenset[str] = frozenset(
         "exports",
         "filament_types",
         "forecasting",
+        "model_file_notes",
         "model_files",
         "modules",
         "needle",

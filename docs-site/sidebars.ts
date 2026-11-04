@@ -18,6 +18,11 @@ const sidebars: SidebarsConfig = {
       label: 'Packaging & Parcels',
     },
     {
+      type: 'doc',
+      id: 'model-files-and-versions',
+      label: 'Model Files & Versions',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,

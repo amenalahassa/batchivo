@@ -26,6 +26,7 @@ from app.models.dimensions import DimensionsMixin, dimension_constraints
 if TYPE_CHECKING:
     from app.models.model_component import ModelComponent
     from app.models.model_file import ModelFile
+    from app.models.model_file_version import ModelFileVersion
     from app.models.model_material import ModelMaterial
     from app.models.model_printer_config import ModelPrinterConfig
     from app.models.print_job import PrintJob
@@ -331,6 +332,15 @@ class Model(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
         foreign_keys="ModelFile.model_id",
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+
+    # Revisions of the design; one is active (the version printed)
+    file_versions: Mapped[list["ModelFileVersion"]] = relationship(
+        "ModelFileVersion",
+        back_populates="model",
+        cascade="all, delete-orphan",
+        lazy="select",
+        order_by="ModelFileVersion.sequence.desc()",
     )
 
     # Constraints

@@ -7,6 +7,8 @@ from app.models.material import MaterialType
 # Model (printed items) - renamed from Product
 from app.models.model import Model
 from app.models.model_file import ModelFile, ModelFileType
+from app.models.model_file_note import ModelFileNote
+from app.models.model_file_version import ModelFileVersion
 from app.models.model_material import ModelMaterial
 from app.models.model_component import ModelComponent
 
@@ -137,6 +139,8 @@ __all__ = [
     "Model",
     "ModelFile",
     "ModelFileType",
+    "ModelFileNote",
+    "ModelFileVersion",
     "ModelMaterial",
     "ModelComponent",
     # Printers

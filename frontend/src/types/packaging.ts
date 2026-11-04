@@ -96,6 +96,8 @@ export interface FileMeasurement {
   objects: { name: string; length_mm: string; width_mm: string; height_mm: string }[]
   note: string | null
   status: 'done' | 'pending' | 'skipped' | 'failed'
+  /** Why it was not measured (spec 004): no_geometry | unreadable | too_large. */
+  reason?: 'no_geometry' | 'unreadable' | 'too_large' | null
   /** Which records took it automatically; empty when only offered. */
   applied_to: ('model' | 'product')[]
 }

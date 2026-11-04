@@ -24,6 +24,7 @@ from app.services.item_dimensions import (
     variant_for_order_line,
 )
 from tests.utils.packaging import set_dims
+from tests.utils.model_files import active_version_id
 
 
 def _product(**kw):
@@ -144,6 +145,7 @@ async def _file(db, tenant, model, dims=(40, 30, 20)) -> ModelFile:
         id=uuid4(),
         tenant_id=tenant.id,
         model_id=model.id,
+        version_id=await active_version_id(db, tenant.id, model.id),
         file_type="source_stl",
         original_filename="block.stl",
     )

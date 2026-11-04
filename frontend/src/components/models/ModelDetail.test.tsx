@@ -124,6 +124,25 @@ describe('the model screens derive no price of their own', () => {
   })
 })
 
+describe('bill-of-materials grams are a whole plate run (spec 004, walkthrough)', () => {
+  // costing.py divides the BOM grams by Items per Plate, so they are the grams of
+  // one plate run. These screens said "per unit" and multiplied up for a plate,
+  // which told the operator to enter a figure the engine then divided again.
+  it('labels the BOM per plate run, never per unit', () => {
+    for (const name of ['ModelDetail.tsx', 'BOMEditor.tsx']) {
+      const source = sourceOf(name)
+      expect(source).not.toMatch(/Per[- ]Unit|single unit|one unit/i)
+      expect(source).toMatch(/one plate run|per plate run/i)
+    }
+  })
+
+  it('derives the per-item grams by dividing, not the plate grams by multiplying', () => {
+    const source = sourceOf('ModelDetail.tsx')
+    expect(source).toContain('Per item (÷{model.prints_per_plate})')
+    expect(source).not.toMatch(/\* model\.prints_per_plate/)
+  })
+})
+
 describe('model dimensions (feature 003)', () => {
   it('mounts the dimensions editor with the files a measurement can come from', () => {
     const source = sourceOf('ModelDetail.tsx')

@@ -421,9 +421,10 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
       {/* Bill of Materials */}
       <Card>
         <CardHeader>
-          <CardTitle>Bill of Materials (Per Unit)</CardTitle>
+          <CardTitle>Bill of Materials (per plate run)</CardTitle>
           <CardDescription>
-            Filament weights for a single unit. Purge tower and flush waste are tracked when creating production runs.
+            Filament grams for one plate run, all its items together; the cost divides them by
+            Items per Plate. Purge tower and flush waste are tracked when creating production runs.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -432,14 +433,14 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
             <div className="mb-4 rounded-lg bg-muted/50 p-3 text-sm">
               <div className="font-medium">Plate Calculation</div>
               <div className="text-muted-foreground mt-1">
-                Per Unit:{' '}
+                Per plate run:{' '}
                 <span className="font-medium text-foreground">
                   {model.materials.reduce((sum, m) => sum + parseFloat(m.weight_grams || '0'), 0).toFixed(1)}g
                 </span>
                 {' · '}
-                Per Plate (×{model.prints_per_plate}):{' '}
+                Per item (÷{model.prints_per_plate}):{' '}
                 <span className="font-medium text-foreground">
-                  {(model.materials.reduce((sum, m) => sum + parseFloat(m.weight_grams || '0'), 0) * model.prints_per_plate).toFixed(1)}g
+                  {(model.materials.reduce((sum, m) => sum + parseFloat(m.weight_grams || '0'), 0) / model.prints_per_plate).toFixed(1)}g
                 </span>
                 <span className="text-xs ml-1">(model only, + waste when running)</span>
               </div>

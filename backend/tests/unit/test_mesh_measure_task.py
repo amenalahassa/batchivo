@@ -15,6 +15,7 @@ from app.models.model_file import FileLocation, ModelFile
 from app.models.tenant import Tenant
 from app.services.dims import Dims
 from app.tasks.mesh_measure import measure_pending
+from tests.utils.model_files import active_version_id
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,6 +34,7 @@ async def _pending(db, tenant, model, fixture: str) -> ModelFile:
     f = ModelFile(
         tenant_id=tenant.id,
         model_id=model.id,
+        version_id=await active_version_id(db, tenant.id, model.id),
         file_type="source_stl",
         file_location=FileLocation.LOCAL_REFERENCE.value,
         local_path=str(path),

@@ -1,6 +1,7 @@
 """Model file service for managing 3D model files (STL, 3MF, gcode, etc.)."""
 
 import logging
+import re
 import uuid
 import xml.etree.ElementTree as ET
 import zipfile
@@ -23,11 +24,13 @@ from app.models.user import User
 from app.schemas.model_file import (
     FileMeasurementOut,
     ThreeMFParseResponse,
+    ThreeMFFilamentUse,
     ThreeMFPlateMetadata,
 )
 from app.services import mesh_bounds
 from app.services.image_storage import ImageStorageError, get_image_storage
 from app.services.item_dimensions import apply_measurement, record_measurement
+from app.services.model_file_version_service import ModelFileVersionService
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +161,37 @@ def _parse_bambu_orca_plate(plate_element, fallback_index: int) -> ThreeMFPlateM
     except ValueError:
         index = fallback_index
 
+    objects = plate_element.findall("object")
+    filaments = [
+        ThreeMFFilamentUse(
+            type=(f.get("type") or None),
+            color=_hex_color(f.get("color")),
+            grams=_positive_or_none(f.get("used_g")),
+        )
+        for f in plate_element.findall("filament")
+    ]
     return ThreeMFPlateMetadata(
         index=index,
         print_time_minutes=_seconds_to_minutes(_positive_or_none(meta.get("prediction"))),
         filament_weight_grams=_positive_or_none(meta.get("weight")),
+        # A plate lists the objects it prints; none listed means the file does not say.
+        object_count=(
+            sum(1 for o in objects if (o.get("skipped") or "").lower() != "true")
+            if objects
+            else None
+        ),
+        filaments=[f for f in filaments if f.grams is not None],
     )
+
+
+def _hex_color(value: Optional[str]) -> Optional[str]:
+    """``#RRGGBB`` in upper case from the slicer's ``#RRGGBB`` or ``#RRGGBBAA``."""
+    if not value:
+        return None
+    text = value.strip().upper()
+    if not text.startswith("#"):
+        text = "#" + text
+    return text[:7] if len(text) >= 7 else None
 
 
 def _parse_bambu_orca_slice_info(raw: bytes) -> Optional[ThreeMFParseResponse]:
@@ -253,6 +282,68 @@ def measurement_out(measurement: "mesh_bounds.Measurement") -> FileMeasurementOu
         objects=mesh_bounds.objects_json(measurement.objects),
         note=measurement.note,
         status=measurement.status,
+        reason=measurement.reason,
+    )
+
+
+#: How much of each end of a G-code file is read for its slicer comments. Bambu
+#: and Orca write them in the header, PrusaSlicer at the end.
+_GCODE_COMMENT_SPAN = 64 * 1024
+
+_DURATION_PATTERNS = (
+    re.compile(r";\s*total estimated time:\s*([^;\n]+)", re.IGNORECASE),
+    re.compile(r";\s*estimated printing time \(normal mode\)\s*=\s*([^\n]+)", re.IGNORECASE),
+)
+_TOTAL_WEIGHT = re.compile(
+    r";\s*total filament (?:used|weight) \[g\]\s*[:=]\s*([\d.]+)", re.IGNORECASE
+)
+_PER_EXTRUDER_WEIGHT = re.compile(r";\s*filament used \[g\]\s*=\s*([\d.,\s]+)", re.IGNORECASE)
+
+
+def _duration_minutes(text: str) -> Optional[int]:
+    """'1d 2h 3m 4s' -> minutes (whole, at least 1), or None if nothing parses."""
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    seconds = sum(
+        int(amount) * units[unit] for amount, unit in re.findall(r"(\d+)\s*([dhms])", text.lower())
+    )
+    return _seconds_to_minutes(float(seconds)) if seconds else None
+
+
+def parse_gcode_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """Print time and filament weight from a sliced G-code file's slicer comments.
+
+    A plain G-code file is one plate, but it does not say how many parts are on
+    it, so ``plate_count`` stays unknown rather than guessed (research D4).
+    """
+    head = file_content[:_GCODE_COMMENT_SPAN].decode("utf-8", errors="ignore")
+    tail = file_content[-_GCODE_COMMENT_SPAN:].decode("utf-8", errors="ignore")
+    comments = head + "\n" + tail
+
+    minutes: Optional[int] = None
+    for pattern in _DURATION_PATTERNS:
+        match = pattern.search(comments)
+        if match:
+            minutes = _duration_minutes(match.group(1))
+            if minutes is not None:
+                break
+
+    weight: Optional[float] = None
+    total = _TOTAL_WEIGHT.search(comments)
+    if total:
+        weight = _positive_or_none(total.group(1))
+    else:
+        per_extruder = _PER_EXTRUDER_WEIGHT.search(comments)
+        if per_extruder:
+            parts = [_positive_or_none(p.strip()) for p in per_extruder.group(1).split(",")]
+            present = [p for p in parts if p is not None]
+            weight = round(sum(present), 2) if present else None
+
+    detected = "bambu_orca" if "BambuStudio" in head or "OrcaSlicer" in head else None
+    return ThreeMFParseResponse(
+        print_time_minutes=minutes,
+        filament_weight_grams=weight,
+        plate_count=None,
+        slicer_detected=detected,
     )
 
 
@@ -419,9 +510,15 @@ class ModelFileService:
         version: Optional[str] = None,
         is_primary: bool = False,
         notes: Optional[str] = None,
+        version_id: Optional[UUID] = None,
+        new_version_label: Optional[str] = None,
+        new_version_note: Optional[str] = None,
     ) -> ModelFile:
         """
-        Upload a 3D model file.
+        Upload a 3D model file into a version (see `version_for_upload`).
+
+        ``version_created`` is set on the returned row (response only) when a
+        new version was made for it, so the client can offer to make it active.
 
         Args:
             model_id: UUID of the model to attach file to
@@ -453,6 +550,14 @@ class ModelFileService:
 
         # Validate file
         extension = self._validate_file(file_content, content_type, original_filename)
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version, version_created = await versions.version_for_upload(
+            model,
+            version_id=version_id,
+            new_version_label=new_version_label,
+            new_version_note=new_version_note,
+            legacy_version=version,
+        )
 
         # Generate unique filename
         file_id = str(uuid.uuid4())
@@ -485,17 +590,19 @@ class ModelFileService:
             file_size=len(file_content),
             content_type=content_type,
             part_name=part_name,
-            version=version,
             is_primary=is_primary,
             notes=notes,
+            is_sliced=mesh_bounds.is_sliced(original_filename, file_content),
             uploaded_at=datetime.now(UTC),
             uploaded_by_user_id=self.user.id if self.user else None,
         )
 
         self.db.add(model_file)
+        await versions.attach_file(version, model_file)
         queue = await self._measure(model, model_file, extension, file_content, len(file_content))
         await self.db.commit()
         await self.db.refresh(model_file)
+        model_file.version_created = version_created
         if queue:
             await self._queue_measurement(model_file)
 
@@ -514,9 +621,12 @@ class ModelFileService:
         version: Optional[str] = None,
         is_primary: bool = False,
         notes: Optional[str] = None,
+        version_id: Optional[UUID] = None,
+        new_version_label: Optional[str] = None,
+        new_version_note: Optional[str] = None,
     ) -> ModelFile:
         """
-        Create a local file reference (no upload, just store the path).
+        Create a local file reference (no upload, just store the path), in a version.
 
         Args:
             model_id: UUID of the model to attach file to
@@ -556,6 +666,14 @@ class ModelFileService:
         # Determine content type from extension
         extension = path_obj.suffix.lower()
         content_type = self._get_content_type_from_extension(extension)
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version, version_created = await versions.version_for_upload(
+            model,
+            version_id=version_id,
+            new_version_label=new_version_label,
+            new_version_note=new_version_note,
+            legacy_version=version,
+        )
 
         # If setting as primary, unset other primary files of same type
         if is_primary:
@@ -573,14 +691,15 @@ class ModelFileService:
             file_size=file_size,
             content_type=content_type,
             part_name=part_name,
-            version=version,
             is_primary=is_primary,
             notes=notes,
+            is_sliced=mesh_bounds.is_sliced(original_filename),
             uploaded_at=datetime.now(UTC),
             uploaded_by_user_id=self.user.id if self.user else None,
         )
 
         self.db.add(model_file)
+        await versions.attach_file(version, model_file)
         content = None
         if (
             file_size is not None
@@ -591,6 +710,7 @@ class ModelFileService:
         queue = await self._measure(model, model_file, extension, content, file_size)
         await self.db.commit()
         await self.db.refresh(model_file)
+        model_file.version_created = version_created
         if queue:
             await self._queue_measurement(model_file)
 
@@ -621,7 +741,10 @@ class ModelFileService:
             record_measurement(
                 model_file,
                 mesh_bounds.Measurement(
-                    overall=None, note="The linked file was not found", status="failed"
+                    overall=None,
+                    note="The linked file was not found",
+                    status="failed",
+                    reason=mesh_bounds.REASON_UNREADABLE,
                 ),
             )
             return False
@@ -973,6 +1096,11 @@ class ModelFileService:
         if not model_file:
             return False
 
+        # Version rules first: nothing is removed from storage for a refused delete.
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version = await versions.get(model_file.model_id, model_file.version_id)
+        await versions.before_file_delete(version, model_file)
+
         # Delete from storage (only for uploaded files, not local references)
         if model_file.file_location != FileLocation.LOCAL_REFERENCE.value:
             if self.storage_type == "local":
@@ -983,6 +1111,8 @@ class ModelFileService:
 
         # Delete database record
         await self.db.delete(model_file)
+        await self.db.flush()
+        await versions.after_file_delete(version)
         await self.db.commit()
 
         logger.info(f"Deleted file {file_id} ({model_file.original_filename})")

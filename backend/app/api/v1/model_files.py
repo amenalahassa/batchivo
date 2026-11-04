@@ -7,8 +7,13 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember
-from app.database import get_db
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    get_tenant_db,
+)
 from app.models.model_file import FileLocation, ModelFileType
 from app.schemas.model_file import (
     LocalPathValidationRequest,
@@ -29,6 +34,8 @@ from app.services.model_file_service import (
     extract_3mf_thumbnail,
     parse_3mf_metadata,
 )
+from app.services.model_file_version_service import VersionNotFound, VersionRuleError
+from app.api.v1.model_file_versions import rule_error
 
 router = APIRouter()
 
@@ -71,9 +78,16 @@ async def upload_file(
     version: Optional[str] = Form(None, description="Version identifier"),
     is_primary: bool = Form(False, description="Set as primary file"),
     notes: Optional[str] = Form(None, description="Notes about the file"),
+    version_id: Optional[UUID] = Form(None, description="Version to add the file to"),
+    new_version_label: Optional[str] = Form(
+        None, max_length=50, description="Create a new version with this label"
+    ),
+    new_version_note: Optional[str] = Form(
+        None, max_length=2000, description="What changed in the new version"
+    ),
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileUploadResponse:
     """
     Upload a 3D model file.
@@ -98,14 +112,21 @@ async def upload_file(
             version=version,
             is_primary=is_primary,
             notes=notes,
+            version_id=version_id,
+            new_version_label=new_version_label,
+            new_version_note=new_version_note,
         )
 
         response = ModelFileResponse.model_validate(model_file)
         return ModelFileUploadResponse(
             file=response,
             measurement=response.measurement,
+            version_created=model_file.version_created,
             message=f"File '{file.filename}' uploaded successfully",
         )
+
+    except VersionNotFound:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
 
     except ModelFileStorageError as e:
         raise HTTPException(
@@ -127,7 +148,7 @@ async def link_local_file(
     _admin: RequireAdmin,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileUploadResponse:
     """
     Create a local file reference (no upload).
@@ -147,14 +168,21 @@ async def link_local_file(
             version=data.version,
             is_primary=data.is_primary,
             notes=data.notes,
+            version_id=data.version_id,
+            new_version_label=data.new_version_label,
+            new_version_note=data.new_version_note,
         )
 
         response = enrich_file_response(model_file, service)
         return ModelFileUploadResponse(
             file=response,
             measurement=response.measurement,
+            version_created=model_file.version_created,
             message=f"Local file linked: '{data.local_path}'",
         )
+
+    except VersionNotFound:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
 
     except ModelFileStorageError as e:
         raise HTTPException(
@@ -239,7 +267,7 @@ async def list_files(
     file_type: Optional[SchemaFileType] = Query(None, description="Filter by file type"),
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileListResponse:
     """
     List all files for a model.
@@ -274,7 +302,7 @@ async def get_primary_file(
     file_type: Optional[SchemaFileType] = Query(None, description="Filter by file type"),
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileResponse:
     """
     Get the primary file for a model.
@@ -309,7 +337,7 @@ async def get_file(
     file_id: UUID,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileResponse:
     """Get details about a specific file."""
     service = get_file_service(db, tenant, user)
@@ -341,7 +369,7 @@ async def download_file(
     file_id: UUID,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
     """
     Download a model file.
@@ -390,7 +418,7 @@ async def update_file(
     _member: RequireMember,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> ModelFileResponse:
     """
     Update file metadata.
@@ -431,7 +459,7 @@ async def delete_file(
     _admin: RequireAdmin,
     user: CurrentUser = None,
     tenant: CurrentTenant = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
 ) -> None:
     """
     Delete a model file.
@@ -449,7 +477,10 @@ async def delete_file(
             detail="File not found",
         )
 
-    deleted = await service.delete_file(file_id)
+    try:
+        deleted = await service.delete_file(file_id)
+    except VersionRuleError as exc:
+        raise rule_error(exc) from exc
 
     if not deleted:
         raise HTTPException(

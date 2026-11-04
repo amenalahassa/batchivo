@@ -211,6 +211,7 @@ def record_measurement(model_file: ModelFile, measurement: "Measurement") -> Non
     model_file.measured_objects = objects_json(measurement.objects) or None
     model_file.measurement_note = (measurement.note or None) and measurement.note[:255]
     model_file.measurement_status = measurement.status
+    model_file.measurement_reason = measurement.reason
     model_file.measured_at = datetime.now(UTC) if overall else None
 
 

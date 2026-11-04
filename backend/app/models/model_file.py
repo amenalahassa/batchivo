@@ -9,12 +9,14 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Numeric,
     String,
     Text,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,6 +26,7 @@ from app.models.base import TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.model import Model
+    from app.models.model_file_version import ModelFileVersion
     from app.models.user import User
 
 
@@ -68,6 +71,26 @@ class ModelFile(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         index=True,
         comment="3D model this file is associated with",
+    )
+
+    # The version this file belongs to. Grouping follows this column; the
+    # free-text `version` below is kept for older clients and is informational.
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("model_file_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="Version this file belongs to",
+    )
+
+    # Whether the file is a sliced plate (G-code, or a 3MF carrying plate
+    # G-code). Set once at upload: a file's bytes never change, so it cannot go
+    # stale (research D3).
+    is_sliced: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+        comment="True for a sliced plate (.gcode, or a 3MF with plate G-code)",
     )
 
     # File type categorization
@@ -192,6 +215,11 @@ class ModelFile(Base, UUIDMixin, TimestampMixin):
         nullable=True,
         comment="done | pending (queued, file > 25 MB) | skipped | failed",
     )
+    measurement_reason: Mapped[Optional[str]] = mapped_column(
+        String(40),
+        nullable=True,
+        comment="Machine-readable reason a file was not measured, e.g. no_geometry",
+    )
 
     # Relationships
     model: Mapped["Model"] = relationship(
@@ -206,9 +234,18 @@ class ModelFile(Base, UUIDMixin, TimestampMixin):
         lazy="select",
     )
 
+    file_version: Mapped["ModelFileVersion"] = relationship(
+        "ModelFileVersion",
+        back_populates="files",
+        foreign_keys=[version_id],
+        lazy="select",
+    )
+
     #: Which records took this file's measurement on upload; set by the
     #: service for the response only, never stored.
     measurement_applied_to: list[str] = []
+    #: Whether the upload made a new version for this file; response only.
+    version_created: bool = False
 
     @property
     def measurement(self) -> Optional[dict]:
@@ -222,6 +259,7 @@ class ModelFile(Base, UUIDMixin, TimestampMixin):
             "objects": self.measured_objects or [],
             "note": self.measurement_note,
             "status": self.measurement_status,
+            "reason": self.measurement_reason,
             "applied_to": list(self.measurement_applied_to),
         }
 

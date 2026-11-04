@@ -117,6 +117,41 @@ describe('BOMEditor - 3MF weight suggestion hand-off', () => {
     expect(weightField).toHaveValue(22.75)
   })
 
+  it('pre-fills the total from the JSON suggestion of a one-filament file', async () => {
+    sessionStorage.setItem(
+      `model-weight-suggestion:${MODEL_ID}`,
+      JSON.stringify({ total: 42, filaments: [{ type: 'PLA', color: '#FF0000', grams: 42 }] })
+    )
+
+    renderBOMEditor()
+
+    await userEvent.click(await screen.findByRole('button', { name: /add material/i }))
+    await waitFor(() => expect(screen.getByLabelText('Weight (grams)')).toHaveValue(42))
+  })
+
+  it('lists each filament of a multi-colour file instead of pre-filling the total', async () => {
+    sessionStorage.setItem(
+      `model-weight-suggestion:${MODEL_ID}`,
+      JSON.stringify({
+        total: 84,
+        filaments: [
+          { type: 'PLA', color: '#FF0000', grams: 60 },
+          { type: 'PLA', color: '#000000', grams: 24 },
+        ],
+      })
+    )
+
+    renderBOMEditor()
+
+    await userEvent.click(await screen.findByRole('button', { name: /add material/i }))
+    const weightField = await screen.findByLabelText('Weight (grams)')
+    screen.getByText(/the print file uses 2 filaments: add one line for each/i)
+    expect(weightField).toHaveValue(null) // the total is wrong on any one line
+
+    await userEvent.click(screen.getByRole('button', { name: 'PLA #000000: 24g' }))
+    expect(weightField).toHaveValue(24)
+  })
+
   it('behaves exactly as before when no suggestion was stashed', async () => {
     renderBOMEditor()
 
