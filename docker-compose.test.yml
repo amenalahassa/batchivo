@@ -5,6 +5,10 @@
 # own database, and every table takes entries in the shared lock table, so
 # max_locks_per_transaction is raised well above the default of 64. Durability is
 # switched off and data lives in tmpfs: this database is disposable by design.
+# The suites TRUNCATE and recreate tables constantly; the old relation files stay on
+# disk until a checkpoint, and with the default 5-minute interval a full run filled
+# the tmpfs inode table ("could not extend file ... No space left on device", seen as
+# DiskFull). A 30-second checkpoint_timeout frees them as the run goes.
 #
 #   docker compose -f docker-compose.test.yml up -d
 #   pwsh backend/scripts/run_ci_tests.ps1        (or: sh backend/scripts/run_ci_tests.sh)
@@ -35,6 +39,8 @@ services:
       - synchronous_commit=off
       - -c
       - full_page_writes=off
+      - -c
+      - checkpoint_timeout=30s
     ports:
       - "5433:5432"
     tmpfs:

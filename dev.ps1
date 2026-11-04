@@ -53,6 +53,8 @@ $frontend = Join-Path $root 'frontend'
 # name -> how to start it. Vite runs through node directly, not npm.cmd, so
 # stopping it never leaves cmd's "Terminate batch job (Y/N)?" prompt behind.
 # Celery's prefork pool does not work on Windows; solo runs tasks in-process.
+# Keep --reload on the backend: on Windows it is what makes uvicorn use a selector
+# event loop, which psycopg's async mode needs (without it the API exits at startup).
 $definitions = @{
     backend  = @{ Dir = $backend; Exe = 'poetry'; Color = 'Cyan'
                   Args = "run uvicorn app.main:app --reload --port $BackendPort" }
