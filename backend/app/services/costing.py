@@ -308,6 +308,31 @@ def _positive(value: Optional[Decimal]) -> Optional[Decimal]:
     return value if value is not None and value > ZERO else None
 
 
+def bom_grams_per_item(model: Any, line_grams: Any = None) -> Decimal:
+    """Grams of filament one item takes, from the bill of materials.
+
+    A bill-of-materials line holds the grams of one whole plate run, which the
+    cost divides by the model's items per plate (see the material line of
+    :func:`_item_lines`). Anything that weighs or plans filament per item --
+    a production run's estimate, its successful weight -- reads it here, so it
+    divides by the same figure instead of taking the plate's grams for one item.
+
+    ``line_grams`` is one line's grams; without it, the whole bill is summed.
+    """
+    if line_grams is None:
+        grams = sum(
+            (
+                _as_decimal(getattr(m, "weight_grams", None), ZERO) or ZERO
+                for m in getattr(model, "materials", None) or []
+            ),
+            ZERO,
+        )
+    else:
+        grams = _as_decimal(line_grams, ZERO) or ZERO
+    items = _positive(_as_decimal(getattr(model, "prints_per_plate", None))) or ONE
+    return grams / items
+
+
 def _origin_of(
     origins: Optional[Mapping[tuple[str, uuid.UUID, str], "FieldOrigin"]],
     pending: Optional[AbstractSet[tuple[str, uuid.UUID, str]]],

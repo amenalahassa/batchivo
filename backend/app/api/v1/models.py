@@ -53,7 +53,7 @@ from app.core import clock
 from app.services.cost_resolution import model_cost_breakdown, with_landed_cost
 from app.services.item_dimensions import dimensions_out
 from app.services.production_run import realised_unit_costs
-from app.services.costing import CostingService
+from app.services.costing import CostingService, bom_grams_per_item
 from app.services.pricing_policy import resolve_cost_policy
 from app.services.provenance import (
     ProvenanceNotEditable,
@@ -678,6 +678,7 @@ async def get_model_production_defaults(
             color=ft.color if ft else "Unknown",
             color_hex=ft.color_hex if ft else None,
             weight_grams=model_material.weight_grams,
+            weight_grams_per_item=bom_grams_per_item(model, model_material.weight_grams),
             cost_per_gram=model_material.resolved_cost_per_gram,
             current_weight=spool.current_weight,
             is_active=spool.is_active,

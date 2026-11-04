@@ -602,6 +602,37 @@ class TestTelemetryDispatchOnCompletion:
         assert completed.status == "completed"
 
 
+class TestASuccessfulItemWeighsItsShareOfThePlate:
+    """The bill holds a whole plate run, so one item weighs a share of it."""
+
+    @pytest.mark.asyncio
+    async def test_the_bill_is_divided_by_items_per_plate(
+        self, db_session, test_tenant, test_spool, test_model
+    ):
+        from app.models.model_material import ModelMaterial
+
+        test_model.prints_per_plate = 5
+        db_session.add(
+            ModelMaterial(
+                id=uuid4(),
+                model_id=test_model.id,
+                spool_id=test_spool.id,
+                weight_grams=Decimal("50"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+        await db_session.commit()
+
+        service = ProductionRunService(db_session, test_tenant)
+        # Was 50 g -- the plate's grams taken for one item, five times too heavy.
+        assert await service._get_model_weight(test_model.id) == Decimal("10")
+
+    @pytest.mark.asyncio
+    async def test_another_tenants_model_weighs_nothing(self, db_session, test_tenant):
+        service = ProductionRunService(db_session, test_tenant)
+        assert await service._get_model_weight(uuid4()) == Decimal("0")
+
+
 class TestTheBackfillUsesTheOneArithmetic:
     """Task T237: the backfill script records actuals through the service."""
 

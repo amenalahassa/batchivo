@@ -117,6 +117,7 @@ const mockProductionDefaults1: ModelProductionDefaults = {
       color: 'Blue',
       color_hex: '#0000FF',
       weight_grams: '50',
+      weight_grams_per_item: '10',
       cost_per_gram: '0.025',
       current_weight: '800.0',
       is_active: true,
@@ -128,6 +129,7 @@ const mockProductionDefaults1: ModelProductionDefaults = {
       color: 'Red',
       color_hex: '#FF0000',
       weight_grams: '30',
+      weight_grams_per_item: '6',
       cost_per_gram: '0.025',
       current_weight: '600.0',
       is_active: true,
@@ -150,6 +152,7 @@ const mockProductionDefaults2: ModelProductionDefaults = {
       color: 'Red',
       color_hex: '#FF0000',
       weight_grams: '40',
+      weight_grams_per_item: '13.333333',
       cost_per_gram: '0.025',
       current_weight: '600.0',
       is_active: true,
@@ -161,6 +164,7 @@ const mockProductionDefaults2: ModelProductionDefaults = {
       color: 'Green',
       color_hex: '#00FF00',
       weight_grams: '60',
+      weight_grams_per_item: '20',
       cost_per_gram: '0.025',
       current_weight: '700.0',
       is_active: true,
@@ -172,6 +176,7 @@ const mockProductionDefaults2: ModelProductionDefaults = {
       color: 'Yellow',
       color_hex: '#FFFF00',
       weight_grams: '20',
+      weight_grams_per_item: '6.666667',
       cost_per_gram: '0.025',
       current_weight: '500.0',
       is_active: true,
@@ -196,6 +201,7 @@ const mockProductionDefaultsLowInventory: ModelProductionDefaults = {
       color: 'Black',
       color_hex: '#000000',
       weight_grams: '100.0',
+      weight_grams_per_item: '20.0',
       cost_per_gram: '0.020',
       current_weight: '50.0', // Less than needed!
       is_active: true,
@@ -220,6 +226,7 @@ const mockProductionDefaultsInactive: ModelProductionDefaults = {
       color: 'White',
       color_hex: '#FFFFFF',
       weight_grams: '100.0',
+      weight_grams_per_item: '20.0',
       cost_per_gram: '0.020',
       current_weight: '0.0',
       is_active: false, // Inactive!
@@ -461,10 +468,10 @@ describe('CreateRunWizard - Auto-Population Feature', () => {
 
       await screen.findByText('Step 1 of 4: Basic Info')
 
-      // Verify calculation: (50g + 30g) * 5 = 400g
+      // The bill (50g + 30g) is a plate run of 5 items: (10g + 6g) * 5 = 80g, not 400g
       await waitFor(() => {
         expect(screen.getByText(/Model BOM total:/i)).toBeInTheDocument()
-        expect(screen.getByText(/400\.0g/i)).toBeInTheDocument()
+        expect(screen.getByText(/80\.0g/i)).toBeInTheDocument()
       }, { timeout: 3000 })
     })
 
@@ -548,12 +555,12 @@ describe('CreateRunWizard - Auto-Population Feature', () => {
       }, { timeout: 3000 })
 
       // Verify weight calculation:
-      // Model 1: (50g + 30g) * 2 = 160g
-      // Model 2: (40g + 60g + 20g) * 3 = 360g
-      // Total: 520g
+      // Model 1: (50g + 30g) / 5 per plate = 16g per item * 2 = 32g
+      // Model 2: (40g + 60g + 20g) / 3 per plate = 40g per item * 3 = 120g
+      // Total: 152g
       await waitFor(() => {
         expect(screen.getByText(/Model BOM total:/i)).toBeInTheDocument()
-        expect(screen.getByText(/520\.0g/i)).toBeInTheDocument()
+        expect(screen.getByText(/152\.0g/i)).toBeInTheDocument()
       }, { timeout: 3000 })
     })
 
@@ -608,10 +615,10 @@ describe('CreateRunWizard - Auto-Population Feature', () => {
       expect(hoursInput).toBeInTheDocument()
       expect(hoursInput.value).toBe('2')
 
-      // Weight: (50g + 30g) * 5 = 400g
+      // Weight: (50g + 30g) / 5 per plate = 16g per item * 5 = 80g
       const weightInput = document.getElementById('estimated_model_weight_grams') as HTMLInputElement
       expect(weightInput).toBeInTheDocument()
-      expect(weightInput.value).toBe('400')
+      expect(weightInput.value).toBe('80')
     })
   })
 

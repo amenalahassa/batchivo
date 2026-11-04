@@ -362,3 +362,42 @@ class TestCalculateCostPerGramFromSpool:
         )
         assert result == (price / nominal).quantize(TEN_THOU)
         assert result < (price / (nominal - unusable)).quantize(TEN_THOU)
+
+
+# ---------------------------------------------------------------------------
+# Grams per item: what production runs read from the bill of materials
+# ---------------------------------------------------------------------------
+
+
+class TestBomGramsPerItem:
+    """The bill holds a whole plate run; one item takes its share."""
+
+    def test_the_bill_is_divided_by_items_per_plate(self):
+        from app.services.costing import bom_grams_per_item
+
+        model = make_model(
+            prints_per_plate=4, materials=[make_material(60, 0), make_material(24, 0)]
+        )
+        assert bom_grams_per_item(model) == Decimal("21")
+
+    def test_one_line_alone(self):
+        from app.services.costing import bom_grams_per_item
+
+        model = make_model(prints_per_plate=8, materials=[make_material(60, 0)])
+        assert bom_grams_per_item(model, Decimal("60")) == Decimal("7.5")
+
+    def test_no_items_per_plate_counts_as_one(self):
+        from app.services.costing import bom_grams_per_item
+
+        for per_plate in (None, 0):
+            model = make_model(prints_per_plate=per_plate, materials=[make_material(30, 0)])
+            assert bom_grams_per_item(model) == Decimal("30")
+
+    def test_agrees_with_the_material_line(self):
+        """The same divisor as the cost: grams per item x per-gram = material cost."""
+        from app.services.costing import bom_grams_per_item
+
+        per_gram = Decimal("0.025")
+        model = make_model(prints_per_plate=4, materials=[make_material(100, per_gram)])
+        cost = CostingService.calculate_model_cost(model, labor_rate=RATE)
+        assert (bom_grams_per_item(model) * per_gram).quantize(MILLE) == cost.material_cost

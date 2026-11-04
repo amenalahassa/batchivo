@@ -256,7 +256,8 @@ export function CreateRunWizard() {
       // For each material in the model's BOM
       defaults.bom_materials.forEach((bomMaterial) => {
         const spoolId = bomMaterial.spool_id
-        const weightGrams = parseFloat(bomMaterial.weight_grams) * item.quantity
+        // The bill holds a whole plate run; the server gives one item's share.
+        const weightGrams = parseFloat(bomMaterial.weight_grams_per_item) * item.quantity
 
         if (!suggestions[spoolId]) {
           // First time seeing this spool - create entry
@@ -669,9 +670,9 @@ function Step1BasicInfo({
         const timePerItem = (defaults.print_time_minutes ?? 0) / Math.max(1, defaults.prints_per_plate)
         totalTime += (timePerItem * item.quantity) / 60 // Convert to hours
 
-        // Weight: Sum of BOM materials * quantity
+        // Weight: one item's share of each bill line (the bill is a whole plate run) * quantity
         const weightPerItem = defaults.bom_materials.reduce(
-          (sum, mat) => sum + parseFloat(mat.weight_grams),
+          (sum, mat) => sum + parseFloat(mat.weight_grams_per_item),
           0
         )
         totalWeight += weightPerItem * item.quantity

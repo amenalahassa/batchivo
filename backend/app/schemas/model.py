@@ -355,7 +355,12 @@ class BOMSpoolSuggestion(BaseModel):
     material_type_code: str = Field(..., description="Material type code (e.g., PLA, PETG)")
     color: str = Field(..., description="Spool color name")
     color_hex: Optional[str] = Field(None, description="Hex color code")
-    weight_grams: Decimal = Field(..., description="Weight from model BOM (grams)")
+    weight_grams: Decimal = Field(
+        ..., description="Grams on the bill of materials: one whole plate run"
+    )
+    weight_grams_per_item: Decimal = Field(
+        ..., description="Grams one item takes: the line's grams divided by items per plate"
+    )
     cost_per_gram: Optional[Decimal] = Field(
         None,
         description="Per-gram cost the line is costed at (override, else spool landed cost)",

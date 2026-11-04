@@ -296,7 +296,10 @@ export interface BOMSpoolSuggestion {
   material_type_code: string
   color: string
   color_hex?: string
+  /** Grams on the bill of materials: one whole plate run. */
   weight_grams: string
+  /** Grams one item takes: the line divided by items per plate, by the server. */
+  weight_grams_per_item: string
   cost_per_gram: string | null
   current_weight: string
   is_active: boolean

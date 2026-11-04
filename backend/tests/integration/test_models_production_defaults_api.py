@@ -304,6 +304,8 @@ class TestModelsProductionDefaultsEndpoint:
         assert bom_blue["color_hex"] == "#0000FF"
         assert bom_blue["material_type_code"] == "PLA"
         assert float(bom_blue["weight_grams"]) == 50.0
+        # The bill holds a whole plate run of 5 items; one item takes a fifth.
+        assert bom_blue["weight_grams_per_item"] == "10.0"
         assert float(bom_blue["current_weight"]) == 800.0
         assert bom_blue["is_active"] is True
 
@@ -313,6 +315,7 @@ class TestModelsProductionDefaultsEndpoint:
         assert bom_red["color_hex"] == "#FF0000"
         assert bom_red["material_type_code"] == "PLA"
         assert float(bom_red["weight_grams"]) == 30.0
+        assert bom_red["weight_grams_per_item"] == "6.0"
         assert float(bom_red["current_weight"]) == 600.0
         assert bom_red["is_active"] is True
 

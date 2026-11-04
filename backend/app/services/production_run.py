@@ -1500,22 +1500,25 @@ class ProductionRunService:
         )
 
     async def _get_model_weight(self, model_id: UUID) -> Decimal:
+        """Grams one item of the model takes, from its bill of materials.
+
+        The bill holds the grams of a whole plate run; ``bom_grams_per_item``
+        divides them by the items per plate, as the cost does. A run's
+        successful quantity counts items, so it is multiplied by this.
         """
-        Get total material weight for a model from its BOM.
+        from app.models.model import Model
+        from app.services.costing import bom_grams_per_item
 
-        Args:
-            model_id: UUID of the model
-
-        Returns:
-            Total weight in grams from all BOM materials
-        """
-        from app.models.model_material import ModelMaterial
-
-        result = await self.db.execute(
-            select(func.sum(ModelMaterial.weight_grams)).where(ModelMaterial.model_id == model_id)
-        )
-        total_weight = result.scalar()
-        return Decimal(str(total_weight)) if total_weight else Decimal("0")
+        model = (
+            await self.db.execute(
+                select(Model)
+                .where(Model.id == model_id, Model.tenant_id == self.tenant.id)
+                .options(selectinload(Model.materials))
+                # The model may already sit in the session with a stale bill.
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return bom_grams_per_item(model) if model is not None else Decimal("0")
 
     async def _load_relationships(self, production_run: ProductionRun) -> None:
         """
