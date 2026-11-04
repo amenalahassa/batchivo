@@ -155,6 +155,11 @@ weight-only one, cheapest first, and only for a parcel that fits it whichever
 way round. A profile with a volumetric divisor charges the larger of the
 actual weight and the volume weight (L × W × H in cm³ ÷ divisor, in kg). If
 you have no size-limited profiles, postage is chosen exactly as before.
+A [default service](./packaging.md#carrier-postage), for the shop or for one
+product, is tried first; when it does not take the parcel, the cheapest
+service that fits is used. Profiles seeded from a
+[carrier tariff](./packaging.md#carrier-postage) are priced exactly like your
+own, and count as assumptions until you replace them.
 
 - **One item** ships in the packaging you accepted for it.
 - **Several items** are packed together by the

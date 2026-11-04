@@ -23,6 +23,8 @@ from app.schemas.onboarding import (
     OnboardingStep1Request,
     OnboardingStep2Request,
     OnboardingStep3Request,
+    OnboardingStep5Request,
+    OnboardingStep5Response,
     OnboardingStepResponse,
 )
 from app.schemas.tenant_settings import (
@@ -36,7 +38,7 @@ from app.services.tenant_settings import TenantSettingsService
 
 logger = logging.getLogger(__name__)
 
-LAST_STEP = 4
+LAST_STEP = 5
 
 
 def new_wizard_progress() -> dict[str, Any]:
@@ -132,6 +134,10 @@ class OnboardingWizardService:
                 self.tenant.id,
                 TenantUpdate(currency_code=data.currency, currency_symbol=data.currency_symbol),
             )
+        if "country" in data.model_fields_set:
+            await self.settings.update_tenant(
+                self.tenant.id, TenantUpdate(country_code=data.country)
+            )
         if data.shop_display_name:
             await self.settings.update_shop_settings(
                 self.tenant.id, ShopSettingsUpdate(shop_name=data.shop_display_name)
@@ -152,7 +158,72 @@ class OnboardingWizardService:
 
     async def finish(self, step_data: Optional[dict[str, Any]] = None) -> OnboardingStepResponse:
         """Step 4: the first product (or its skip) has been dealt with."""
-        return await self._complete(LAST_STEP, step_data or {})
+        return await self._complete(4, step_data or {})
+
+    async def save_step5(self, data: OnboardingStep5Request) -> OnboardingStep5Response:
+        """Step 5, the last: standard packaging and carrier postage (spec 006).
+
+        Both go through the one seeding service. A request naming an unknown
+        item, carrier or service is refused (422) before anything is written;
+        a seeding failure does not stop the shop from being set up -- the step
+        completes, nothing partial is left for the part that failed, and the
+        response says what to add later and where (FR-015).
+        """
+        from app.services import catalogue_seed
+
+        if data.skip:
+            completed = await self._complete(LAST_STEP, {"skipped": True})
+            return OnboardingStep5Response(**completed.model_dump())
+
+        warnings: list[str] = []
+        outcome: dict[str, Any] = {}
+        refusals = (
+            catalogue_seed.UnknownCatalogueKey,
+            catalogue_seed.UnknownCarrier,
+            catalogue_seed.UnknownService,
+            catalogue_seed.CarrierCurrencyMismatch,
+        )
+        if data.packaging_keys != []:
+            try:
+                packed = await catalogue_seed.seed_packaging(
+                    self.db, self.tenant, data.packaging_keys
+                )
+                outcome["packaging"] = {"added": len(packed.added), "skipped": packed.skipped}
+            except refusals as exc:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001 -- reported, never blocks setup
+                logger.error(f"Packaging seeding failed for tenant {self.tenant.id}: {exc}")
+                warnings.append(
+                    "The standard packaging could not be added; add it later from the "
+                    "Packaging page (Add standard packaging)."
+                )
+        if data.services != []:
+            try:
+                posted = await catalogue_seed.seed_postage(
+                    self.db,
+                    self.tenant,
+                    data.carrier,
+                    data.services,
+                    default_service=data.default_service,
+                )
+                outcome["postage"] = {
+                    "carrier": posted.carrier,
+                    "added": len(posted.added),
+                    "skipped": posted.skipped,
+                    "reason": posted.reason,
+                }
+            except refusals as exc:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+            except Exception as exc:  # noqa: BLE001 -- reported, never blocks setup
+                logger.error(f"Postage seeding failed for tenant {self.tenant.id}: {exc}")
+                warnings.append(
+                    "Carrier postage could not be added; add it later from Settings → Postage."
+                )
+        await self.db.commit()
+        completed = await self._complete(
+            LAST_STEP, {"seed": outcome, **({"warnings": warnings} if warnings else {})}
+        )
+        return OnboardingStep5Response(**completed.model_dump(), warnings=warnings, seed=outcome)
 
     async def set_logo(self, logo_url: str) -> None:
         await self.settings.update_branding_settings(

@@ -149,6 +149,23 @@ describe('ProductMarginBreakdown', () => {
     expect(await screen.findByTestId('margin-incomplete')).toHaveTextContent('lapsed')
   })
 
+  it('says when the chosen postage service does not fit (spec 006 FR-023a)', async () => {
+    api.getMargin.mockResolvedValue(margin({ postage_notes: ['preferred_service_does_not_fit'] }))
+    renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)
+
+    expect(await screen.findByTestId('margin-postage-fallback')).toHaveTextContent(
+      'cheapest service that fits',
+    )
+  })
+
+  it('says nothing about the postage service when the chosen one is used', async () => {
+    api.getMargin.mockResolvedValue(margin({ postage_notes: [] }))
+    renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)
+
+    await screen.findByTestId('margin-observed-share')
+    expect(screen.queryByTestId('margin-postage-fallback')).not.toBeInTheDocument()
+  })
+
   it('shows a product not priced on the channel as unpriced, not as zero', async () => {
     api.getMargin.mockRejectedValue(new Error('This product is not priced on this channel'))
     renderPanel(<ProductMarginBreakdown productId="product-1" channelId="channel-1" />)

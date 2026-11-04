@@ -34,6 +34,7 @@ import { ProductionRuns } from '@/pages/ProductionRuns'
 import { ProductionRunDetailPage } from '@/pages/ProductionRunDetailPage'
 import { ProductionRunCreatePage } from '@/pages/ProductionRunCreatePage'
 import { Consumables } from '@/pages/Consumables'
+import { Packaging } from '@/pages/Packaging'
 import { SalesChannels } from '@/pages/SalesChannels'
 import { Scenarios } from '@/pages/Scenarios'
 import { QueueProfitability } from '@/pages/QueueProfitability'
@@ -296,6 +297,19 @@ const consumablesRoute = new Route({
     <ProtectedRoute>
       <ModuleGuard>
         <Consumables />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
+// Packaging route (spec 006): boxes, mailers, void fill and wrap
+const packagingRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/packaging',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Packaging />
       </ModuleGuard>
     </ProtectedRoute>
   ),
@@ -729,6 +743,7 @@ const routeTree = rootRoute.addChildren([
   productEditRoute,    // /products/$productId/edit before /products/$productId
   productDetailRoute,  // Dynamic route last
   consumablesRoute,    // Consumables inventory
+  packagingRoute,      // Packaging (spec 006)
   modelsRoute,         // Models catalog (printed items with BOM)
   modelCreateRoute,    // Static route first
   modelEditRoute,      // /models/$modelId/edit before /models/$modelId

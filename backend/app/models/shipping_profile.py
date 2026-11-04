@@ -112,7 +112,42 @@ class ShippingProfile(Base, UUIDMixin, TimestampMixin):
         comment="Carrier's volumetric divisor (cm³ per kg, e.g. 5000); NULL charges actual weight",
     )
 
+    # Seeded from a carrier tariff (spec 006, research D3/D8). A row with a
+    # `catalogue_carrier` came from the shipped tariff of that carrier dated
+    # `tariff_version`; operator rows leave it NULL and are never touched by
+    # seeding. A newer tariff supersedes the seeded rows, never edits them.
+    catalogue_carrier: Mapped[Optional[str]] = mapped_column(
+        String(32),
+        nullable=True,
+        comment="Carrier whose shipped tariff seeded this row; NULL for operator rows",
+    )
+    service: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Service key within the carrier, e.g. small_packet",
+    )
+    tariff_version: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment="Effective date of the tariff file that seeded this row",
+    )
+    source: Mapped[Optional[str]] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="Where the price came from (document title and date)",
+    )
+
     __table_args__ = (
+        Index(
+            "ix_shipping_profiles_tenant_carrier",
+            "tenant_id",
+            "catalogue_carrier",
+            "tariff_version",
+        ),
+        CheckConstraint(
+            "catalogue_carrier IS NULL OR (service IS NOT NULL AND tariff_version IS NOT NULL)",
+            name="ck_shipping_profiles_catalogue_identity",
+        ),
         Index(
             "ix_shipping_profiles_zone_bracket",
             "tenant_id",

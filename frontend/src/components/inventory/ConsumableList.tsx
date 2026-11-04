@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useCurrency } from '@/hooks/useCurrency'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { consumablesApi } from '@/lib/api/consumables'
 import { formatMoney } from '@/lib/money'
 import type { ConsumableTypeListParams } from '@/types/consumable'
@@ -57,6 +58,8 @@ export function ConsumableList() {
     page_size: 20,
     search: '',
     low_stock_only: false,
+    // Boxes, mailers, void fill and wrap live on the Packaging page (spec 006, D1).
+    exclude_packaging: true,
   })
 
   // Fetch consumables with react-query
@@ -104,6 +107,7 @@ export function ConsumableList() {
       page_size: 20,
       search: '',
       low_stock_only: false,
+      exclude_packaging: true,
     })
   }
 
@@ -124,6 +128,13 @@ export function ConsumableList() {
           <h1 className="text-3xl font-bold tracking-tight">Consumables Inventory</h1>
           <p className="text-muted-foreground">
             Manage magnets, inserts, hardware, and other consumables
+          </p>
+          <p className="text-sm text-muted-foreground" data-testid="packaging-page-link">
+            Boxes and mailers are on the{' '}
+            <Link to="/packaging" className="underline underline-offset-2">
+              Packaging page
+            </Link>
+            .
           </p>
         </div>
         <Button onClick={() => setAddDialogOpen(true)}>

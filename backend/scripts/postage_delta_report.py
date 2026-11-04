@@ -18,6 +18,11 @@ Phase 2 release is accepted (T056):
 
     poetry run python scripts/postage_delta_report.py --out postage-delta.csv
     poetry run python scripts/postage_delta_report.py --tenant mystmereforge
+
+The spec-006 catalogue release has its own before-and-after report, built by
+the release step itself so it prices exactly what it would seed (T055):
+
+    poetry run python -m app.cli.seed_catalogues --all-tenants --dry-run --report delta.md
 """
 
 import argparse

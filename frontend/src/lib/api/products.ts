@@ -144,6 +144,8 @@ export interface Product {
   dimensions?: Dimensions | null
   /** Takes the fragile clearance and protective wrap (FR-020). */
   is_fragile?: boolean
+  /** Spec 006: the postage service ('<carrier>:<service>') this product prefers; null uses the shop's default. */
+  postage_service?: string | null
   /** e.g. "accepted_packaging_does_not_fit", computed on read (FR-024). */
   packaging_warnings?: string[]
 }
@@ -292,6 +294,7 @@ export interface ProductUpdateRequest {
   size_cm?: string | null
   print_time_hours?: string | null
   is_fragile?: boolean
+  postage_service?: string | null
 }
 
 /**

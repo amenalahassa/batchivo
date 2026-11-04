@@ -96,6 +96,16 @@ export function ProductMarginBreakdown({
         </Alert>
       )}
 
+      {margin.postage_notes?.includes('preferred_service_does_not_fit') && (
+        <Alert data-testid="margin-postage-fallback">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>
+            The chosen postage service does not fit this parcel, so the margin uses the cheapest
+            service that fits.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <Table>
         <TableBody>
           <TableRow>

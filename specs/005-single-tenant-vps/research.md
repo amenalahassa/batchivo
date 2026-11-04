@@ -154,6 +154,9 @@ Decisions taken while planning `spec.md`. Each one is a constraint the code must
   failure restore previous `BATCHIVO_VERSION`, bring it back up, print the backup key and the
   restore command (FR-023) → `compose up -d` → wait for `/health` → report version and outcome.
   `latest` is rejected as a version argument (Constitution VII).
+  - *Cross-reference (spec 006, research D10):* after `alembic upgrade head`, `update` also runs
+    `compose run --rm backend python -m app.cli.seed_catalogues --all-tenants`, the same release
+    step the cluster's init container runs. It is idempotent, so `init` may run it too.
 
 ## R12. Releases
 

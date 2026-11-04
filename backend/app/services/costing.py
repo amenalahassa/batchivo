@@ -1423,6 +1423,9 @@ class CostingService:
         # Packaging: materials consumed after the part is good, so never at risk
         # (FR-015, FR-016). The existing packaging path is reused as-is.
         packaging_cost, packaging_origin = _packaging_cost(product, origins, pending)
+        missing = packaging_cost_missing(product)
+        if missing is not None:
+            reasons.append(missing)
         if packaging_cost != ZERO:
             raw.append(
                 _RawLine(
@@ -1920,6 +1923,25 @@ def consumable_unit_cost(consumable: Any) -> Decimal:
         quantity = _as_decimal(purchase.quantity_purchased, ONE) or ONE
         return total / quantity
     return _as_decimal(getattr(consumable, "current_cost_per_unit", None), ZERO) or ZERO
+
+
+def packaging_cost_missing(product: Any) -> Optional[str]:
+    """Why a product's packaging line is unknown, or None when it is known (FR-014).
+
+    A linked packaging consumable with neither a purchase nor a typed unit cost
+    -- a catalogue item seeded for a currency the catalogue quotes no price in
+    (spec 006) -- costs the line nothing, which is not the same as costing
+    nothing: the margin says the packaging cost is missing.
+    """
+    consumable = getattr(product, "packaging_consumable", None)
+    if consumable is None:
+        return None
+    if pricing_purchase(consumable) is not None:
+        return None
+    if getattr(consumable, "current_cost_per_unit", None) is not None:
+        return None
+    name = getattr(consumable, "name", None) or "the packaging"
+    return f"{name} has no unit cost recorded, so the packaging cost is missing"
 
 
 def _packaging_cost(

@@ -1,0 +1,291 @@
+{
+  "carrier": "usps",
+  "name": "USPS",
+  "currency": "USD",
+  "effective_date": "2026-10-04",
+  "source": "USPS Notice 123 Price List, retail, effective 2026-10-04; domestic = Zone 3 retail price, canada = Priority Mail International Price Group 1; pe.usps.com/cpim/ftp/manuals/dmm300/notice123.pdf",
+  "services": [
+    {
+      "key": "ground_advantage",
+      "name": "Ground Advantage",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "226.8",
+              "price": "8.65"
+            },
+            {
+              "min_grams": "226.8",
+              "max_grams": "453.6",
+              "price": "10.70"
+            },
+            {
+              "min_grams": "453.6",
+              "max_grams": "907.2",
+              "price": "13.15"
+            },
+            {
+              "min_grams": "907.2",
+              "max_grams": "1360.8",
+              "price": "14.45"
+            },
+            {
+              "min_grams": "1360.8",
+              "max_grams": "1814.4",
+              "price": "15.35"
+            },
+            {
+              "min_grams": "1814.4",
+              "max_grams": "2268",
+              "price": "15.65"
+            },
+            {
+              "min_grams": "2268",
+              "max_grams": "2721.6",
+              "price": "16.20"
+            },
+            {
+              "min_grams": "2721.6",
+              "max_grams": "3175.1",
+              "price": "16.60"
+            },
+            {
+              "min_grams": "3175.1",
+              "max_grams": "3628.7",
+              "price": "17.05"
+            },
+            {
+              "min_grams": "3628.7",
+              "max_grams": "4082.3",
+              "price": "18.05"
+            },
+            {
+              "min_grams": "4082.3",
+              "max_grams": "4535.9",
+              "price": "19.40"
+            },
+            {
+              "min_grams": "4535.9",
+              "max_grams": "4989.5",
+              "price": "19.90"
+            },
+            {
+              "min_grams": "4989.5",
+              "max_grams": "5443.1",
+              "price": "20.40"
+            },
+            {
+              "min_grams": "5443.1",
+              "max_grams": "5896.7",
+              "price": "20.90"
+            },
+            {
+              "min_grams": "5896.7",
+              "max_grams": "6350.3",
+              "price": "21.65"
+            },
+            {
+              "min_grams": "6350.3",
+              "max_grams": "6803.9",
+              "price": "22.45"
+            },
+            {
+              "min_grams": "6803.9",
+              "max_grams": "7257.5",
+              "price": "23.15"
+            },
+            {
+              "min_grams": "7257.5",
+              "max_grams": "7711.1",
+              "price": "23.90"
+            },
+            {
+              "min_grams": "7711.1",
+              "max_grams": "8164.7",
+              "price": "24.85"
+            },
+            {
+              "min_grams": "8164.7",
+              "max_grams": "8618.3",
+              "price": "25.70"
+            },
+            {
+              "min_grams": "8618.3",
+              "max_grams": "9071.8",
+              "price": "31.00"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "priority_mail",
+      "name": "Priority Mail",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "453.6",
+              "price": "12.15"
+            },
+            {
+              "min_grams": "453.6",
+              "max_grams": "907.2",
+              "price": "13.95"
+            },
+            {
+              "min_grams": "907.2",
+              "max_grams": "1360.8",
+              "price": "14.50"
+            },
+            {
+              "min_grams": "1360.8",
+              "max_grams": "1814.4",
+              "price": "15.85"
+            },
+            {
+              "min_grams": "1814.4",
+              "max_grams": "2268",
+              "price": "16.85"
+            },
+            {
+              "min_grams": "2268",
+              "max_grams": "2721.6",
+              "price": "17.25"
+            },
+            {
+              "min_grams": "2721.6",
+              "max_grams": "3175.1",
+              "price": "17.90"
+            },
+            {
+              "min_grams": "3175.1",
+              "max_grams": "3628.7",
+              "price": "18.40"
+            },
+            {
+              "min_grams": "3628.7",
+              "max_grams": "4082.3",
+              "price": "18.90"
+            },
+            {
+              "min_grams": "4082.3",
+              "max_grams": "4535.9",
+              "price": "20.00"
+            },
+            {
+              "min_grams": "4535.9",
+              "max_grams": "4989.5",
+              "price": "21.55"
+            },
+            {
+              "min_grams": "4989.5",
+              "max_grams": "5443.1",
+              "price": "22.15"
+            },
+            {
+              "min_grams": "5443.1",
+              "max_grams": "5896.7",
+              "price": "22.75"
+            },
+            {
+              "min_grams": "5896.7",
+              "max_grams": "6350.3",
+              "price": "23.35"
+            },
+            {
+              "min_grams": "6350.3",
+              "max_grams": "6803.9",
+              "price": "24.20"
+            },
+            {
+              "min_grams": "6803.9",
+              "max_grams": "7257.5",
+              "price": "25.05"
+            },
+            {
+              "min_grams": "7257.5",
+              "max_grams": "7711.1",
+              "price": "25.85"
+            },
+            {
+              "min_grams": "7711.1",
+              "max_grams": "8164.7",
+              "price": "26.70"
+            },
+            {
+              "min_grams": "8164.7",
+              "max_grams": "8618.3",
+              "price": "27.75"
+            },
+            {
+              "min_grams": "8618.3",
+              "max_grams": "9071.8",
+              "price": "28.80"
+            }
+          ]
+        },
+        {
+          "zone": "canada",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "453.6",
+              "price": "43.55"
+            },
+            {
+              "min_grams": "453.6",
+              "max_grams": "907.2",
+              "price": "47.05"
+            },
+            {
+              "min_grams": "907.2",
+              "max_grams": "1360.8",
+              "price": "50.45"
+            },
+            {
+              "min_grams": "1360.8",
+              "max_grams": "1814.4",
+              "price": "53.85"
+            },
+            {
+              "min_grams": "1814.4",
+              "max_grams": "2268",
+              "price": "59.05"
+            },
+            {
+              "min_grams": "2268",
+              "max_grams": "2721.6",
+              "price": "64.35"
+            },
+            {
+              "min_grams": "2721.6",
+              "max_grams": "3175.1",
+              "price": "69.70"
+            },
+            {
+              "min_grams": "3175.1",
+              "max_grams": "3628.7",
+              "price": "75.30"
+            },
+            {
+              "min_grams": "3628.7",
+              "max_grams": "4082.3",
+              "price": "80.60"
+            },
+            {
+              "min_grams": "4082.3",
+              "max_grams": "4535.9",
+              "price": "86.25"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -102,6 +102,11 @@ After the user confirms:
 1. Drop any approved `create_all` artefacts from step 5.
 2. Run `cd backend && poetry run alembic upgrade head`.
 3. Verify: `poetry run alembic current` equals `heads`.
+4. Run the catalogue release step (spec 006):
+   `cd backend && poetry run python -m app.cli.seed_catalogues --all-tenants`. It seeds the
+   packaging catalogue and carrier postage for shops that have not had them and is a no-op
+   after the first run; show its per-tenant summary in the report. A tenant line marked
+   `FAILED` is reported, not retried.
 
 If the upgrade fails, show the error, leave the database as it is, and give the restore command
 rather than running it:

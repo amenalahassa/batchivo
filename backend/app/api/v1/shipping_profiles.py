@@ -20,7 +20,7 @@ the administrator who set it (FR-001, task T229).
 """
 
 import logging
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Optional
@@ -39,8 +39,14 @@ from app.auth.dependencies import (
     role_in_tenant,
 )
 from app.core import clock
-from app.models.order import Order
 from app.models.shipping_profile import ShippingProfile
+from app.services.shipping_profile_rules import (
+    Candidate,
+    first_overlap,
+    has_been_used,
+    size_class,
+    zone_profiles,
+)
 from app.schemas.shipping_profile import (
     SIZE_LIMIT_FIELDS,
     ShippingProfileCreate,
@@ -85,24 +91,6 @@ async def _profile_or_404(
     return profile
 
 
-def _brackets_overlap(
-    min_a: Decimal,
-    max_a: Optional[Decimal],
-    min_b: Decimal,
-    max_b: Optional[Decimal],
-) -> bool:
-    """Whether two weight brackets claim any parcel in common.
-
-    Half-open above, matching :meth:`ShippingProfile.covers`, so 0-250 and
-    250-500 do not overlap -- which is how carriers publish them.
-    """
-    if max_a is not None and max_a <= min_b:
-        return False
-    if max_b is not None and max_b <= min_a:
-        return False
-    return True
-
-
 #: The fields that say what a parcel costs to post. Changing any of them
 #: supersedes the profile; a name or a carrier is corrected in place.
 POSTAGE_FIELDS: frozenset[str] = frozenset(
@@ -116,38 +104,6 @@ POSTAGE_FIELDS: frozenset[str] = frozenset(
         "volumetric_divisor",
     }
 )
-
-
-def _limits(source: object) -> Optional[tuple[Decimal, ...]]:
-    """A profile's size class, sorted, or None for a weight-only profile."""
-    values = [getattr(source, name, None) for name in SIZE_LIMIT_FIELDS]
-    if any(v is None for v in values):
-        return None
-    return tuple(sorted((Decimal(str(v)) for v in values), reverse=True))
-
-
-def _dates_overlap(from_a: date, to_a: Optional[date], from_b: date, to_b: Optional[date]) -> bool:
-    if to_a is not None and to_a < from_b:
-        return False
-    if to_b is not None and to_b < from_a:
-        return False
-    return True
-
-
-async def _has_been_used(db: AsyncSession, profile: ShippingProfile) -> bool:
-    """Whether any order was placed while this postage was in force."""
-    statement = select(Order.id).where(
-        Order.tenant_id == profile.tenant_id,
-        Order.created_at >= datetime.combine(profile.effective_from, time.min, tzinfo=timezone.utc),
-    )
-    if profile.effective_to is not None:
-        statement = statement.where(
-            Order.created_at
-            < datetime.combine(
-                profile.effective_to + timedelta(days=1), time.min, tzinfo=timezone.utc
-            )
-        )
-    return (await db.execute(statement.limit(1))).first() is not None
 
 
 async def _refuse_overlapping_bracket(
@@ -168,44 +124,32 @@ async def _refuse_overlapping_bracket(
     zone: the size decides between them (research D9). Two profiles of the
     same class claiming one weight would not be decided by anything.
     """
-    result = await db.execute(
-        select(ShippingProfile).where(
-            ShippingProfile.tenant_id == tenant_id,
-            ShippingProfile.destination_zone == zone,
-        )
+    existing = first_overlap(
+        Candidate(
+            zone=zone,
+            minimum=minimum,
+            maximum=maximum,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            limits=limits,
+        ),
+        await zone_profiles(db, tenant_id, zone),
+        exclude_id=exclude_id,
     )
-    for existing in result.scalars().all():
-        if existing.id == exclude_id or _limits(existing) != limits:
-            continue
-        # Two profiles in force on different dates may claim the same parcel:
-        # that is what a repricing is.
-        if not _dates_overlap(
-            effective_from, effective_to, existing.effective_from, existing.effective_to
-        ):
-            continue
-        if _brackets_overlap(
-            minimum,
-            maximum,
-            Decimal(str(existing.weight_bracket_min_grams)),
-            (
-                Decimal(str(existing.weight_bracket_max_grams))
-                if existing.weight_bracket_max_grams is not None
-                else None
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            # Worded for the operator who sees it in the postage panel
+            # (bug postage-error-raw-json): which profile, which range, and
+            # what to do about it.
+            detail=(
+                f'"{existing.name}" already covers '
+                f"{_grams(existing.weight_bracket_min_grams)} g to "
+                f"{_upper_limit(existing.weight_bracket_max_grams)} in zone {zone}. "
+                "Change this profile's weight range so the two do not overlap, "
+                "or edit that profile instead."
             ),
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                # Worded for the operator who sees it in the postage panel
-                # (bug postage-error-raw-json): which profile, which range, and
-                # what to do about it.
-                detail=(
-                    f'"{existing.name}" already covers '
-                    f"{_grams(existing.weight_bracket_min_grams)} g to "
-                    f"{_upper_limit(existing.weight_bracket_max_grams)} in zone {zone}. "
-                    "Change this profile's weight range so the two do not overlap, "
-                    "or edit that profile instead."
-                ),
-            )
+        )
 
 
 @router.get("", response_model=ShippingProfileListResponse)
@@ -259,7 +203,7 @@ async def create_shipping_profile(
         minimum=payload.weight_bracket_min_grams,
         maximum=payload.weight_bracket_max_grams,
         effective_from=payload.effective_from,
-        limits=_limits(payload),
+        limits=size_class(payload),
     )
 
     profile = ShippingProfile(tenant_id=tenant.id, **payload.model_dump())
@@ -312,7 +256,7 @@ async def update_shipping_profile(
     )
     opens_on = (changes.pop("effective_from", None) if supersedes else None) or clock.today()
     if supersedes and opens_on <= profile.effective_from:
-        if await _has_been_used(db, profile):
+        if await has_been_used(db, profile):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
@@ -349,7 +293,7 @@ async def update_shipping_profile(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
-    limits = _limits(SimpleNamespace(**sizing))
+    limits = size_class(SimpleNamespace(**sizing))
 
     if not supersedes:
         await _refuse_overlapping_bracket(
@@ -436,7 +380,7 @@ async def delete_shipping_profile(
     (task T233).
     """
     profile = await _profile_or_404(db, tenant.id, profile_id)
-    if await _has_been_used(db, profile):
+    if await has_been_used(db, profile):
         today = clock.today()
         if profile.effective_to is None or profile.effective_to > today:
             profile.effective_to = max(today, profile.effective_from)

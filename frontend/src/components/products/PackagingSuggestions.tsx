@@ -11,6 +11,7 @@
  * be a second pricing implementation.
  */
 
+import { Link } from '@tanstack/react-router'
 import { useState } from 'react'
 import { AlertTriangle, Check, Loader2, PackageSearch, ShieldAlert } from 'lucide-react'
 
@@ -107,7 +108,11 @@ export function PackagingSuggestions({
         <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <span>
-            Nothing you stock fits. A box would need at least {size(advice.minimum_inner)} inside.
+            Nothing you stock fits. A box would need at least {size(advice.minimum_inner)} inside.{' '}
+            <Link to="/packaging" className="underline underline-offset-2">
+              Add one on the Packaging page
+            </Link>
+            .
           </span>
         </div>
       )}

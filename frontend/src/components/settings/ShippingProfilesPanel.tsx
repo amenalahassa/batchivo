@@ -59,6 +59,11 @@ import { useCurrency } from '@/hooks/useCurrency'
 import { formatMoney } from '@/lib/money'
 import type { ShippingProfile, ShippingProfileCreate } from '@/types/pricing'
 import { apiErrorDetail } from '@/lib/apiError'
+import { Badge } from '@/components/ui/badge'
+import { CatalogueNotice } from '@/components/packaging/CatalogueNotice'
+import { carrierName } from '@/components/packaging/serviceLabels'
+import { useCarriers } from '@/hooks/usePostageCatalogue'
+import { CarrierPostageSection } from './CarrierPostageSection'
 
 const amount = /^\d+(\.\d{1,2})?$/
 const grams = /^\d+(\.\d+)?$/
@@ -137,6 +142,7 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
   const create = useCreateShippingProfile()
   const update = useUpdateShippingProfile()
   const remove = useDeleteShippingProfile()
+  const { carriers } = useCarriers()
 
   // null: no form open; 'new': adding; otherwise the profile being changed.
   const [editing, setEditing] = useState<ShippingProfile | 'new' | null>(null)
@@ -219,6 +225,13 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
       </CardHeader>
 
       <CardContent className="space-y-4">
+        <CatalogueNotice
+          part="postage"
+          carriers={carriers?.carriers}
+          onAddProfile={canEdit ? () => open('new') : undefined}
+        />
+        <CarrierPostageSection canEdit={canEdit} onAddProfile={() => open('new')} />
+
         {saveError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
@@ -412,7 +425,22 @@ export function ShippingProfilesPanel({ canEdit = false }: ShippingProfilesPanel
                   <TableCell className="text-right tabular-nums">
                     {formatMoney(profile.postage_cost, currency.symbol)}
                   </TableCell>
-                  <TableCell>{profile.carrier ?? '—'}</TableCell>
+                  <TableCell>
+                    {profile.catalogue_carrier ? (
+                      <div data-testid="seeded-profile">
+                        <span>{carrierName(profile.catalogue_carrier, carriers?.carriers)}</span>
+                        <Badge variant="outline" className="ml-1 px-1 py-0 text-[10px]">
+                          default
+                        </Badge>
+                        <div className="text-xs text-muted-foreground">
+                          {profile.source}
+                          {profile.tariff_version ? `, tariff of ${profile.tariff_version}` : ''}
+                        </div>
+                      </div>
+                    ) : (
+                      (profile.carrier ?? '—')
+                    )}
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                     {profile.effective_to
                       ? `${profile.effective_from} to ${profile.effective_to}`

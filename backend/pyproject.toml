@@ -138,6 +138,8 @@ module = [
     "app.services.refund_actuals",
     "app.services.variance_service",
     "app.services.run_costs",
+    # Spec 006: the overlap rule shared by the postage route and the seeding.
+    "app.services.shipping_profile_rules",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

@@ -17,6 +17,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { PACKAGING_KIND_LABELS } from '@/components/packaging/catalogueHelpers'
 
 export interface PackagingFields {
   packaging_kind?: PackagingKind | null
@@ -31,18 +32,14 @@ export interface PackagingFields {
 
 const NOT_PACKAGING = 'none'
 
-const PACKAGING_KIND_LABELS: Record<PackagingKind, string> = {
-  box: 'Box',
-  mailer: 'Mailer',
-  void_fill: 'Void fill',
-  wrap: 'Wrap',
-}
 
 interface PackagingFieldsSectionProps {
   value: PackagingFields
   onChange: <K extends keyof PackagingFields>(field: K, value: PackagingFields[K]) => void
   /** Where each stored figure came from, as the API reports it (FR-038). */
   origins?: Record<string, string | null>
+  /** The Packaging page's form: "Not packaging" is not an option. */
+  packagingOnly?: boolean
 }
 
 const ORIGIN_LABELS: Record<string, string> = { measured: 'Measured', assumed: 'Estimated' }
@@ -82,7 +79,12 @@ function MeasureInput({
   )
 }
 
-export function PackagingFieldsSection({ value, onChange, origins }: PackagingFieldsSectionProps) {
+export function PackagingFieldsSection({
+  value,
+  onChange,
+  origins,
+  packagingOnly = false,
+}: PackagingFieldsSectionProps) {
   const kind = value.packaging_kind ?? null
   const isContainer = kind === 'box' || kind === 'mailer'
 
@@ -104,7 +106,7 @@ export function PackagingFieldsSection({ value, onChange, origins }: PackagingFi
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={NOT_PACKAGING}>Not packaging</SelectItem>
+              {!packagingOnly && <SelectItem value={NOT_PACKAGING}>Not packaging</SelectItem>}
               {(Object.keys(PACKAGING_KIND_LABELS) as PackagingKind[]).map((k) => (
                 <SelectItem key={k} value={k}>
                   {PACKAGING_KIND_LABELS[k]}

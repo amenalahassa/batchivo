@@ -401,3 +401,54 @@ class TestLapsedRulesAreReportedOnTheMargin:
 
         assert body["fees"] == []
         assert any("no fee rule" in reason for reason in body["incomplete_reasons"])
+
+
+# ============================================================================
+# Spec 006 FR-023a: the margin says when the chosen postage service is not used
+# ============================================================================
+
+
+class TestThePostageServiceFallback:
+    """The service-level fallback is tested in test_postage_preferred_service;
+    these check the margin carries its note to the operator."""
+
+    async def test_a_fallback_from_the_chosen_service_is_reported(
+        self,
+        client: AsyncClient,
+        test_product: Product,
+        channel: SalesChannel,
+        priced,
+        monkeypatch,
+    ) -> None:
+        from app.api.v1 import products as products_api
+        from app.services.postage import PREFERRED_SERVICE_DOES_NOT_FIT, Postage
+
+        async def fell_back(*args, **kwargs):
+            return Postage(
+                Decimal("4.10"), zone="domestic", notes=(PREFERRED_SERVICE_DOES_NOT_FIT,)
+            )
+
+        monkeypatch.setattr(products_api, "postage_for_product", fell_back)
+        body = (await client.get(_url(test_product, channel))).json()
+
+        assert body["postage_notes"] == [PREFERRED_SERVICE_DOES_NOT_FIT]
+        assert Decimal(body["postage_paid"]) == Decimal("4.10")
+
+    async def test_no_note_when_the_chosen_service_is_used(
+        self,
+        client: AsyncClient,
+        test_product: Product,
+        channel: SalesChannel,
+        priced,
+        monkeypatch,
+    ) -> None:
+        from app.api.v1 import products as products_api
+        from app.services.postage import Postage
+
+        async def fitted(*args, **kwargs):
+            return Postage(Decimal("3.40"), zone="domestic")
+
+        monkeypatch.setattr(products_api, "postage_for_product", fitted)
+        body = (await client.get(_url(test_product, channel))).json()
+
+        assert body["postage_notes"] == []

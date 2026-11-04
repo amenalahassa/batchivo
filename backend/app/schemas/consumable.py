@@ -206,6 +206,20 @@ class ConsumableTypeResponse(ConsumableTypeBase):
         default_factory=dict,
         description="Each packaging figure's provenance source, as recorded (FR-038)",
     )
+    # Spec 006: the Packaging page.
+    from_catalogue: bool = Field(False, description="Seeded from the standard catalogue")
+    catalogue_key: Optional[str] = Field(None, description="Catalogue entry it was seeded from")
+    catalogue_version: Optional[int] = Field(None, description="Catalogue version that seeded it")
+    fits_services: list[str] = Field(
+        default_factory=list,
+        description="Postage services ('<carrier>:<service>') whose size limits take it",
+    )
+    used_by_products: list[dict] = Field(
+        default_factory=list, description="Products that ship in it: id, sku, name"
+    )
+    cost_provenance: Optional[str] = Field(
+        None, description="Where the typed unit cost came from (assumed for a catalogue default)"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

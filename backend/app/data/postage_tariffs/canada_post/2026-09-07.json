@@ -1,0 +1,249 @@
+{
+  "carrier": "canada_post",
+  "name": "Canada Post",
+  "currency": "CAD",
+  "effective_date": "2026-09-07",
+  "source": "Canada Post consumer prices guide, edition effective 2026-09-07 (stamp prices); international = Small Packet Air rate code 8; canadapost-postescanada.ca/cpc/doc/en/support/prices/consumer-prices.pdf",
+  "services": [
+    {
+      "key": "lettermail",
+      "name": "Lettermail (oversize)",
+      "max_length_mm": "380",
+      "max_width_mm": "270",
+      "max_height_mm": "20",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "100",
+              "price": "2.61"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "200",
+              "price": "4.29"
+            },
+            {
+              "min_grams": "200",
+              "max_grams": "300",
+              "price": "5.98"
+            },
+            {
+              "min_grams": "300",
+              "max_grams": "400",
+              "price": "6.85"
+            },
+            {
+              "min_grams": "400",
+              "max_grams": "500",
+              "price": "7.36"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "small_packet",
+      "name": "Small Packet (Air)",
+      "max_length_mm": "400",
+      "max_width_mm": "300",
+      "max_height_mm": "200",
+      "zones": [
+        {
+          "zone": "us",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "100",
+              "price": "9.11"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "11.13"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "14.29"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "750",
+              "price": "18.96"
+            },
+            {
+              "min_grams": "750",
+              "max_grams": "1000",
+              "price": "20.66"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "1500",
+              "price": "23.87"
+            },
+            {
+              "min_grams": "1500",
+              "max_grams": "2000",
+              "price": "26.87"
+            }
+          ]
+        },
+        {
+          "zone": "international",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "100",
+              "price": "13.85"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "15.17"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "27.04"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "750",
+              "price": "43.91"
+            },
+            {
+              "min_grams": "750",
+              "max_grams": "1000",
+              "price": "52.80"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "1500",
+              "price": "67.65"
+            },
+            {
+              "min_grams": "1500",
+              "max_grams": "2000",
+              "price": "82.51"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "expedited_parcel",
+      "name": "Expedited Parcel",
+      "volumetric_divisor": "6000",
+      "zones": [
+        {
+          "zone": "us",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "500",
+              "price": "21.96"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "1000",
+              "price": "24.28"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "1500",
+              "price": "26.23"
+            },
+            {
+              "min_grams": "1500",
+              "max_grams": "2000",
+              "price": "28.34"
+            },
+            {
+              "min_grams": "2000",
+              "max_grams": "2500",
+              "price": "30.07"
+            },
+            {
+              "min_grams": "2500",
+              "max_grams": "3000",
+              "price": "31.12"
+            },
+            {
+              "min_grams": "3000",
+              "max_grams": "3500",
+              "price": "32.79"
+            },
+            {
+              "min_grams": "3500",
+              "max_grams": "4000",
+              "price": "35.12"
+            },
+            {
+              "min_grams": "4000",
+              "max_grams": "4500",
+              "price": "36.56"
+            },
+            {
+              "min_grams": "4500",
+              "max_grams": "5000",
+              "price": "38.13"
+            },
+            {
+              "min_grams": "5000",
+              "max_grams": "5500",
+              "price": "41.01"
+            },
+            {
+              "min_grams": "5500",
+              "max_grams": "6000",
+              "price": "43.32"
+            },
+            {
+              "min_grams": "6000",
+              "max_grams": "6500",
+              "price": "45.55"
+            },
+            {
+              "min_grams": "6500",
+              "max_grams": "7000",
+              "price": "48.01"
+            },
+            {
+              "min_grams": "7000",
+              "max_grams": "7500",
+              "price": "49.46"
+            },
+            {
+              "min_grams": "7500",
+              "max_grams": "8000",
+              "price": "51.42"
+            },
+            {
+              "min_grams": "8000",
+              "max_grams": "8500",
+              "price": "51.95"
+            },
+            {
+              "min_grams": "8500",
+              "max_grams": "9000",
+              "price": "53.99"
+            },
+            {
+              "min_grams": "9000",
+              "max_grams": "9500",
+              "price": "56.41"
+            },
+            {
+              "min_grams": "9500",
+              "max_grams": "10000",
+              "price": "59.65"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

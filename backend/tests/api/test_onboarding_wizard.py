@@ -185,7 +185,7 @@ class TestSteps:
         assert "two decimal places" in response.text
 
     async def test_an_unknown_step_is_not_found(self, client: AsyncClient, open_wizard) -> None:
-        response = await client.put(f"{WIZARD}/step/5", json={})
+        response = await client.put(f"{WIZARD}/step/6", json={})
 
         assert response.status_code == 404
 
@@ -196,16 +196,17 @@ class TestSteps:
 
 
 class TestFirstProduct:
-    async def test_skipping_finishes_the_wizard(
+    async def test_skipping_leads_to_the_packaging_step(
         self, client: AsyncClient, db_session: AsyncSession, open_wizard
     ) -> None:
+        # Spec 006: packaging and postage are step 5, the last.
         response = await client.put(f"{WIZARD}/step/4", json={"skip": True})
 
         assert response.status_code == 200
-        assert response.json()["is_completed"] is True
-        assert response.json()["next_step"] is None
+        assert response.json()["is_completed"] is False
+        assert response.json()["next_step"] == 5
         tenant = await _tenant(db_session, open_wizard.id)
-        assert tenant.settings["onboarding"]["is_completed"] is True
+        assert tenant.settings["onboarding"]["current_step"] == 5
 
     async def test_a_product_needs_a_name_unless_skipped(
         self, client: AsyncClient, open_wizard

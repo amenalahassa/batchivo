@@ -37,6 +37,7 @@ export const consumablesApi = {
     if (params?.is_active !== undefined) queryParams.append('is_active', params.is_active.toString())
     if (params?.low_stock_only) queryParams.append('low_stock_only', params.low_stock_only.toString())
     if (params?.packaging_kind) queryParams.append('packaging_kind', params.packaging_kind)
+    if (params?.exclude_packaging) queryParams.append('exclude_packaging', 'true')
 
     const queryString = queryParams.toString()
     const url = `/api/v1/consumables/types${queryString ? `?${queryString}` : ''}`

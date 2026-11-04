@@ -479,6 +479,14 @@ export interface ShippingProfile {
   max_height_mm?: string | null
   /** The carrier's volumetric divisor, cm³ per kg; null charges actual weight. */
   volumetric_divisor?: string | null
+  /** Spec 006: set on a row seeded from a carrier tariff; null on the operator's own. */
+  catalogue_carrier?: string | null
+  /** The carrier's service this row prices, e.g. "small_packet". */
+  service?: string | null
+  /** The tariff's effective date (ISO) the row was seeded from. */
+  tariff_version?: string | null
+  /** The published price list the figures came from. */
+  source?: string | null
 }
 
 export interface ShippingProfileCreate {
@@ -558,6 +566,11 @@ export interface ProductMargin {
   observed_share: Money | null
   assumed_share: Money | null
   incomplete_reasons: string[]
+  /**
+   * How the postage was priced when worth saying (spec 006 FR-023a), e.g.
+   * `preferred_service_does_not_fit` when the chosen service is not used.
+   */
+  postage_notes?: string[]
 }
 
 /** A recorded fee: exactly one of a period scope or an order scope. */

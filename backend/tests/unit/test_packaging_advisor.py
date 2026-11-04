@@ -53,6 +53,13 @@ class TestSuggest:
         assert first.room == d(10, 10, 10)
         assert first.empty_volume_ml == Decimal("648")
 
+    def test_a_container_without_inner_size_is_never_offered(self) -> None:
+        """Spec 006 FR-006 (T021): an incomplete box or mailer is not suggested."""
+        incomplete = [box("No size", None), box("No size mailer", None, kind="mailer")]
+        advice = suggest(d(20, 20, 20), [*incomplete, box("S", (100, 100, 100))], clearance=TEN)
+        assert names(advice) == ["S"]
+        assert suggest(d(20, 20, 20), incomplete, clearance=TEN).suggestions == ()
+
     def test_rotated_fit_states_the_orientation(self) -> None:
         advice = suggest(d(30, 70, 120), [box("M", (150, 100, 60))], clearance=TEN)
         assert names(advice) == ["M"]

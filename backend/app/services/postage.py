@@ -57,6 +57,9 @@ ZERO = Decimal("0")
 NO_PACKAGING_RECORDED = "no_packaging_recorded"
 ORDER_PACKING_UNAVAILABLE = "order_packing_unavailable"
 CONTENTS_NOT_ASSIGNED = "contents_not_assigned"
+#: The shop's or product's chosen service does not take the parcel, so the
+#: cheapest one that does priced it (spec 006, FR-023a).
+PREFERRED_SERVICE_DOES_NOT_FIT = "preferred_service_does_not_fit"
 
 #: An order line: a product and quantity, optionally the SKU it was sold as
 #: (a variant's SKU picks that variant's dimensions and packaging, D11).
@@ -176,18 +179,50 @@ def build_parcel(
     return Parcel(grams=grams, outer=outer, reasons=tuple(reasons))
 
 
+def profile_service(profile: ShippingProfile) -> Optional[str]:
+    """The service a profile prices, as ``"<carrier>:<service>"`` for a seeded row."""
+    from app.services.shipping_profile_rules import service_key
+
+    return service_key(profile)
+
+
+def preferred_service_for(
+    tenant: Optional["Tenant"], product: Optional["Product"] = None
+) -> Optional[str]:
+    """The service a parcel should go by: the product's, else the shop's default (D9)."""
+    override = getattr(product, "postage_service", None) if product is not None else None
+    if override:
+        return str(override)
+    settings = getattr(tenant, "settings", None) or {}
+    postage = settings.get("postage") if isinstance(settings, dict) else None
+    default = postage.get("default_service") if isinstance(postage, dict) else None
+    return str(default) if default else None
+
+
+def _ordered(candidates: Sequence[ShippingProfile]) -> list[ShippingProfile]:
+    sized = sorted(
+        (p for p in candidates if p.size_limits is not None),
+        key=lambda p: Decimal(str(p.postage_cost)),
+    )
+    return [*sized, *(p for p in candidates if p.size_limits is None)]
+
+
 def _price(
     profiles: Iterable[ShippingProfile],
     parcel: Parcel,
     *,
     zone: Optional[str],
     as_of: date,
+    preferred_service: Optional[str] = None,
 ) -> Postage:
     """The postage for one parcel from the profiles in force for ``zone``.
 
-    Size-limited profiles first, cheapest first; then weight-only profiles in
-    the order they were read (by bracket), so a tenant without size classes
-    gets the profile it always did (FR-026).
+    The preferred service (product override, else the shop default) is tried
+    first; when none of its profiles takes the parcel, the usual order prices
+    it and the result says so (FR-023a). The usual order: size-limited
+    profiles, cheapest first; then weight-only profiles in the order they were
+    read (by bracket), so a tenant without size classes or a preference gets
+    the profile it always did (FR-026).
     """
     if parcel.grams is None:
         why = parcel.reasons[0] if parcel.reasons else "no parcel weight is recorded"
@@ -195,14 +230,17 @@ def _price(
     candidates = [
         p for p in profiles if (zone is None or p.destination_zone == zone) and p.applies_on(as_of)
     ]
-    sized = sorted(
-        (p for p in candidates if p.size_limits is not None),
-        key=lambda p: Decimal(str(p.postage_cost)),
-    )
-    weight_only = [p for p in candidates if p.size_limits is None]
-    for profile in [*sized, *weight_only]:
+    notes: tuple[str, ...] = ()
+    if preferred_service:
+        for profile in _ordered([p for p in candidates if profile_service(p) == preferred_service]):
+            if profile.covers(parcel):
+                return Postage(Decimal(str(profile.postage_cost)), zone=profile.destination_zone)
+        notes = (PREFERRED_SERVICE_DOES_NOT_FIT,)
+    for profile in _ordered(candidates):
         if profile.covers(parcel):
-            return Postage(Decimal(str(profile.postage_cost)), zone=profile.destination_zone)
+            return Postage(
+                Decimal(str(profile.postage_cost)), zone=profile.destination_zone, notes=notes
+            )
     where = f" to zone '{zone}'" if zone is not None else ""
     size = ""
     if parcel.outer is not None:
@@ -214,6 +252,7 @@ def _price(
             f"no shipping profile in force on {as_of} covers a {parcel.grams} g parcel"
             f"{size}{where}, so postage is unknown rather than zero"
         ),
+        notes=notes,
     )
 
 
@@ -387,17 +426,20 @@ def price_parcels(
     *,
     zone: Optional[str],
     as_of: date,
+    preferred_service: Optional[str] = None,
 ) -> Postage:
     """The postage for several parcels: their sum, or unknown if any one is."""
     total = ZERO
     priced_zone: Optional[str] = None
+    notes: list[str] = []
     for parcel in parcels:
-        one = _price(profiles, parcel, zone=zone, as_of=as_of)
+        one = _price(profiles, parcel, zone=zone, as_of=as_of, preferred_service=preferred_service)
         if not one.known:
             return one
         total += one.or_zero()
         priced_zone = priced_zone or one.zone
-    return Postage(total, zone=priced_zone)
+        notes.extend(n for n in one.notes if n not in notes)
+    return Postage(total, zone=priced_zone, notes=tuple(notes))
 
 
 async def postage_for_parcels(
@@ -408,13 +450,17 @@ async def postage_for_parcels(
     as_of: Optional[date] = None,
     destination: Optional[str] = None,
 ) -> Postage:
-    """Postage for parcels already assembled -- the ones confirmed at dispatch."""
+    """Postage for parcels already assembled -- the ones confirmed at dispatch.
+
+    Priced by the shop's default service when it has one (FR-023a).
+    """
     profiles = await _profiles(db, tenant)
     return price_parcels(
         profiles,
         parcels,
         zone=zone_for_destination(destination, profiles),
         as_of=as_of or clock.today(),
+        preferred_service=preferred_service_for(tenant),
     )
 
 
@@ -452,12 +498,62 @@ async def postage_for_order(
     resolved_zone = zone or zone_for_destination(destination, profiles)
     on = as_of or clock.today()
 
+    # One product: its own service, else the shop's; several: the shop's (D9).
+    products = {id(product): product for product, _, _ in map(order_line, lines)}
+    preferred = preferred_service_for(
+        tenant, next(iter(products.values())) if len(products) == 1 else None
+    )
+
     plan = await plan_order_parcels(db, tenant, lines)
     if not plan.parcels:
-        found = _price(profiles, Parcel(grams=grams, outer=None), zone=resolved_zone, as_of=on)
-        notes = (plan.reason,) if plan.reason else ()
+        found = _price(
+            profiles,
+            Parcel(grams=grams, outer=None),
+            zone=resolved_zone,
+            as_of=on,
+            preferred_service=preferred,
+        )
+        notes = ((plan.reason,) if plan.reason else ()) + found.notes
         return Postage(found.amount, found.reason, found.zone, notes)
-    return price_parcels(profiles, [p.parcel for p in plan.parcels], zone=resolved_zone, as_of=on)
+    return price_parcels(
+        profiles,
+        [p.parcel for p in plan.parcels],
+        zone=resolved_zone,
+        as_of=on,
+        preferred_service=preferred,
+    )
+
+
+def services_fitting(
+    container: ConsumableType,
+    profiles: Iterable[ShippingProfile],
+    as_of: Optional[date] = None,
+) -> list[str]:
+    """The services whose size limits take ``container``'s outer size (FR-023, D11).
+
+    Outer size as :func:`build_parcel` assembles it -- inner plus twice the
+    wall -- so the Packaging page and postage agree on what fits. A service
+    without size limits takes any container. Void fill, wrap and a container
+    without an inner size fit nothing.
+    """
+    if container.packaging_kind not in CONTAINER_KINDS:
+        return []
+    outer = build_parcel([], [(container, 1)]).outer
+    if outer is None:
+        return []
+    on = as_of or clock.today()
+    sides = outer.sorted_desc().as_tuple()
+    fitting: set[str] = set()
+    for profile in profiles:
+        key = profile_service(profile)
+        if key is None or not profile.applies_on(on):
+            continue
+        limits = profile.size_limits
+        if limits is None or all(
+            side <= limit for side, limit in zip(sides, limits.sorted_desc().as_tuple())
+        ):
+            fitting.add(key)
+    return sorted(fitting)
 
 
 async def freeze_order_postage(
@@ -498,6 +594,7 @@ __all__ = [
     "CONTENTS_NOT_ASSIGNED",
     "NO_PACKAGING_RECORDED",
     "ORDER_PACKING_UNAVAILABLE",
+    "PREFERRED_SERVICE_DOES_NOT_FIT",
     "OrderLine",
     "OrderPlan",
     "PlannedParcel",
@@ -511,6 +608,9 @@ __all__ = [
     "postage_for_order",
     "postage_for_parcels",
     "postage_for_product",
+    "preferred_service_for",
     "price_parcels",
+    "profile_service",
+    "services_fitting",
     "zone_for_destination",
 ]

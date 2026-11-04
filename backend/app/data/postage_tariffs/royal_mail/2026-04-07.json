@@ -1,0 +1,91 @@
+{
+  "carrier": "royal_mail",
+  "name": "Royal Mail",
+  "currency": "GBP",
+  "effective_date": "2026-04-07",
+  "source": "Royal Mail 2nd Class stamp prices from 7 April 2026, transcribed from published summaries (official Our prices April 2026 PDF not retrievable); review against royalmail.com/prices",
+  "services": [
+    {
+      "key": "large_letter",
+      "name": "Large Letter (2nd Class)",
+      "max_length_mm": "353",
+      "max_width_mm": "250",
+      "max_height_mm": "25",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "100",
+              "price": "1.55"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "2.10"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "2.70"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "750",
+              "price": "3.30"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "small_parcel",
+      "name": "Small Parcel (2nd Class)",
+      "max_length_mm": "450",
+      "max_width_mm": "350",
+      "max_height_mm": "160",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "2000",
+              "price": "4.60"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "medium_parcel",
+      "name": "Medium Parcel (2nd Class)",
+      "max_length_mm": "610",
+      "max_width_mm": "460",
+      "max_height_mm": "460",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "2000",
+              "price": "7.50"
+            },
+            {
+              "min_grams": "2000",
+              "max_grams": "10000",
+              "price": "9.50"
+            },
+            {
+              "min_grams": "10000",
+              "max_grams": "20000",
+              "price": "14.20"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

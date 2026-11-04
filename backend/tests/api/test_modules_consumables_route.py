@@ -40,6 +40,17 @@ class TestConsumablesAndDesignersAreReachable:
         assert entry["label"] == "Consumables"
         assert entry["icon"] == "wrench"
 
+    async def test_packaging_is_declared_by_the_consumables_module(
+        self, client: AsyncClient
+    ) -> None:
+        """Spec 006 (FR-001, T010): Packaging sits next to Consumables."""
+        response = await client.get("/api/v1/modules")
+        module = next(m for m in response.json()["modules"] if m["name"] == "consumables")
+        entry = next(route for route in module["routes"] if route["path"] == "/packaging")
+
+        assert entry["label"] == "Packaging"
+        assert entry["icon"] == "package-open"
+
 
 def test_every_module_with_navigation_can_be_enabled() -> None:
     """A module with nav that is not in ALL_MODULES is silently never enabled."""

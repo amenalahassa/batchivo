@@ -35,6 +35,7 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { CountrySelect } from './CountrySelect'
 
 const tenantFormSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100, 'Name must be 100 characters or less'),
@@ -47,6 +48,7 @@ const tenantFormSchema = z.object({
     .string()
     .min(1, 'Symbol is required')
     .max(5, 'Symbol must be 5 characters or less'),
+  country_code: z.string().regex(/^[A-Z]{2}$/).nullable(),
 })
 
 type TenantFormValues = z.infer<typeof tenantFormSchema>
@@ -67,6 +69,7 @@ export function GeneralSettings() {
       description: tenant?.description ?? '',
       currency_code: tenant?.currency_code ?? 'GBP',
       currency_symbol: tenant?.currency_symbol ?? '£',
+      country_code: tenant?.country_code ?? null,
     },
   })
 
@@ -78,6 +81,7 @@ export function GeneralSettings() {
         description: tenant.description ?? '',
         currency_code: tenant.currency_code ?? 'GBP',
         currency_symbol: tenant.currency_symbol ?? '£',
+        country_code: tenant.country_code ?? null,
       })
     }
   }, [tenant, form])
@@ -98,6 +102,7 @@ export function GeneralSettings() {
       description: data.description || undefined,
       currency_code: data.currency_code,
       currency_symbol: data.currency_symbol,
+      country_code: data.country_code,
     })
   }
 
@@ -204,6 +209,18 @@ export function GeneralSettings() {
                 )}
               />
             </div>
+            <FormField
+              control={form.control}
+              name="country_code"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Shop country</FormLabel>
+                  <CountrySelect value={field.value} onChange={field.onChange} />
+                  <FormDescription>Used to choose your postage carrier</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
             {form.formState.dirtyFields.currency_code && (
               <p className="text-sm text-muted-foreground" data-testid="currency-change-note">
                 Orders already sold keep the exchange rate frozen at sale; only new costs and

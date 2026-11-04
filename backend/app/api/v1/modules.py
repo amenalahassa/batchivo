@@ -88,6 +88,9 @@ MODULE_NAVIGATION: dict[str, list[dict]] = {
     ],
     "consumables": [
         {"path": "/consumables", "label": "Consumables", "icon": "wrench", "exact": False},
+        # Boxes, mailers and void fill: the same consumables, their own page
+        # (spec 006, FR-001).
+        {"path": "/packaging", "label": "Packaging", "icon": "package-open", "exact": False},
     ],
     "sales_channels": [
         {"path": "/sales-channels", "label": "Channels", "icon": "store", "exact": False},

@@ -135,6 +135,7 @@ describe('GeneralSettings', () => {
         description: 'A test organization',
         currency_code: 'GBP',
         currency_symbol: '£',
+        country_code: null,
       })
     })
   })
@@ -204,5 +205,33 @@ describe('GeneralSettings: the books currency (T242, FR-028)', () => {
 
     expect(await screen.findByText(/three-letter ISO code/)).toBeInTheDocument()
     expect(settingsApi.updateTenant).not.toHaveBeenCalled()
+  })
+
+  // Spec 006, T040: the country chooses the postage carrier, nothing else.
+  describe('shop country', () => {
+    it('shows the saved country and what it is for', async () => {
+      vi.mocked(settingsApi.getTenant).mockResolvedValue({ ...mockTenant, country_code: 'CA' })
+      renderWithQueryClient(<GeneralSettings />)
+      expect(await screen.findByRole('combobox')).toHaveTextContent('Canada')
+      expect(screen.getByText('Used to choose your postage carrier')).toBeInTheDocument()
+    })
+
+    it('saves a chosen country by its ISO code', async () => {
+      const user = userEvent.setup()
+      vi.mocked(settingsApi.getTenant).mockResolvedValue(mockTenant)
+      vi.mocked(settingsApi.updateTenant).mockResolvedValue({ ...mockTenant, country_code: 'FR' })
+      renderWithQueryClient(<GeneralSettings />)
+      const combobox = await screen.findByRole('combobox')
+      expect(combobox).toHaveTextContent('No country set')
+      await user.click(combobox)
+      await user.type(screen.getByPlaceholderText('Search countries...'), 'France')
+      await user.click(await screen.findByRole('option', { name: /France/ }))
+      await user.click(screen.getByRole('button', { name: /save/i }))
+      await waitFor(() =>
+        expect(settingsApi.updateTenant).toHaveBeenCalledWith(
+          expect.objectContaining({ country_code: 'FR' }),
+        ),
+      )
+    })
   })
 })

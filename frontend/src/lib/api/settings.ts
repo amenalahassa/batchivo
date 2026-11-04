@@ -74,6 +74,8 @@ export interface Tenant {
   /** ISO 4217 code of the currency the books are kept in (FR-028). */
   currency_code: string
   currency_symbol: string
+  /** ISO 3166-1 alpha-2; chooses the postage carrier only (spec 006). */
+  country_code?: string | null
   created_at: string
   updated_at: string
 }
@@ -83,6 +85,8 @@ export interface TenantUpdate {
   description?: string
   currency_code?: string
   currency_symbol?: string
+  /** Null clears it. */
+  country_code?: string | null
 }
 
 // Tenant Members

@@ -280,6 +280,11 @@ class ProductUpdate(BaseModel):
     packaging_cost: Optional[Decimal] = Field(None, ge=0)
     packaging_consumable_id: Optional[UUID] = None
     packaging_quantity: Optional[int] = Field(None, ge=1)
+    # Spec 006 (FR-023a): the service this product ships with instead of the
+    # shop's default; null returns it to the default.
+    postage_service: Optional[str] = Field(
+        None, min_length=1, max_length=100, description="'<carrier>:<service>' or null"
+    )
     assembly_minutes: Optional[int] = Field(None, ge=0)
     is_active: Optional[bool] = None
     shop_visible: Optional[bool] = None
@@ -312,6 +317,9 @@ class ProductResponse(ProductBase):
 
     id: UUID
     tenant_id: UUID
+    postage_service: Optional[str] = Field(
+        None, description="Postage service override, '<carrier>:<service>'; null = shop default"
+    )
     created_at: datetime
     updated_at: datetime
     # Computed fields for list views

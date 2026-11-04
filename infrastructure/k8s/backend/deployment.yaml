@@ -104,7 +104,10 @@ spec:
       - name: run-migrations
         image: registry.techize.co.uk/batchivo/batchivo-backend@sha256:249a041494d2a6a4477c9a1a2ba60dbeee8d5e7974e67a9a0c9bdb0b97c27614
         imagePullPolicy: Always
-        command: ["alembic", "upgrade", "heads"]
+        # Migrate, then the spec-006 release step: seed the packaging catalogue
+        # and carrier postage for shops that have not had them. Idempotent and
+        # lock-guarded; a failing tenant is logged and never fails the pod.
+        command: ["sh", "-c", "alembic upgrade heads && python -m app.cli.seed_catalogues --all-tenants"]
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

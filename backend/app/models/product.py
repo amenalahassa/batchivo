@@ -183,6 +183,14 @@ class Product(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
         comment="Quantity of packaging consumable per product",
     )
 
+    # The postage service this product ships with, overriding the shop's
+    # default (spec 006, FR-023a, research D9): "<carrier>:<service>".
+    postage_service: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="Postage service override, '<carrier>:<service>'; NULL = shop default",
+    )
+
     assembly_minutes: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

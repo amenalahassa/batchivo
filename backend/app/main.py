@@ -224,6 +224,8 @@ from app.api.v1 import (
     onboarding,
     orders,
     packaging,
+    packaging_catalogue,
+    postage_catalogue,
     pages,
     payments,
     platform,
@@ -308,6 +310,14 @@ app.include_router(products.router, prefix=f"{settings.api_v1_prefix}/products",
 # Packaging spans products, variants and models (dimensions, suggestions), so
 # it sits at the API root with the full paths in the router (feature 003).
 app.include_router(packaging.router, prefix=settings.api_v1_prefix, tags=["packaging"])
+# The standard packaging catalogue and carrier postage (spec 006): full paths
+# in the routers (/packaging/catalogue, /postage/carriers, /settings/postage).
+app.include_router(
+    packaging_catalogue.router, prefix=settings.api_v1_prefix, tags=["packaging-catalogue"]
+)
+app.include_router(
+    postage_catalogue.router, prefix=settings.api_v1_prefix, tags=["postage-catalogue"]
+)
 app.include_router(
     categories.router, prefix=f"{settings.api_v1_prefix}/categories", tags=["categories"]
 )

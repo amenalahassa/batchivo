@@ -16,6 +16,9 @@ import type { ReactNode } from 'react'
 import { ShippingProfilesPanel } from './ShippingProfilesPanel'
 import { feeRulesApi } from '@/lib/api/feeRules'
 import type { ShippingProfile } from '@/types/pricing'
+import { postageCatalogueApi } from '@/lib/api/postageCatalogue'
+import { packagingCatalogueApi } from '@/lib/api/packagingCatalogue'
+import type { CarriersResponse } from '@/types/postageCatalogue'
 
 vi.mock('@/lib/api/feeRules', () => ({
   feeRulesApi: {
@@ -27,6 +30,92 @@ vi.mock('@/lib/api/feeRules', () => ({
 }))
 
 const api = vi.mocked(feeRulesApi)
+
+// Spec 006: the carrier section and the postage notice read these.
+vi.mock('@/lib/api/postageCatalogue', () => ({
+  postageCatalogueApi: {
+    carriers: vi.fn(),
+    tariffUpdates: vi.fn(),
+    apply: vi.fn(),
+    removeService: vi.fn(),
+    setDefaultService: vi.fn(),
+  },
+}))
+vi.mock('@/lib/api/packagingCatalogue', () => ({
+  packagingCatalogueApi: { notice: vi.fn(), acknowledge: vi.fn() },
+}))
+vi.mock('@/components/ui/select', () => ({
+  Select: ({
+    children,
+    onValueChange,
+    value,
+    disabled,
+  }: {
+    children: ReactNode
+    onValueChange?: (v: string) => void
+    value?: string
+    disabled?: boolean
+  }) => {
+    // The trigger's aria-label names the native select a test finds.
+    const items = Array.isArray(children) ? children : [children]
+    const trigger = items.find(
+      (c: unknown) => (c as { props?: { 'aria-label'?: string } })?.props?.['aria-label'],
+    ) as { props: { 'aria-label': string } } | undefined
+    return (
+      <select
+        aria-label={trigger?.props['aria-label']}
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(e) => onValueChange?.(e.target.value)}
+      >
+        <option value="" />
+        {children}
+      </select>
+    )
+  },
+  SelectTrigger: () => null,
+  SelectValue: () => null,
+  SelectContent: ({ children }: { children: ReactNode }) => <>{children}</>,
+  SelectItem: ({ value, children }: { value: string; children: ReactNode }) => (
+    <option value={value}>{children}</option>
+  ),
+}))
+const postage = vi.mocked(postageCatalogueApi)
+const notices = vi.mocked(packagingCatalogueApi)
+
+function carriersResponse(overrides: Partial<CarriersResponse> = {}): CarriersResponse {
+  return {
+    suggested_carrier: 'canada_post',
+    candidate_carrier: 'canada_post',
+    chosen_from: 'currency',
+    reason: null,
+    current: { carrier: 'canada_post', default_service: null, tariff_version: '2026-09-07' },
+    carriers: [
+      {
+        key: 'canada_post',
+        name: 'Canada Post',
+        currency: 'CAD',
+        usable: true,
+        latest_tariff: '2026-09-07',
+        source: 'Canada Post prices guide',
+        services: [
+          { key: 'small_packet', name: 'Small Packet', seeded: true, has_size_limits: true },
+          { key: 'lettermail', name: 'Lettermail', seeded: false, has_size_limits: true },
+        ],
+      },
+      {
+        key: 'la_poste',
+        name: 'La Poste',
+        currency: 'CAD',
+        usable: true,
+        latest_tariff: '2026-01-01',
+        source: 'laposte.fr',
+        services: [],
+      },
+    ],
+    ...overrides,
+  }
+}
 
 function profile(overrides: Partial<ShippingProfile> = {}): ShippingProfile {
   return {
@@ -55,6 +144,13 @@ describe('ShippingProfilesPanel', () => {
     api.listShippingProfiles.mockResolvedValue({ profiles: [profile()], total: 1 })
     api.createShippingProfile.mockResolvedValue(profile({ id: 'profile-2' }))
     api.updateShippingProfile.mockResolvedValue(profile())
+    postage.carriers.mockResolvedValue(carriersResponse())
+    postage.tariffUpdates.mockResolvedValue([])
+    postage.apply.mockResolvedValue({ added: 1, superseded: 0, skipped: [] })
+    postage.removeService.mockResolvedValue(undefined)
+    postage.setDefaultService.mockResolvedValue({ carrier: 'canada_post', default_service: null })
+    notices.notice.mockResolvedValue({})
+    notices.acknowledge.mockResolvedValue(undefined)
   })
 
   it('lists the postage in force with its zone, bracket and date', async () => {
@@ -219,5 +315,149 @@ describe('ShippingProfilesPanel', () => {
 
     expect(await screen.findByText('2026-09-01 to 2026-10-01')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Change UK small parcel' })).toBeDisabled()
+  })
+
+  // ============================================
+  // Spec 006: carrier postage (T038, T052)
+  // ============================================
+
+  it('shows the carrier, its services and which are in use', async () => {
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    expect(await screen.findByTestId('carrier-current')).toHaveTextContent(
+      'Canada Post, tariff of 2026-09-07',
+    )
+    const services = within(screen.getByTestId('carrier-services'))
+    expect(services.getByText('In use')).toBeInTheDocument()
+    expect(services.getByRole('button', { name: 'Remove Small Packet' })).toBeInTheDocument()
+    expect(services.getByRole('button', { name: 'Add Lettermail' })).toBeInTheDocument()
+  })
+
+  it('labels a seeded row as a default with its source and tariff date', async () => {
+    api.listShippingProfiles.mockResolvedValue({
+      profiles: [
+        profile({
+          id: 'seeded-1',
+          name: 'Small Packet us 0-250 g',
+          carrier: 'Canada Post',
+          catalogue_carrier: 'canada_post',
+          service: 'small_packet',
+          tariff_version: '2026-09-07',
+          source: 'Canada Post prices guide',
+        }),
+      ],
+      total: 1,
+    })
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    const seeded = await screen.findByTestId('seeded-profile')
+    expect(seeded).toHaveTextContent('Canada Post')
+    expect(seeded).toHaveTextContent('default')
+    expect(seeded).toHaveTextContent('Canada Post prices guide, tariff of 2026-09-07')
+  })
+
+  it('sets the default service', async () => {
+    const user = userEvent.setup()
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    const select = await screen.findByRole('combobox', { name: 'Default service' })
+    await user.selectOptions(select, 'canada_post:small_packet')
+    await waitFor(() =>
+      expect(postage.setDefaultService).toHaveBeenCalledWith('canada_post:small_packet'),
+    )
+  })
+
+  it('offers a newer tariff and accepts it', async () => {
+    const user = userEvent.setup()
+    postage.tariffUpdates.mockResolvedValue([
+      {
+        carrier: 'canada_post',
+        current: '2026-09-07',
+        latest: '2027-01-11',
+        effective_from: '2027-01-11',
+        source: 'Canada Post 2027',
+      },
+    ])
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    expect(await screen.findByTestId('tariff-update')).toHaveTextContent('2027-01-11')
+    await user.click(screen.getByRole('button', { name: 'Use the new tariff' }))
+    await waitFor(() =>
+      expect(postage.apply).toHaveBeenCalledWith({
+        carrier: 'canada_post',
+        tariff_version: '2027-01-11',
+      }),
+    )
+  })
+
+  it('switches carrier after confirming', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    await user.selectOptions(
+      await screen.findByRole('combobox', { name: 'Switch carrier' }),
+      'la_poste',
+    )
+    await user.click(screen.getByRole('button', { name: 'Switch' }))
+    await waitFor(() =>
+      expect(postage.apply).toHaveBeenCalledWith({ carrier: 'la_poste' }),
+    )
+  })
+
+  it('removes a service after confirming', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    await user.click(await screen.findByRole('button', { name: 'Remove Small Packet' }))
+    await waitFor(() => expect(postage.removeService).toHaveBeenCalledWith('small_packet'))
+  })
+
+  it('names the carrier in the notice and where it was chosen from', async () => {
+    notices.notice.mockResolvedValue({
+      postage: {
+        carrier: 'canada_post',
+        chosen_from: 'country',
+        tariff_version: '2026-09-07',
+        applied_at: '2026-11-04',
+        added: 12,
+        superseded: 0,
+        skipped: [],
+        reason: null,
+      },
+    })
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    const notice = await screen.findByTestId('catalogue-notice-postage')
+    expect(notice).toHaveTextContent('12 postage profiles added from the Canada Post tariff')
+    expect(notice).toHaveTextContent(/chosen from your shop.s country/)
+  })
+
+  it('explains a currency without a carrier and points to adding a profile (FR-022)', async () => {
+    const user = userEvent.setup()
+    postage.carriers.mockResolvedValue(
+      carriersResponse({
+        suggested_carrier: null,
+        candidate_carrier: null,
+        reason: 'no_carrier_for_currency',
+        current: { carrier: null, default_service: null, tariff_version: null },
+      }),
+    )
+    renderPanel(<ShippingProfilesPanel canEdit />)
+
+    const reason = await screen.findByTestId('carrier-reason')
+    expect(reason).toHaveTextContent('no carrier tariff priced in your books currency')
+    await user.click(within(reason).getByRole('button', { name: 'Add postage' }))
+    expect(screen.getByTestId('shipping-profile-form')).toBeInTheDocument()
+  })
+
+  it('keeps the carrier section read-only below admin', async () => {
+    renderPanel(<ShippingProfilesPanel canEdit={false} />)
+
+    await screen.findByTestId('carrier-services')
+    expect(screen.queryByRole('button', { name: 'Remove Small Packet' })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Default service' })).toBeDisabled()
+    expect(screen.queryByRole('combobox', { name: 'Switch carrier' })).not.toBeInTheDocument()
   })
 })

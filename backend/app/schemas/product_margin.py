@@ -99,3 +99,10 @@ class ProductMarginResponse(BaseModel):
     )
     assumed_share: Optional[Decimal] = None
     incomplete_reasons: list[str] = Field(default_factory=list)
+    #: Spec 006 FR-023a: how the postage was priced when that is worth saying,
+    #: e.g. ``preferred_service_does_not_fit`` when the product's or the shop's
+    #: chosen service does not take the parcel and the cheapest fitting one is
+    #: used instead.
+    postage_notes: list[str] = Field(
+        default_factory=list, description="Notes on how the postage was priced (FR-023a)"
+    )

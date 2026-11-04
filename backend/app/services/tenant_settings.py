@@ -582,6 +582,9 @@ class TenantSettingsService:
             updates["currency_code"] = data.currency_code
         if data.currency_symbol is not None:
             updates["currency_symbol"] = data.currency_symbol
+        if "country_code" in data.model_fields_set:
+            # Null clears it; changing it seeds and supersedes nothing (D7).
+            updates["country_code"] = data.country_code
 
         if updates:
             updates["updated_at"] = datetime.now(timezone.utc)
@@ -617,6 +620,23 @@ class TenantSettingsService:
             raise ValueError(f"Tenant not found: {tenant_id}")
 
         return tenant
+
+    async def write_settings_part(
+        self, tenant: Tenant, key: str, value: Any, *, commit: bool = False
+    ) -> None:
+        """Replace one top-level part of ``tenant.settings`` (e.g. ``postage``).
+
+        Written through the ORM and, by default, not committed: the catalogue
+        seeding writes its notice in the same savepoint as the rows it adds, so
+        a failure leaves neither (spec 006, FR-015).
+        """
+        settings = dict(tenant.settings or {})
+        settings[key] = value
+        tenant.settings = settings
+        tenant.updated_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        if commit:
+            await self.db.commit()
 
     async def _update_tenant_settings(self, tenant_id: UUID, settings: dict[str, Any]) -> None:
         """Update tenant settings JSON field.

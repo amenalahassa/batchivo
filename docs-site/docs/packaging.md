@@ -51,8 +51,15 @@ A consumable becomes packaging when you give it a **packaging kind**:
 | Void fill | The volume one unit fills, in ml; its weight if you know it |
 | Wrap | Nothing more |
 
-A box or mailer without all three inner sizes is marked **Incomplete** in the
-consumables list and is never suggested. Say whether the figures were
+Packaging has its own page, **Packaging** in the sidebar, next to
+Consumables. It lists your boxes, mailers, void fill and wrap with the figures
+each kind needs, the postage services each box fits, and the products that
+ship in it. The Consumables page keeps the magnets, inserts and hardware.
+Add a box, mailer, void fill or wrap with the matching button; the form asks
+only for what that kind needs.
+
+A box or mailer without all three inner sizes is marked **Incomplete** on the
+Packaging page and is never suggested. Say whether the figures were
 **measured** (with a ruler and scale) or **estimated** from a supplier listing;
 the screens show which, as they do for every cost input.
 
@@ -112,3 +119,71 @@ then **Confirm parcels**. Confirming:
 
 You can **Skip** and ship without confirming; the postage then stays an
 estimate.
+
+## Standard packaging
+
+You do not have to measure every box before you start. **Add standard
+packaging** on the Packaging page (and step 5 of the setup wizard) offers a
+catalogue of common boxes, mailers, void fill and wrap with typical inner
+sizes, wall thickness, empty weight and a typical cost in your books currency.
+
+- Every figure that came from the catalogue is marked **default**, and the
+  cost breakdown counts it as an assumption rather than evidence. Measure the
+  box or record a purchase and the badge goes.
+- An item you already have is shown as **Already added** and is never added
+  twice. An item with the same name as one of yours is skipped.
+- If you delete a catalogue item and add the catalogue again, it is offered
+  again, marked **Previously removed**, so you can leave it out.
+- A catalogue item without a typical cost in your currency is added without
+  one, and a product shipped in it says its packaging cost is missing.
+- A notice on the Packaging page says what was added and what was skipped,
+  until you dismiss it.
+
+## Carrier postage
+
+Batchivo ships published price lists for a few carriers. **Settings →
+Postage** (and step 5 of the setup wizard) can turn one into shipping profiles
+for you.
+
+| Carrier | Books currency | Tariff |
+|---------|----------------|--------|
+| Canada Post | CAD | Consumer prices guide |
+| USPS | USD | Notice 123 |
+| La Poste | EUR | laposte.fr |
+| Royal Mail | GBP | Domestic prices |
+
+**Which carrier is suggested.** Your shop's country decides first (set it in
+Settings → General; it is used for nothing else). Without a country, your
+books currency decides. A carrier is only offered when it prices in your books
+currency; when none does, Batchivo says why and you enter your own profiles
+with **Add postage**.
+
+**What is added.** One profile per service, zone and weight bracket, with the
+carrier's size limits. Each is marked **default**, with the price list it came
+from and the tariff's date. Your own profiles are never changed: where a seeded
+bracket would overlap one of yours, it is skipped and the notice says so.
+
+**Services.** Add or remove a service from the carrier section. Removing one
+stops its profiles from today; orders already placed keep their postage.
+
+**Default service.** Margins price postage by the cheapest service whose size
+limits take the parcel. Choose a **default service** to price by that one
+instead; a product can choose its own on its Dimensions & Packaging card,
+where only the services that take its box are offered. If the chosen service
+does not take the parcel, the cheapest one that fits is used and the card says
+so.
+
+**Switching carrier.** Choose another carrier and **Switch**: the old carrier's
+seeded profiles stop from today and the new ones start.
+
+**Tariff updates.** When a newer price list ships with Batchivo, the carrier
+section offers it. Accepting it closes the old seeded profiles the day before
+the new tariff starts and opens the new ones; nothing changes until you accept,
+and orders already placed keep the postage they were costed at.
+
+### For existing shops
+
+When this feature is deployed, a release step adds the standard packaging and
+your suggested carrier's postage to every shop once, with the same rules and
+the same notices. It never runs twice for a shop and never touches figures
+you entered.

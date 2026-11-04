@@ -116,6 +116,23 @@ export interface ConsumableTypeResponse extends ConsumableTypeBase {
   packaging_incomplete?: boolean
   /** Where each packaging figure came from: 'measured' | 'assumed' | null. */
   packaging_provenance?: Record<string, string | null>
+  /** Seeded from the standard packaging catalogue (spec 006). */
+  from_catalogue?: boolean
+  catalogue_key?: string | null
+  catalogue_version?: number | null
+  /** Postage services ('<carrier>:<service>') whose size limits take this container. */
+  fits_services?: string[]
+  /** Products (and variants) that ship in it. */
+  used_by_products?: UsedByProduct[]
+  /** Where the typed unit cost came from: 'assumed' for a catalogue default. */
+  cost_provenance?: string | null
+}
+
+/** A product that ships in a packaging consumable. */
+export interface UsedByProduct {
+  id: string
+  sku: string
+  name: string
 }
 
 // List response for consumable types
@@ -136,6 +153,8 @@ export interface ConsumableTypeListParams {
   low_stock_only?: boolean
   /** Comma-separated packaging kinds, e.g. "box,mailer". */
   packaging_kind?: string
+  /** Only consumables that are not packaging (the Consumables page). */
+  exclude_packaging?: boolean
 }
 
 // =============================================================================

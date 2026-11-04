@@ -37,6 +37,9 @@ PRICING_MODULES: frozenset[str] = frozenset(
         "orders",
         # Accepting a container sets the packaging line of a product's cost.
         "packaging",
+        # Spec 006: seeding writes packaging costs and carrier postage.
+        "packaging_catalogue",
+        "postage_catalogue",
         "pricing_policy",
         "printers",
         "production_runs",

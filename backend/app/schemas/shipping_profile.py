@@ -93,6 +93,12 @@ class ShippingProfileResponse(ShippingProfileBase):
     id: UUID
     tenant_id: UUID
     effective_to: Optional[date] = None
+    # Seeded from a carrier tariff (spec 006): which carrier, service, tariff
+    # date and source; all null on an operator's own profile.
+    catalogue_carrier: Optional[str] = None
+    service: Optional[str] = None
+    tariff_version: Optional[date] = None
+    source: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

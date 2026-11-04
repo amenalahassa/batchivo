@@ -14,12 +14,14 @@ import { Step1BusinessInfo } from '@/components/onboarding/Step1BusinessInfo'
 import { Step2CraftType } from '@/components/onboarding/Step2CraftType'
 import { Step3ShopSetup } from '@/components/onboarding/Step3ShopSetup'
 import { Step4FirstProduct } from '@/components/onboarding/Step4FirstProduct'
+import { PackagingPostageStep } from '@/components/onboarding/PackagingPostageStep'
 import {
   getOnboardingStatus,
   updateOnboardingStep1,
   updateOnboardingStep2,
   updateOnboardingStep3,
   updateOnboardingStep4,
+  updateOnboardingStep5,
   type OnboardingStatusResponse,
 } from '@/lib/api/onboarding'
 import { apiErrorDetail } from '@/lib/apiError'
@@ -90,6 +92,9 @@ export function Onboarding() {
       }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['onboarding-status'] })
+      // Step 5 suggests the carrier from the country and currency just saved.
+      queryClient.invalidateQueries({ queryKey: ['postage'] })
+      queryClient.invalidateQueries({ queryKey: ['packaging-catalogue'] })
       if (data.next_step) {
         setCurrentStep(data.next_step)
       }
@@ -107,8 +112,26 @@ export function Onboarding() {
       if (data.is_completed) {
         // Onboarding complete - redirect to dashboard
         navigate({ to: '/dashboard' })
+      } else if (data.next_step) {
+        setCurrentStep(data.next_step)
       }
       setError(null)
+    },
+    onError: (err) => {
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
+    },
+  })
+
+  // Step 5 (spec 006): what could not be seeded is a warning; setup still finishes.
+  const step5Mutation = useMutation({
+    mutationFn: updateOnboardingStep5,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['onboarding-status'] })
+      queryClient.invalidateQueries({ queryKey: ['consumables'] })
+      queryClient.invalidateQueries({ queryKey: ['fees', 'shipping-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['catalogue-notice'] })
+      setError(null)
+      if (data.is_completed) navigate({ to: '/dashboard' })
     },
     onError: (err) => {
       setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
@@ -134,7 +157,8 @@ export function Onboarding() {
     step1Mutation.isPending ||
     step2Mutation.isPending ||
     step3Mutation.isPending ||
-    step4Mutation.isPending
+    step4Mutation.isPending ||
+    step5Mutation.isPending
 
   // Show loading state while fetching status
   if (isLoadingStatus) {
@@ -213,6 +237,14 @@ export function Onboarding() {
                 onBack={goBack}
                 isLoading={isLoading}
                 currency={(stepData.step_3 as Record<string, string>)?.currency}
+              />
+            )}
+
+            {currentStep === 5 && (
+              <PackagingPostageStep
+                onSubmit={step5Mutation.mutate}
+                onBack={goBack}
+                isLoading={isLoading}
               />
             )}
           </CardContent>

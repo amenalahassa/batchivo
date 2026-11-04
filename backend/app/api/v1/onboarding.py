@@ -22,6 +22,8 @@ from app.schemas.onboarding import (
     OnboardingStep2Request,
     OnboardingStep3Request,
     OnboardingStep4Request,
+    OnboardingStep5Request,
+    OnboardingStep5Response,
     OnboardingStepResponse,
     EmailVerificationRequest,
     EmailVerificationResponse,
@@ -229,7 +231,7 @@ async def save_wizard_step4(
     _admin: RequireAdmin,
     db: TenantDB,
 ) -> OnboardingStepResponse:
-    """Step 4: an optional first product, then the wizard is finished.
+    """Step 4: an optional first product; step 5 (packaging and postage) follows.
 
     The product is created by the product route itself, so the wizard keeps no
     second copy of how a product is made. A typed price becomes a list price on
@@ -277,6 +279,18 @@ async def save_wizard_step4(
             )
             price_stored = True
     return await wizard.finish({"product_id": str(product.id), "price_stored": price_stored})
+
+
+@router.put("/wizard/step/5", response_model=OnboardingStep5Response)
+async def save_wizard_step5(
+    data: OnboardingStep5Request,
+    user: CurrentUser,
+    tenant: CurrentTenant,
+    _admin: RequireAdmin,
+    db: TenantDB,
+) -> OnboardingStep5Response:
+    """Step 5: standard packaging and carrier postage, then the wizard is finished."""
+    return await _wizard(db, tenant, user).save_step5(data)
 
 
 def _first_product_sku(name: str) -> str:

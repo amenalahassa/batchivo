@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Step2CraftType } from './Step2CraftType'
+import { Step3ShopSetup } from './Step3ShopSetup'
 import { Step4FirstProduct } from './Step4FirstProduct'
 
 describe('Step2CraftType', () => {
@@ -21,6 +22,38 @@ describe('Step2CraftType', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Continue' }))
 
     expect(onSubmit).toHaveBeenCalledWith({ tenant_type: 'hand_knitting' })
+  })
+})
+
+// Spec 006, T040: the country is optional and only chooses the postage carrier.
+describe('Step3ShopSetup country', () => {
+  it('sends the chosen country with the shop setup', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(<Step3ShopSetup onSubmit={onSubmit} onBack={() => {}} />)
+
+    expect(screen.getByText('Optional. Used to choose your postage carrier.')).toBeInTheDocument()
+    // A combobox takes no name from its content: find it by the text it shows.
+    await user.click(screen.getByText('No country set'))
+    await user.type(screen.getByPlaceholderText('Search countries...'), 'Canada')
+    await user.click(await screen.findByRole('option', { name: /Canada/ }))
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+
+    await vi.waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ country: 'CA' }), expect.anything()),
+    )
+  })
+
+  it('sends no country when none is picked', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    render(<Step3ShopSetup onSubmit={onSubmit} onBack={() => {}} />)
+
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+
+    await vi.waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ country: null }), expect.anything()),
+    )
   })
 })
 

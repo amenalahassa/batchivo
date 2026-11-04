@@ -1,0 +1,179 @@
+{
+  "version": 1,
+  "as_of": "2026-11-01",
+  "items": [
+    {
+      "key": "box-cube-100",
+      "name": "Box cube 100 × 100 × 100 mm",
+      "kind": "box",
+      "inner_length_mm": "100", "inner_width_mm": "100", "inner_height_mm": "100",
+      "wall_mm": "3",
+      "empty_weight_grams": "45",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.95", "GBP": "0.45", "USD": "0.70", "EUR": "0.55"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-cube-150",
+      "name": "Box cube 150 × 150 × 150 mm",
+      "kind": "box",
+      "inner_length_mm": "150", "inner_width_mm": "150", "inner_height_mm": "150",
+      "wall_mm": "3",
+      "empty_weight_grams": "95",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.25", "GBP": "0.60", "USD": "0.95", "EUR": "0.75"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-cube-200",
+      "name": "Box cube 200 × 200 × 200 mm",
+      "kind": "box",
+      "inner_length_mm": "200", "inner_width_mm": "200", "inner_height_mm": "200",
+      "wall_mm": "4",
+      "empty_weight_grams": "170",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.70", "GBP": "0.85", "USD": "1.30", "EUR": "1.05"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-cube-300",
+      "name": "Box cube 300 × 300 × 300 mm",
+      "kind": "box",
+      "inner_length_mm": "300", "inner_width_mm": "300", "inner_height_mm": "300",
+      "wall_mm": "4",
+      "empty_weight_grams": "380",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "2.80", "GBP": "1.40", "USD": "2.10", "EUR": "1.70"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-flat-150x100x50",
+      "name": "Box flat S 150 × 100 × 50 mm",
+      "kind": "box",
+      "inner_length_mm": "150", "inner_width_mm": "100", "inner_height_mm": "50",
+      "wall_mm": "3",
+      "empty_weight_grams": "40",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.85", "GBP": "0.40", "USD": "0.65", "EUR": "0.50"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-flat-220x160x80",
+      "name": "Box flat M 220 × 160 × 80 mm",
+      "kind": "box",
+      "inner_length_mm": "220", "inner_width_mm": "160", "inner_height_mm": "80",
+      "wall_mm": "3",
+      "empty_weight_grams": "85",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.15", "GBP": "0.55", "USD": "0.85", "EUR": "0.70"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-flat-300x220x100",
+      "name": "Box flat L 300 × 220 × 100 mm",
+      "kind": "box",
+      "inner_length_mm": "300", "inner_width_mm": "220", "inner_height_mm": "100",
+      "wall_mm": "4",
+      "empty_weight_grams": "160",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.60", "GBP": "0.80", "USD": "1.20", "EUR": "0.95"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-flat-400x300x150",
+      "name": "Box flat XL 400 × 300 × 150 mm",
+      "kind": "box",
+      "inner_length_mm": "400", "inner_width_mm": "300", "inner_height_mm": "150",
+      "wall_mm": "4",
+      "empty_weight_grams": "300",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "2.40", "GBP": "1.20", "USD": "1.80", "EUR": "1.45"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "box-long-300x100x100",
+      "name": "Box long 300 × 100 × 100 mm",
+      "kind": "box",
+      "inner_length_mm": "300", "inner_width_mm": "100", "inner_height_mm": "100",
+      "wall_mm": "3",
+      "empty_weight_grams": "95",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.20", "GBP": "0.60", "USD": "0.90", "EUR": "0.75"},
+      "source": "Single-wall corrugated, typical list price per box in packs of 25 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "mailer-padded-180x250",
+      "name": "Padded mailer 180 × 250 mm",
+      "kind": "mailer",
+      "inner_length_mm": "250", "inner_width_mm": "180", "inner_height_mm": "30",
+      "wall_mm": "3",
+      "empty_weight_grams": "15",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.55", "GBP": "0.25", "USD": "0.40", "EUR": "0.30"},
+      "source": "Bubble-lined padded envelope, typical list price per mailer in packs of 100 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "mailer-padded-240x340",
+      "name": "Padded mailer 240 × 340 mm",
+      "kind": "mailer",
+      "inner_length_mm": "340", "inner_width_mm": "240", "inner_height_mm": "40",
+      "wall_mm": "3",
+      "empty_weight_grams": "25",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.75", "GBP": "0.35", "USD": "0.55", "EUR": "0.45"},
+      "source": "Bubble-lined padded envelope, typical list price per mailer in packs of 100 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "mailer-cardboard-230x165x50",
+      "name": "Cardboard mailer A5 230 × 165 × 50 mm",
+      "kind": "mailer",
+      "inner_length_mm": "230", "inner_width_mm": "165", "inner_height_mm": "50",
+      "wall_mm": "3",
+      "empty_weight_grams": "70",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.90", "GBP": "0.45", "USD": "0.70", "EUR": "0.55"},
+      "source": "Die-cut corrugated postal mailer, typical list price per mailer in packs of 50 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "mailer-cardboard-310x220x60",
+      "name": "Cardboard mailer A4 310 × 220 × 60 mm",
+      "kind": "mailer",
+      "inner_length_mm": "310", "inner_width_mm": "220", "inner_height_mm": "60",
+      "wall_mm": "3",
+      "empty_weight_grams": "110",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "1.20", "GBP": "0.60", "USD": "0.90", "EUR": "0.75"},
+      "source": "Die-cut corrugated postal mailer, typical list price per mailer in packs of 50 (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "void-kraft-paper",
+      "name": "Kraft paper void fill (sheet)",
+      "kind": "void_fill",
+      "fill_volume_ml": "1000",
+      "empty_weight_grams": "10",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.06", "GBP": "0.03", "USD": "0.05", "EUR": "0.04"},
+      "source": "Kraft void-fill paper, 500 × 750 mm sheet crumpled, typical list price per sheet (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "void-air-pillow",
+      "name": "Air pillow 200 × 100 mm",
+      "kind": "void_fill",
+      "fill_volume_ml": "400",
+      "empty_weight_grams": "1.5",
+      "unit_of_measure": "each",
+      "typical_cost": {"CAD": "0.03", "GBP": "0.015", "USD": "0.02", "EUR": "0.02"},
+      "source": "Pre-inflated air pillows, typical list price per pillow by the bag (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    },
+    {
+      "key": "wrap-bubble-300",
+      "name": "Bubble wrap 300 mm (per metre)",
+      "kind": "wrap",
+      "fill_volume_ml": "3000",
+      "empty_weight_grams": "15",
+      "unit_of_measure": "m",
+      "typical_cost": {"CAD": "0.25", "GBP": "0.12", "USD": "0.18", "EUR": "0.15"},
+      "source": "Small-bubble wrap, 300 mm wide roll, typical list price per metre (ULINE.ca, Uline.com, Packaging Express UK, RAJA FR), catalogue estimate 2026-11"
+    }
+  ]
+}

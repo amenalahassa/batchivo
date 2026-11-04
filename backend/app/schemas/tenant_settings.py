@@ -491,6 +491,9 @@ class TenantResponse(BaseModel):
     settings: TenantSettings | dict = Field(default_factory=dict, description="Tenant settings")
     currency_code: str = Field("GBP", description="The currency the books are kept in (FR-028)")
     currency_symbol: str = Field("£", description="Its display symbol")
+    country_code: str | None = Field(
+        None, description="ISO 3166-1 alpha-2 country; chooses the postage carrier (spec 006)"
+    )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
 
@@ -507,6 +510,16 @@ NON_CENTESIMAL_CURRENCIES: frozenset[str] = frozenset(
 )  # fmt: skip
 
 
+def normalise_country(value: str | None) -> str | None:
+    """An ISO 3166-1 alpha-2 code, upper-cased; blank is no country."""
+    if value is None or not value.strip():
+        return None
+    code = value.strip().upper()
+    if len(code) != 2 or not code.isascii() or not code.isalpha():
+        raise ValueError("country_code must be a two-letter ISO 3166-1 code, such as CA or FR")
+    return code
+
+
 class TenantUpdate(BaseModel):
     """Schema for updating tenant details."""
 
@@ -521,6 +534,16 @@ class TenantUpdate(BaseModel):
         description="ISO 4217 code of the currency the books are kept in",
     )
     currency_symbol: str | None = Field(None, min_length=1, max_length=5)
+    # The shop's country (spec 006, FR-017a): optional, sent as null to clear.
+    # It only chooses the postage carrier and re-seeds nothing.
+    country_code: str | None = Field(
+        None, description="ISO 3166-1 alpha-2 country, e.g. CA; null clears it"
+    )
+
+    @field_validator("country_code")
+    @classmethod
+    def _country(cls, value: str | None) -> str | None:
+        return normalise_country(value)
 
     @field_validator("currency_code")
     @classmethod

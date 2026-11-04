@@ -879,6 +879,7 @@ async def get_product_margin(
         list_price=result.list_price,
         shipping_revenue=result.shipping_revenue,
         postage_paid=result.postage_paid,
+        postage_notes=list(postage_found.notes),
         shipping_net=result.shipping_net,
         make_cost=result.make_cost,
         fees=[FeeChargeResponse.model_validate(charge) for charge in result.fees],
@@ -1522,6 +1523,16 @@ async def update_product(
 
     # Update fields
     update_data = product_data.model_dump(exclude_unset=True)
+    service = update_data.get("postage_service")
+    if service is not None:
+        # Only a service the shop can post with today (spec 006, FR-023a).
+        from app.services.catalogue_seed import services_in_force
+
+        if service not in await services_in_force(db, tenant):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"No postage profile in force prices {service}",
+            )
     fields = await refuse_observed_or_409(
         db, tenant, entity_type="product", entity=product, changes=update_data
     )

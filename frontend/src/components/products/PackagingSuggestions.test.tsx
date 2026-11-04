@@ -145,6 +145,11 @@ describe('PackagingSuggestions', () => {
     expect(
       await screen.findByText(/A box would need at least 320\.0 × 320\.0 × 320\.0 mm inside/),
     ).toBeInTheDocument()
+    // Spec 006, FR-007: the operator is sent where boxes are added.
+    expect(screen.getByRole('link', { name: 'Add one on the Packaging page' })).toHaveAttribute(
+      'href',
+      '/packaging',
+    )
   })
 
   it('marks a fragile item and names the wrap', async () => {

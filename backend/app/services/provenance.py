@@ -258,6 +258,9 @@ REGISTERED_INPUTS: tuple[RegisteredInput, ...] = (
             ("inner_height_mm", "A box's inner height or a mailer's thickness"),
             ("wall_mm", "The container's wall, added twice to each inner side"),
             ("empty_weight_grams", "What the empty container adds to the parcel's weight"),
+            # Void fill and wrap (spec 006): a catalogue default until the
+            # operator measures it, so it carries an origin like the rest.
+            ("fill_volume_ml", "Volume one unit of void fill or wrap fills"),
         )
     ),
     # The books currency (T272). Every cost input is entered in it and every

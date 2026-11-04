@@ -129,7 +129,7 @@ class OnboardingTenantResponse(BaseModel):
 class OnboardingStatusResponse(BaseModel):
     """Where a tenant stands in the setup wizard."""
 
-    current_step: int = Field(..., ge=1, le=4, description="The step to show next")
+    current_step: int = Field(..., ge=1, le=5, description="The step to show next")
     completed_steps: list[int] = Field(default_factory=list, description="Steps saved so far")
     is_completed: bool = Field(..., description="Whether the wizard is finished")
     step_data: Optional[dict] = Field(None, description="What each saved step recorded")
@@ -170,7 +170,17 @@ class OnboardingStep3Request(BaseModel):
     currency: Optional[str] = Field(None, pattern=r"^[A-Z]{3}$", description="ISO 4217 code")
     currency_symbol: Optional[str] = Field(None, min_length=1, max_length=5)
     timezone: Optional[str] = Field(None, max_length=64, description="IANA timezone")
+    country: Optional[str] = Field(
+        None, description="ISO 3166-1 alpha-2 country; chooses the postage carrier (spec 006)"
+    )
     primary_color: Optional[str] = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    @field_validator("country")
+    @classmethod
+    def _country(cls, value: Optional[str]) -> Optional[str]:
+        from app.schemas.tenant_settings import normalise_country
+
+        return normalise_country(value)
 
     @field_validator("currency")
     @classmethod
@@ -201,6 +211,30 @@ class OnboardingStep4Request(BaseModel):
     @classmethod
     def _strip(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() if value else value
+
+
+class OnboardingStep5Request(BaseModel):
+    """Step 5: standard packaging and carrier postage (spec 006, FR-010, FR-017).
+
+    ``packaging_keys`` null adds the whole catalogue, an empty list none;
+    ``carrier`` null proposes the shop's own (country, else currency);
+    ``services`` null adds all of the carrier's, an empty list none.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    skip: bool = False
+    packaging_keys: Optional[list[str]] = None
+    carrier: Optional[str] = Field(None, max_length=32)
+    services: Optional[list[str]] = None
+    default_service: Optional[str] = Field(None, max_length=100)
+
+
+class OnboardingStep5Response(OnboardingStepResponse):
+    """Step 5 saved: what was seeded, and anything that could not be."""
+
+    warnings: list[str] = Field(default_factory=list)
+    seed: dict = Field(default_factory=dict, description="packaging and postage outcome")
 
 
 class OnboardingLogoResponse(BaseModel):

@@ -158,7 +158,7 @@ export function Step4FirstProduct({
               ) : (
                 <>
                   <Package className="mr-2 h-4 w-4" />
-                  Create Product & Finish
+                  Create Product & Continue
                 </>
               )}
             </Button>
@@ -184,7 +184,7 @@ export function Step4FirstProduct({
         {isLoading ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Finishing...
+            Saving...
           </>
         ) : (
           <>

@@ -5,7 +5,17 @@ from decimal import Decimal
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, Date, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -169,7 +179,28 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
         comment="Void fill only: the volume one unit fills, in ml",
     )
 
+    # The catalogue entry a row was seeded from (spec 006, research D3). NULL
+    # for every row an operator created; seeding never updates a keyed row.
+    catalogue_key: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Key of the packaging catalogue entry this row was seeded from",
+    )
+    catalogue_version: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Packaging catalogue version that seeded this row",
+    )
+
     __table_args__ = (
+        Index(
+            "uq_consumable_types_tenant_catalogue_key",
+            "tenant_id",
+            "catalogue_key",
+            unique=True,
+            postgresql_where=text("catalogue_key IS NOT NULL"),
+            sqlite_where=text("catalogue_key IS NOT NULL"),
+        ),
         CheckConstraint(
             "packaging_kind IS NULL OR packaging_kind IN ('box', 'mailer', 'void_fill', 'wrap')",
             name="ck_consumable_types_packaging_kind",

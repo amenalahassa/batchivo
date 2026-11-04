@@ -50,6 +50,12 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
 
   // Form state
   const [formData, setFormData] = useState<ConsumableTypeUpdate>({})
+  // The consumable the form was last filled from. The form is not rendered
+  // before then: its selects would mount on their fallbacks ("hardware", "not
+  // packaging") and Radix's hidden select writes those back over the loaded
+  // values, so saving a box opened for the first time stripped its kind
+  // (spec 006 walkthrough).
+  const [filledFrom, setFilledFrom] = useState<string | null>(null)
   const pricedByPurchase = consumable?.priced_by_purchase_id != null
   const { currency } = useCurrency()
 
@@ -86,6 +92,7 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
               : 'assumed',
         },
       })
+      setFilledFrom(consumable.id)
     }
   }, [consumable])
 
@@ -140,7 +147,7 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
           </div>
         )}
 
-        {consumable && (
+        {consumable && filledFrom === consumable.id && (
           <form onSubmit={handleSubmit} className="space-y-4">
             <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
             {/* Basic Info */}

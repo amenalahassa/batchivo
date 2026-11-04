@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import String, Text
+from sqlalchemy import CheckConstraint, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.webhook import JSONBType
@@ -105,6 +105,22 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         default="£",
         comment="Currency symbol for display (e.g., £, $, €)",
+    )
+
+    # The shop's country (spec 006, FR-017a). Optional, like nothing else here:
+    # it only chooses the postage carrier (research D7) and changes no price,
+    # zone or currency. NULL for every shop that existed before it.
+    country_code: Mapped[str | None] = mapped_column(
+        String(2),
+        nullable=True,
+        comment="ISO 3166-1 alpha-2 country of the shop; chooses the postage carrier",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "country_code IS NULL OR country_code ~ '^[A-Z]{2}$'",
+            name="ck_tenants_country_code",
+        ),
     )
 
     # Relationships

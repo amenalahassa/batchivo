@@ -7,12 +7,23 @@
  * the cost breakdown does not use (FR-039).
  */
 
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { AlertTriangle, Box, Info } from 'lucide-react'
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { serviceLabel } from '@/components/packaging/serviceLabels'
+import { useCarriers } from '@/hooks/usePostageCatalogue'
+import { consumablesApi } from '@/lib/api/consumables'
 import { updateProduct, type ProductDetail } from '@/lib/api/products'
 import { DimensionsEditor } from './DimensionsEditor'
 import { PackagingSuggestions } from './PackagingSuggestions'
@@ -28,6 +39,83 @@ function DoesNotFit() {
     >
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
       The accepted packaging no longer fits this item at the clearance in force.
+    </div>
+  )
+}
+
+const SHOP_DEFAULT = '__shop_default__'
+
+/**
+ * The product's postage service override (spec 006, FR-019): only the
+ * services whose size limits take the product's box are offered. A saved
+ * service that no longer takes the box is named, because the margin then
+ * falls back to the cheapest service that fits.
+ */
+function PostageServiceSelect({ product, canEdit }: ProductPackagingCardProps) {
+  const queryClient = useQueryClient()
+  const { carriers } = useCarriers()
+  const containerId = product.packaging_consumable_id ?? null
+  const { data: container } = useQuery({
+    queryKey: ['consumables', 'detail', containerId],
+    queryFn: () => consumablesApi.get(containerId as string),
+    enabled: !!containerId,
+  })
+  const save = useMutation({
+    mutationFn: (service: string | null) =>
+      updateProduct(product.id, { postage_service: service }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['product', product.id] })
+      queryClient.invalidateQueries({ queryKey: ['pricing'] })
+    },
+  })
+
+  if (!containerId) {
+    return (
+      <p className="text-sm text-muted-foreground" data-testid="postage-service-none">
+        Accept a box or mailer to choose the postage service it ships by.
+      </p>
+    )
+  }
+  const fits = container?.fits_services ?? []
+  const preferred = product.postage_service ?? null
+  const preferredFits = preferred === null || fits.includes(preferred)
+  const labels = carriers?.carriers
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={`postage-service-${product.id}`}>Postage service</Label>
+      <Select
+        value={preferred ?? SHOP_DEFAULT}
+        disabled={!canEdit || save.isPending}
+        onValueChange={(value) => save.mutate(value === SHOP_DEFAULT ? null : value)}
+      >
+        <SelectTrigger id={`postage-service-${product.id}`} aria-label="Postage service">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={SHOP_DEFAULT}>Shop default</SelectItem>
+          {fits.map((key) => (
+            <SelectItem key={key} value={key}>
+              {serviceLabel(key, labels)}
+            </SelectItem>
+          ))}
+          {preferred && !preferredFits && (
+            <SelectItem value={preferred}>{serviceLabel(preferred, labels)}</SelectItem>
+          )}
+        </SelectContent>
+      </Select>
+      {preferred && !preferredFits && (
+        <p role="status" className="flex items-start gap-1 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          {serviceLabel(preferred, labels)} does not take this product&apos;s box; the margin
+          uses the cheapest service that fits.
+        </p>
+      )}
+      {fits.length === 0 && container && (
+        <p className="text-xs text-muted-foreground">
+          No carrier service&apos;s size limits take this box; the shop default applies.
+        </p>
+      )}
     </div>
   )
 }
@@ -58,7 +146,11 @@ export function ProductPackagingCard({ product, canEdit }: ProductPackagingCardP
         </CardTitle>
         <CardDescription>
           The item's size, and the stocked box or mailer it fits in. The packaging cost is the
-          cost breakdown's line for the accepted box.
+          cost breakdown's line for the accepted box. Boxes and mailers are kept on the{' '}
+          <Link to="/packaging" className="underline underline-offset-2">
+            Packaging page
+          </Link>
+          .
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -89,6 +181,7 @@ export function ProductPackagingCard({ product, canEdit }: ProductPackagingCardP
             canEdit={canEdit}
             dimensionsAnchor={anchor}
           />
+          <PostageServiceSelect product={product} canEdit={canEdit} />
         </section>
 
         {(product.variants ?? []).map((variant) => (

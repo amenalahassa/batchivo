@@ -9,6 +9,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
+import { consumablesApi } from '@/lib/api/consumables'
+
 import { ConsumableList } from './ConsumableList'
 
 vi.mock('@/lib/api/consumables', () => ({
@@ -80,5 +82,36 @@ describe('ConsumableList packaging (T029)', () => {
     )
 
     expect((await screen.findAllByText('Incomplete')).length).toBeGreaterThan(0)
+  })
+})
+
+describe('ConsumableList excludes packaging (spec 006, T012)', () => {
+  it('asks for consumables that are not packaging and shows no box', async () => {
+    const list = vi.mocked(consumablesApi.list)
+    // The API filters; the mock answers as it would for exclude_packaging=true.
+    list.mockResolvedValue({ total: 0, page: 1, page_size: 20, consumables: [] })
+    list.mockClear()
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConsumableList />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('No consumables found')).toBeInTheDocument()
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ exclude_packaging: true }))
+    expect(screen.queryByText('Small box')).not.toBeInTheDocument()
+  })
+
+  it('points to the Packaging page', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConsumableList />
+      </QueryClientProvider>,
+    )
+
+    const link = await screen.findByRole('link', { name: 'Packaging page' })
+    expect(link).toHaveAttribute('href', '/packaging')
   })
 })

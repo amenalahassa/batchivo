@@ -76,7 +76,7 @@ NOT_A_COST_INPUT: dict[str, dict[str, str]] = {
         "reorder_point": "a restocking trigger, not money",
         "reorder_quantity": "a restocking quantity, not money",
         "typical_lead_days": "supplier lead time, not money",
-        "fill_volume_ml": "a volume the advisor fills with; postage never reads it",
+        "catalogue_version": "which catalogue release seeded the row, not a figure",
     },
     "fee_rule": {
         "sort_order": "evaluation and presentation order, not money",
@@ -242,6 +242,8 @@ class TestOperatorDecisionsAreMarkedAsSuch:
             ("model", "waste_grams"),
             ("model_material", "weight_grams"),
             ("printer", "measured_watts"),
+            # Spec 006: a seeded void fill's volume is a catalogue default.
+            ("consumable_type", "fill_volume_ml"),
         ],
     )
     def test_a_measurement_starts_assumed_and_can_be_learned(

@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -18,9 +19,12 @@ from app.models.consumable import (
     ConsumableType,
     ConsumableUsage,
 )
+from app.models.shipping_profile import ShippingProfile
 from app.services.dims import Dims
 from app.services.costing import consumable_unit_cost, pricing_purchase
-from app.services.provenance import origins_for_entity, record_origin
+from app.services.packaging_usage import everything_using, products_using
+from app.services.postage import services_fitting
+from app.services.provenance import origins_for, origins_for_entity, record_origin
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
     ConsumablePurchaseListResponse,
@@ -67,6 +71,8 @@ def consumable_type_to_response(consumable: ConsumableType) -> dict:
         # suggested; the list says so (spec edge case, research D5).
         "packaging_incomplete": consumable.packaging_kind in CONTAINER_KINDS
         and Dims.from_row(consumable, prefix="inner_") is None,
+        # Seeded from the standard catalogue (spec 006, research D3).
+        "from_catalogue": consumable.catalogue_key is not None,
     }
 
 
@@ -103,23 +109,79 @@ async def _record_packaging_origins(
         )
 
 
+#: A void fill's or wrap's figures whose origin the Packaging page shows (spec 006).
+FILLER_PROVENANCE_FIELDS = ("fill_volume_ml", "empty_weight_grams")
+
+
+def _provenance_fields(consumable: ConsumableType) -> tuple[str, ...]:
+    if consumable.packaging_kind in CONTAINER_KINDS:
+        return PACKAGING_PROVENANCE_FIELDS
+    if consumable.packaging_kind is not None:
+        return FILLER_PROVENANCE_FIELDS
+    return ()
+
+
 async def _packaging_provenance(
     db: AsyncSession, tenant, consumable: ConsumableType
 ) -> dict[str, Optional[str]]:
     """Each packaging figure's origin, for the response; absent figures have none."""
-    if consumable.packaging_kind not in CONTAINER_KINDS:
+    fields = _provenance_fields(consumable)
+    if not fields:
         return {}
     origins = await origins_for_entity(db, tenant, "consumable_type", consumable.id)
     return {
         name: origins[name].source if getattr(consumable, name) is not None else None
-        for name in PACKAGING_PROVENANCE_FIELDS
+        for name in fields
     }
+
+
+async def _packaging_extras(
+    db: AsyncSession, tenant, consumables: list[ConsumableType]
+) -> dict[UUID, dict]:
+    """What the Packaging page shows per item, for a whole page in a few queries.
+
+    The services each container fits (derived on read from the profiles in
+    force, research D11), the products that ship in it, and where each figure
+    and the unit cost came from -- one query each, never one per row.
+    """
+    packaging = [c for c in consumables if c.packaging_kind is not None]
+    if not packaging:
+        return {}
+    profiles = list(
+        (await db.execute(select(ShippingProfile).where(ShippingProfile.tenant_id == tenant.id)))
+        .scalars()
+        .all()
+    )
+    users = await products_using(db, tenant, [c.id for c in packaging])
+    recorded = await origins_for(db, tenant, [("consumable_type", c.id) for c in packaging])
+    extras: dict[UUID, dict] = {}
+    for consumable in packaging:
+
+        def source(name: str, c: ConsumableType = consumable) -> Optional[str]:
+            if getattr(c, name) is None:
+                return None
+            origin = recorded.get(("consumable_type", c.id, name))
+            return origin.source if origin is not None else "assumed"
+
+        extras[consumable.id] = {
+            "fits_services": services_fitting(consumable, profiles),
+            "used_by_products": [u.as_dict() for u in users.get(consumable.id, [])],
+            "packaging_provenance": {name: source(name) for name in _provenance_fields(consumable)},
+            "cost_provenance": source("current_cost_per_unit"),
+        }
+    return extras
 
 
 async def _load_purchases(db: AsyncSession, consumable: ConsumableType) -> ConsumableType:
     """Load the purchases that price the unit, so nothing lazy-loads under asyncio."""
     await db.refresh(consumable, attribute_names=["purchases"])
     return consumable
+
+
+async def _response(db: AsyncSession, tenant, consumable: ConsumableType) -> ConsumableTypeResponse:
+    """One consumable as served, with its packaging extras when it is packaging."""
+    extras = (await _packaging_extras(db, tenant, [consumable])).get(consumable.id, {})
+    return ConsumableTypeResponse(**{**consumable_type_to_response(consumable), **extras})
 
 
 def purchase_to_response(purchase: ConsumablePurchase) -> dict:
@@ -218,10 +280,7 @@ async def create_consumable_type(
     await db.refresh(consumable)
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(
-        **consumable_type_to_response(consumable),
-        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
-    )
+    return await _response(db, tenant, consumable)
 
 
 @router.get("/types", response_model=ConsumableTypeListResponse)
@@ -238,8 +297,16 @@ async def list_consumable_types(
     packaging_kind: Optional[str] = Query(
         None, description="Comma-separated packaging kinds, e.g. 'box,mailer'"
     ),
+    exclude_packaging: bool = Query(
+        False, description="Only consumables that are not packaging (the Consumables page)"
+    ),
 ) -> ConsumableTypeListResponse:
-    """List all consumable types for current tenant."""
+    """List all consumable types for current tenant.
+
+    The Packaging page asks for ``packaging_kind=box,mailer,void_fill,wrap``
+    and the Consumables page for ``exclude_packaging=true`` (spec 006, D1):
+    one table, two views.
+    """
     # Base query
     query = select(ConsumableType).where(ConsumableType.tenant_id == tenant.id)
 
@@ -267,6 +334,9 @@ async def list_consumable_types(
             )
         query = query.where(ConsumableType.packaging_kind.in_(kinds))
 
+    if exclude_packaging:
+        query = query.where(ConsumableType.packaging_kind.is_(None))
+
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -281,11 +351,12 @@ async def list_consumable_types(
     consumables = result.scalars().all()
 
     # Apply low_stock filter and convert to response
-    responses = []
-    for consumable in consumables:
-        if low_stock_only and not consumable.is_low_stock:
-            continue
-        responses.append(ConsumableTypeResponse(**consumable_type_to_response(consumable)))
+    kept = [c for c in consumables if not (low_stock_only and not c.is_low_stock)]
+    extras = await _packaging_extras(db, tenant, kept)
+    responses = [
+        ConsumableTypeResponse(**{**consumable_type_to_response(c), **extras.get(c.id, {})})
+        for c in kept
+    ]
 
     return ConsumableTypeListResponse(
         total=total,
@@ -318,10 +389,7 @@ async def get_consumable_type(
         )
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(
-        **consumable_type_to_response(consumable),
-        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
-    )
+    return await _response(db, tenant, consumable)
 
 
 @router.put("/types/{consumable_id}", response_model=ConsumableTypeResponse)
@@ -394,10 +462,7 @@ async def update_consumable_type(
     await db.refresh(consumable)
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(
-        **consumable_type_to_response(consumable),
-        packaging_provenance=await _packaging_provenance(db, tenant, consumable),
-    )
+    return await _response(db, tenant, consumable)
 
 
 @router.delete("/types/{consumable_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -408,7 +473,11 @@ async def delete_consumable_type(
     _member: RequireMember,
     db: TenantDB,
 ) -> None:
-    """Delete a consumable type."""
+    """Delete a consumable type, unless a product or model still uses it (FR-005).
+
+    The operator is told which ones, so they can move them to other packaging
+    first; a consumable confirmed in a dispatched parcel is never deleted.
+    """
     result = await db.execute(
         select(ConsumableType).where(
             ConsumableType.id == consumable_id,
@@ -423,8 +492,23 @@ async def delete_consumable_type(
             detail=f"Consumable type {consumable_id} not found",
         )
 
-    await db.delete(consumable)
-    await db.commit()
+    users = await everything_using(db, tenant, consumable.id)
+    if users:
+        names = ", ".join(f"{u.name} ({u.sku})" for u in users[:10])
+        more = f" and {len(users) - 10} more" if len(users) > 10 else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{consumable.name} is used by {names}{more}; change their packaging first",
+        )
+    try:
+        await db.delete(consumable)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{consumable.name} is recorded in a dispatched parcel and cannot be deleted",
+        ) from None
 
 
 @router.post("/types/{consumable_id}/adjust-stock", response_model=ConsumableTypeResponse)
@@ -479,7 +563,7 @@ async def adjust_stock(
     await db.refresh(consumable)
 
     await _load_purchases(db, consumable)
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    return await _response(db, tenant, consumable)
 
 
 # =============================================================================
