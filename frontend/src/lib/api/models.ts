@@ -86,6 +86,8 @@ export type FileLocation = 'uploaded' | 'local_reference'
 
 // Result of parsing a .3mf file's embedded slicer metadata (transient, not persisted)
 export interface ThreeMFFilamentUse {
+  /** Slicer filament number (1-based); maps the filament to an AMS slot (spec 011). */
+  id?: number | null
   type: string | null
   color: string | null
   grams: number | null

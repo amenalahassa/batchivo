@@ -75,6 +75,14 @@ class PrinterConnectionBase(BaseModel):
         description="Whether connection is enabled",
     )
 
+    developer_mode: bool = Field(
+        default=False,
+        description=(
+            "Printer is in LAN mode with Developer Mode on (declared by the operator). "
+            "Enables sending prints from Batchivo; Developer Mode disables Bambu cloud access."
+        ),
+    )
+
     @field_validator("ip_address")
     @classmethod
     def validate_ip_address(cls, v: Optional[str]) -> Optional[str]:
@@ -114,6 +122,7 @@ class PrinterConnectionUpdate(BaseModel):
     cloud_token: Optional[str] = None
     ams_count: Optional[int] = Field(None, ge=0, le=4)
     is_enabled: Optional[bool] = None
+    developer_mode: Optional[bool] = None
 
 
 class PrinterConnectionResponse(PrinterConnectionBase):
@@ -128,6 +137,9 @@ class PrinterConnectionResponse(PrinterConnectionBase):
     last_connected_at: Optional[datetime] = None
     last_status_at: Optional[datetime] = None
     connection_error: Optional[str] = None
+    can_send_prints: bool = Field(
+        False, description="Developer Mode on and Bambu LAN: prints can be sent (spec 011)"
+    )
 
     created_at: datetime
     updated_at: datetime

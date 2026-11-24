@@ -164,6 +164,7 @@ def _parse_bambu_orca_plate(plate_element, fallback_index: int) -> ThreeMFPlateM
     objects = plate_element.findall("object")
     filaments = [
         ThreeMFFilamentUse(
+            id=_int_or_none(f.get("id")),
             type=(f.get("type") or None),
             color=_hex_color(f.get("color")),
             grams=_positive_or_none(f.get("used_g")),
@@ -182,6 +183,14 @@ def _parse_bambu_orca_plate(plate_element, fallback_index: int) -> ThreeMFPlateM
         ),
         filaments=[f for f in filaments if f.grams is not None],
     )
+
+
+def _int_or_none(value: Optional[str]) -> Optional[int]:
+    """An integer attribute, or None when absent or not an integer."""
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 def _hex_color(value: Optional[str]) -> Optional[str]:

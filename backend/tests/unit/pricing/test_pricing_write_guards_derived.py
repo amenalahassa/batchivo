@@ -86,6 +86,7 @@ NOT_PRICING_MODULES: frozenset[str] = frozenset(
         "payments",
         "platform",
         "print_queue",
+        "print_sends",
         "printer_bambu",
         "printer_ws",
         "projects",

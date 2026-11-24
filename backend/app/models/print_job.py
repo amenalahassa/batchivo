@@ -23,6 +23,7 @@ from app.models.base import TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.model import Model
+    from app.models.print_send import PrintSend
     from app.models.printer import Printer
     from app.models.product import Product
     from app.models.tenant import Tenant
@@ -197,6 +198,15 @@ class PrintJob(Base, UUIDMixin, TimestampMixin):
         back_populates="print_jobs",
         foreign_keys=[assigned_printer_id],
         lazy="selectin",
+    )
+
+    # The send that started this job, when it came from a print send (spec 011)
+    print_send: Mapped[Optional["PrintSend"]] = relationship(
+        "PrintSend",
+        primaryjoin="PrintJob.id == foreign(PrintSend.print_job_id)",
+        uselist=False,
+        viewonly=True,
+        lazy="select",
     )
 
     # Indexes for queue queries

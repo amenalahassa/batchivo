@@ -5,7 +5,7 @@ This service handles all MQTT communication with Bambu Lab printers including:
 - Connection management (connect, disconnect, reconnect)
 - Status message parsing (print progress, temperatures, AMS)
 - AMS slot tracking and spool mapping
-- Command sending (pause, resume, stop)
+- Command sending (pause, resume, stop, start a sliced project — spec 011)
 
 Based on community-documented Bambu MQTT protocol:
 - Local LAN: mqtt://{printer_ip}:8883 (TLS, username=bblp, password=access_code)
@@ -28,6 +28,11 @@ from app.schemas.printer_connection import BambuPrinterStatus
 
 logger = logging.getLogger(__name__)
 
+#: Global tray index the start command uses for the external spool holder.
+EXTERNAL_SPOOL_TRAY = 254
+#: ``print_error`` a printer reports when its print was cancelled.
+PRINT_ERROR_CANCELLED = 50348044
+
 
 @dataclass
 class BambuConnectionConfig:
@@ -39,6 +44,8 @@ class BambuConnectionConfig:
     port: int = 8883
     access_code: str = ""
     use_tls: bool = True
+    # Tenant of the printer, so status listeners can open a tenant-scoped session
+    tenant_id: Optional[UUID] = None
 
 
 @dataclass
@@ -74,6 +81,7 @@ class BambuPrinterState:
 
     # Error state
     hms_errors: list[dict[str, Any]] = field(default_factory=list)
+    print_error: int = 0  # Bambu print_error code (50348044 = task cancelled)
 
 
 class BambuMQTTService:
@@ -99,6 +107,7 @@ class BambuMQTTService:
         }
         self._sequence_id: int = 0
         self._lock = asyncio.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     def register_callback(self, event: str, callback: Callable) -> None:
         """Register a callback for a specific event type."""
@@ -121,6 +130,27 @@ class BambuMQTTService:
             except Exception as e:
                 logger.error(f"Error in callback for event {event}: {e}")
 
+    def _schedule(self, coro: Any) -> None:
+        """Run a coroutine on the service's event loop from paho's network thread.
+
+        paho calls its callbacks from its own thread, where no event loop runs;
+        ``asyncio.create_task`` there raises and the message is lost. The loop
+        captured in :meth:`connect` is the one the coroutines must run on.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            coro.close()
+            logger.warning("Dropped an MQTT event: no event loop captured")
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            loop.create_task(coro)
+        else:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+
     def _get_next_sequence_id(self) -> str:
         """Get next sequence ID for MQTT commands."""
         self._sequence_id += 1
@@ -136,12 +166,13 @@ class BambuMQTTService:
         Returns:
             True if connection initiated successfully, False otherwise
         """
+        self._loop = asyncio.get_running_loop()
+        # Disconnect existing connection if any (outside the lock: disconnect takes it)
+        if config.printer_id in self._connections:
+            await self.disconnect(config.printer_id)
+
         async with self._lock:
             printer_id = config.printer_id
-
-            # Disconnect existing connection if any
-            if printer_id in self._connections:
-                await self.disconnect(printer_id)
 
             try:
                 # Create MQTT client
@@ -162,13 +193,13 @@ class BambuMQTTService:
                     client.tls_set_context(ssl_context)
 
                 # Set up callbacks
-                client.on_connect = lambda c, u, f, rc, p: asyncio.create_task(
+                client.on_connect = lambda c, u, f, rc, p: self._schedule(
                     self._on_connect(printer_id, rc)
                 )
-                client.on_disconnect = lambda c, u, d, rc, p: asyncio.create_task(
+                client.on_disconnect = lambda c, u, d, rc, p: self._schedule(
                     self._on_disconnect(printer_id, rc)
                 )
-                client.on_message = lambda c, u, msg: asyncio.create_task(
+                client.on_message = lambda c, u, msg: self._schedule(
                     self._on_message(printer_id, msg)
                 )
 
@@ -315,6 +346,12 @@ class BambuMQTTService:
         if "hms" in print_data:
             state.hms_errors = print_data["hms"]
 
+        if "print_error" in print_data:
+            try:
+                state.print_error = int(print_data["print_error"])
+            except (TypeError, ValueError):
+                state.print_error = 0
+
     async def _update_ams_status(
         self,
         printer_id: UUID,
@@ -390,6 +427,78 @@ class BambuMQTTService:
             }
         }
         return await self._send_command(printer_id, command, qos=1)
+
+    async def start_project_print(
+        self,
+        printer_id: UUID,
+        *,
+        remote_file_name: str,
+        plate_index: int,
+        ams_mapping: list[int],
+        md5: str,
+    ) -> bool:
+        """Start printing a plate of a sliced project already on the printer (spec 011).
+
+        Only :class:`~app.services.print_send_service.PrintSendService` calls
+        this, after a confirmed summary (FR-006). ``ams_mapping`` is indexed by
+        the plate's slicer filament number minus one; each value is a global
+        tray index (``ams_id * 4 + tray_id``), ``254`` for the external spool,
+        ``-1`` for a filament the plate does not use.
+        """
+        subtask = remote_file_name.removesuffix(".gcode.3mf")
+        command = {
+            "print": {
+                "sequence_id": self._get_next_sequence_id(),
+                "command": "project_file",
+                "param": f"Metadata/plate_{plate_index}.gcode",
+                "url": f"ftp:///{remote_file_name}",
+                "subtask_name": subtask,
+                "project_id": "0",
+                "profile_id": "0",
+                "task_id": "0",
+                "subtask_id": "0",
+                "md5": md5,
+                "timelapse": False,
+                "bed_type": "auto",
+                "bed_levelling": True,
+                "flow_cali": True,
+                "vibration_cali": True,
+                "layer_inspect": False,
+                "use_ams": any(0 <= slot < EXTERNAL_SPOOL_TRAY for slot in ams_mapping),
+                "ams_mapping": ams_mapping,
+            }
+        }
+        return await self._send_command(printer_id, command, qos=1)
+
+    async def ensure_connected(
+        self, config: BambuConnectionConfig, timeout: float = 10.0
+    ) -> Optional[BambuPrinterState]:
+        """This process's live state of the printer, connecting first if needed.
+
+        Two backend pods each hold their own connections (research R7): the
+        printer may have been connected from the other one. Returns None when
+        no status report arrives within ``timeout`` seconds.
+        """
+        printer_id = config.printer_id
+        if self._states.get(printer_id) is None or printer_id not in self._connections:
+            if not await self.connect(config):
+                return None
+        elif config.tenant_id is not None and printer_id in self._configs:
+            self._configs[printer_id].tenant_id = config.tenant_id
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            state = self._states.get(printer_id)
+            if state is not None and state.is_online and state.print_status is not None:
+                return state
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(0.2)
+
+    def get_config(self, printer_id: UUID) -> Optional[BambuConnectionConfig]:
+        """Connection settings of a connected printer (holds the access code: never log it)."""
+        return self._configs.get(printer_id)
 
     async def _send_command(self, printer_id: UUID, command: dict[str, Any], qos: int = 0) -> bool:
         """Send a command to the printer."""

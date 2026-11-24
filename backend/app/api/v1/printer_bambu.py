@@ -31,6 +31,7 @@ from app.services.bambu_mqtt import (
     BambuConnectionConfig,
     get_bambu_mqtt_service,
 )
+from app.services.printer_secrets import get_access_code
 
 router = APIRouter()
 
@@ -266,7 +267,8 @@ async def connect_to_printer(
         serial_number=connection.serial_number,
         ip_address=connection.ip_address,
         port=connection.port,
-        access_code=connection.access_code,
+        access_code=get_access_code(connection),
+        tenant_id=tenant.id,
     )
 
     success = await mqtt_service.connect(config)

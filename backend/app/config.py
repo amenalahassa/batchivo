@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Known weak secrets that should be rejected
@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     storage_s3_endpoint: str = ""  # MinIO endpoint, empty for AWS S3
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
+
+    # Print send to Bambu printers (spec 011): how long a prepared summary can be confirmed
+    print_send_confirm_window_seconds: int = Field(default=300, gt=0)
 
     # Security
     # SECURITY: No default - must be set via SECRET_KEY environment variable

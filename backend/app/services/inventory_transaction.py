@@ -273,6 +273,60 @@ class InventoryTransactionService:
 
         return transaction
 
+    async def create_print_usage_transaction(
+        self,
+        spool: Spool,
+        weight_used: Decimal,
+        print_job_id: Optional[UUID],
+        print_send_id: UUID,
+    ) -> InventoryTransaction:
+        """
+        Record filament used by a print sent to a printer (spec 011, FR-020).
+
+        Called only when the operator accepts the deduction a finished print
+        proposes; never from a printer report on its own. Like
+        :meth:`create_usage_transaction` it decrements the spool atomically
+        and writes a USAGE entry, without a production run.
+
+        Args:
+            spool: Spool the filament came from
+            weight_used: Grams used (positive)
+            print_job_id: Print job the print belongs to
+            print_send_id: The print send that started it
+
+        Returns:
+            Created InventoryTransaction
+        """
+        weight_before = Decimal(str(spool.current_weight))
+
+        await self.db.execute(
+            update(Spool)
+            .where(Spool.id == spool.id)
+            .values(current_weight=Spool.current_weight - weight_used)
+        )
+
+        metadata = {
+            "print_job_id": str(print_job_id) if print_job_id else None,
+            "print_send_id": str(print_send_id),
+            "weight_used": str(weight_used),
+        }
+        transaction = await self.create_transaction(
+            spool_id=spool.id,
+            transaction_type=TransactionType.USAGE,
+            weight_before=weight_before,
+            weight_change=-weight_used,
+            description=(
+                f"Print job {print_job_id}: used {weight_used}g from spool {spool.spool_id}"
+            ),
+            metadata=metadata,
+        )
+        # create_transaction hands ``metadata=`` to the model, whose column attribute
+        # is ``transaction_metadata``, so the dict is not stored (pre-existing, reported
+        # separately). Set it here so this usage stays traceable to its print send.
+        transaction.transaction_metadata = metadata
+        await self.db.flush()
+        return transaction
+
     async def create_return_transaction(
         self,
         spool: Spool,

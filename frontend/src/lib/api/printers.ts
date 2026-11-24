@@ -4,9 +4,14 @@
  * Provides type-safe API calls for managing printers.
  */
 
+import { isAxiosError } from 'axios';
+
 import { api } from '../api';
+import type { FileTransferTestResult } from '@/types/printSend';
 import type {
   Printer,
+  PrinterConnection,
+  PrinterConnectionSave,
   PrinterListResponse,
   PrinterModelInfo,
   PrinterCreate,
@@ -83,5 +88,47 @@ export async function getActivePrinters(): Promise<Printer[]> {
  */
 export async function listPrinterModels(): Promise<PrinterModelInfo[]> {
   const response = await api.get<PrinterModelInfo[]>(`${BASE_PATH}/models`);
+  return response.data;
+}
+
+/**
+ * Get a printer's connection settings, or null when none is configured
+ */
+export async function getPrinterConnection(printerId: string): Promise<PrinterConnection | null> {
+  try {
+    const response = await api.get<PrinterConnection>(`${BASE_PATH}/${printerId}/connection`);
+    return response.data;
+  } catch (error) {
+    if (isAxiosError(error) && error.response?.status === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * Create or replace a printer's connection settings.
+ * Omit `access_code` to keep the stored one.
+ */
+export async function savePrinterConnection(
+  printerId: string,
+  data: PrinterConnectionSave
+): Promise<PrinterConnection> {
+  const payload: PrinterConnectionSave = { ...data };
+  if (!payload.access_code) delete payload.access_code;
+  const response = await api.post<PrinterConnection>(
+    `${BASE_PATH}/${printerId}/connection`,
+    payload
+  );
+  return response.data;
+}
+
+/**
+ * Check the printer accepts a file connection (writes nothing on the printer)
+ */
+export async function testFileTransfer(printerId: string): Promise<FileTransferTestResult> {
+  const response = await api.post<FileTransferTestResult>(
+    `${BASE_PATH}/${printerId}/connection/test-file-transfer`,
+    undefined,
+    { timeout: 60_000 }
+  );
   return response.data;
 }
