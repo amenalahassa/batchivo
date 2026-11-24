@@ -333,3 +333,271 @@ Constraints:
   postage seeding per carrier, size-limit consistency with the boxes, unknown
   carrier seeds nothing; new endpoints 200/201, 401, 404, 422.
 ```
+
+---
+
+## Ideas: capture, brainstorm and iterate on product ideas, then turn one into a model or product
+
+**Status:** not specified (feature 007, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §4)
+
+**Why:** product ideas today live outside Batchivo (notes, chats, the weekly
+pain-point report). Their images, links, measurements and decisions are lost by
+the time a model is created, and nothing records which idea a product came from.
+
+**What already exists (do not rebuild):**
+- `ImageStorage` (`services/image_storage.py`) saves images with thumbnails, local
+  or S3, but keyed by product (`products/{product_id}/`); `main.py` serves
+  `/uploads/products/...`.
+- Product creation accepts `models: [{model_id, quantity}]` (`api/v1/products.py:294`).
+- Module system: `ALL_MODULES` / `DEFAULT_MODULES_BY_TYPE`
+  (`services/tenant_module_service.py`), `MODULE_NAVIGATION` / `MODULE_ORDER`
+  (`api/v1/modules.py`), `ModuleGuard` and `ICON_COMPONENTS` in the frontend.
+- The model file notes trio (`api/v1/model_file_notes.py`, its service and schema)
+  is the pattern to copy.
+
+### Prompt
+
+```text
+/speckit-specify Ideas: a place to capture, brainstorm and iterate on product ideas, then turn one into a model or a product.
+
+Context: Batchivo manages a 3D printing business (models, products, production).
+Ideas for new products come from the operator, customers and a weekly
+"pain-point" report that scores everyday problems (frequency, frustration,
+printability, gap, willingness to pay, 1-5 each). There is nowhere to keep an
+idea with its pictures and reasoning until it becomes a model.
+
+1. Ideas list and board
+   - A new "Ideas" menu (its own module, on by default for 3D printing shops).
+   - Each idea has a title, a short summary, a status (inbox, exploring,
+     validating, ready, converted, parked, dropped), tags, a source (manual,
+     pain-point report, customer, other) with an optional link, and the five
+     scores with their total.
+   - A board view groups ideas by status with a cover image, score and tags; a
+     list view searches and filters by status, tag and source and sorts by last
+     update or score. Both stay fast with hundreds of ideas (paginated).
+
+2. Brainstorming timeline
+   - An idea's page shows a timeline of entries: notes (markdown), images
+     (upload, drag-and-drop, paste from clipboard, several at once), links,
+     sketches, measurements and decisions.
+   - Entries belong to an iteration ("iteration 2: clip-on instead of screw");
+     the operator starts the next iteration with a short note, and the timeline
+     groups entries by iteration.
+   - Entries can be edited, pinned and archived; one image is the idea's cover.
+   - An image gallery shows every image of the idea across iterations.
+
+3. Turn an idea into a model or a product
+   - "Convert to model" creates a model from the idea (name, description, cover
+     image) and links them both ways; "Convert to product" creates the product,
+     its model and the bill-of-materials line through the existing product
+     creation, and copies the pinned images to the product.
+   - The idea becomes "converted" and shows links to what it became; the model
+     and product show the idea they came from.
+
+4. Import from the pain-point report
+   - Ideas can be created in bulk from a report (title, summary, scores, source
+     link), skipping ones already imported from the same source link.
+
+Constraints:
+- Generalise ImageStorage to owner-keyed paths ({owner_type}/{owner_id}/) used by
+  products and ideas; product images keep their current paths and URLs.
+- New tables are tenant-scoped (tenant_id, RLS policies in the migration);
+  endpoints use CurrentTenant + TenantDB.
+- One polymorphic entry table (kind) rather than one table per entry type.
+- Conversion reuses the product creation service; it never writes BOM rows itself.
+- Nullable source_idea_id on models and products; no breaking change to their APIs.
+- Leave room for entries produced by AI image generation (a later feature):
+  an entry kind "generation" and a nullable link to a generation job.
+- Tests: endpoints 200/201, 401, 404, 422; import idempotence; conversion to model
+  and to product (links both ways, images copied, status set); storage paths for
+  products unchanged; frontend board, detail, composer and conversion.
+```
+
+---
+
+## Generative AI layer with Replicate: concept images, product photo enhancement, sales images, image to 3D
+
+**Status:** not specified (feature 008, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §5). Needs 007.
+
+**Why:** idea concepts, product photos and sales images are made by hand outside
+Batchivo. A generative AI provider can draft concept images from an idea, clean
+and relight product photos, place a product in a scene for listings, and draft a
+3D volume from an image. `notes/feature-ideas.md` §3 already asks for a
+provider-agnostic AI layer; nothing exists in the app today.
+
+**What already exists (do not rebuild):**
+- Celery + Redis long-job pattern (`tasks/mesh_measure.py`, status on the row,
+  frontend `refetchInterval` polling).
+- Encrypted per-tenant credentials in `Tenant.settings` (`core/encryption.py`,
+  the Square/Etsy trio in `services/tenant_settings.py` and `schemas/tenant_settings.py`).
+- Owner-keyed `ImageStorage` (from 007), `ProductImagesEditor`, `ModelFileService`
+  for meshes.
+
+### Prompt
+
+```text
+/speckit-specify Generative AI layer with Replicate as the first provider.
+
+Context: Batchivo (3D printing business management) has no AI integration. The
+operator wants to use generative models hosted on Replicate wherever they help:
+drafting a product image from an idea, improving product photos, producing sales
+images, and drafting a 3D shape from an image.
+
+1. Capabilities, not model names
+   - Screens and agents ask for a capability: concept image (from text, optional
+     reference images), image edit (image + instruction), product photo
+     enhancement, background removal, upscaling, lifestyle scene (a product photo
+     placed in a described scene), image to 3D (mesh).
+   - Each capability maps to a Replicate model with a pinned version and default
+     parameters; the operator can override the model per capability in settings.
+     The design must allow adding another provider later without changing screens.
+
+2. Generation jobs
+   - Every request is a job with its capability, model and version, inputs
+     (prompt, parameters, seed, input images), target (an idea, a product, a model
+     or none), status (queued, running, succeeded, failed, canceled), error, cost
+     and who asked.
+   - Jobs run in the background; the screen shows progress and the results when
+     done. Results are copied into Batchivo storage as soon as they are ready,
+     because the provider deletes them after about an hour.
+   - Polling works everywhere (including a local install without a public URL); a
+     signed provider webhook completes jobs sooner when the instance is reachable.
+
+3. Where it appears
+   - Ideas: "Generate concept" from the idea's text and images; variations and
+     edits of an image; "Draft 3D shape" from an image. Results become timeline
+     entries of kind generation.
+   - Products: in the image editor, enhance, remove background, upscale, and
+     generate lifestyle scenes; the operator adopts a result as a product image.
+   - Models: "Draft 3D from image" adds the mesh as a new model file version,
+     labelled as an AI draft.
+   - A result is adopted explicitly; nothing replaces an image on its own.
+
+4. Credentials, cost and safety
+   - Settings, Integrations, Replicate: API token (stored encrypted, shown masked,
+     with a connection test), monthly budget, model overrides. When the tenant has
+     no token, a platform token from configuration is used if set.
+   - Each job's cost is recorded; a monthly budget is enforced before a job is
+     submitted; month-to-date usage is shown. A limit on concurrent jobs per tenant.
+   - Every product image records its origin: a photo, a render of the real
+     geometry (for example from Blender), or AI. AI-generated or AI-edited images
+     show a badge. Setting an image that is neither a photo of the product nor a
+     render of its real geometry (a concept image or a 3D draft) as a product
+     image shows a warning that listings must show the real item.
+
+Constraints:
+- Provider-agnostic service package with a Replicate adapter; cost is computed in
+  one service only; money is Decimal, decimal strings on the wire.
+- A job's inputs, model version and seed are written once and never changed.
+- New tables tenant-scoped with RLS; endpoints use CurrentTenant + TenantDB.
+- The provider token never reaches the frontend or logs.
+- Tests: capability input validation, budget refusal, concurrency limit, polling
+  path and webhook path (valid and invalid signature), output download and
+  storage, provider failure and timeout, adoption into idea / product / model,
+  endpoints 200/201, 401, 404, 422; the Replicate HTTP API is mocked in tests.
+```
+
+---
+
+## Preflight foundations: design brief, typed notes, calibrations and print test results
+
+**Status:** not specified (feature 009, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §6). Needs 007 and 008.
+
+**Why:** the Preflight tool (design checks for functional printed parts, driven by
+the part's intended use) needs Batchivo to remember a part's intended use and
+risks, the checks raised on the part, the fits measured on each printer and
+filament, and what happened when test pieces were printed.
+
+### Prompt
+
+```text
+/speckit-specify Preflight foundations: design brief, typed notes, calibrations and print test results.
+
+Context: a design-check workflow ("Preflight") helps the operator design
+functional printed parts: it records what a part is for (function, loads and
+their duration, environment, neighbouring parts, sales channel), the risks found,
+the design plan, checks pinned on the part, fits calibrated per printer and
+filament, and results of printed test pieces. Batchivo must store all of it so
+both the operator and AI agents can read and update it.
+
+1. Design brief: attached to an idea, then to the model the idea becomes; holds
+   the intended use (structured, versioned), the risk summary, the design plan,
+   design parameters and the status of each Preflight step. Visible on the idea
+   and model pages.
+2. Typed notes: notes pinned on a model file gain a source (person, Preflight,
+   print result), a rule reference, a severity (info, warning, failure) and an
+   optional measured value; existing notes keep working unchanged and can be
+   filtered by source and severity.
+3. Calibrations: a fit value per printer, filament type, print orientation and
+   fit type (sliding, press, snap, print-in-place), with how it was obtained
+   (measured or assumed), from which print and when. A new value supersedes the
+   old one; history is kept.
+4. Print test results: for a print job and model version, an outcome (pass, fail,
+   partial), measurements, failure mode, photo and notes.
+5. Printer connection secrets (access code, cloud token) are stored encrypted.
+
+Constraints: tenant-scoped tables with RLS; calibrations superseded, never edited;
+no breaking change to model file notes; a data migration encrypts existing
+printer secrets; tests per the testing policy.
+```
+
+---
+
+## Batchivo MCP server for AI agents
+
+**Status:** not specified (feature 010, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §7). Read-only tools can start after 007.
+
+### Prompt
+
+```text
+/speckit-specify An MCP server so AI agents (Claude Code) can read and write Batchivo data.
+
+Context: the operator works with AI agents on design and production. Agents need
+to list and update ideas, models, versions and pinned notes, read printers, spools
+and print jobs, start AI generations, and read and write design briefs and
+calibrations, under the operator's own permissions.
+
+1. Personal API tokens: the operator creates, names, scopes (read, write, genai,
+   print), sets an expiry for and revokes tokens, and sees when each was last
+   used. Tokens are stored hashed and shown once.
+2. MCP server: a separate process (stdio first, HTTP later) that calls Batchivo's
+   own API with a token, so tenant isolation and validation stay exactly as for
+   the web app. Tools cover ideas, models and notes, printers and spools, print
+   jobs, generation jobs, design briefs and calibrations, each limited by token
+   scope.
+3. Setup instructions for Claude Code (.mcp.json example).
+
+Constraints: the MCP server never accesses the database directly; tokens are
+never logged; tests for token lifecycle, scope enforcement and each tool against
+a mocked API.
+```
+
+---
+
+## Send a print to a Bambu Lab printer, with confirmation
+
+**Status:** not specified (feature 011, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §8). Independent.
+
+### Prompt
+
+```text
+/speckit-specify Send a sliced file to a Bambu Lab printer and start it, after explicit confirmation.
+
+Context: Batchivo already connects to Bambu printers over local MQTT (status,
+pause, resume, stop; services/bambu_mqtt.py). It cannot send a file or start a
+print. Printers in LAN mode with Developer Mode accept a file upload over FTPS
+and a start command over MQTT.
+
+1. Prepare: the operator (or an agent) picks a sliced .gcode.3mf, a plate and the
+   AMS slot mapping; Batchivo shows the printer, plate, expected filament in each
+   slot (from its spool mapping), estimated time and weight, and warns when a
+   slot's loaded spool does not match.
+2. Confirm: the print starts only on an explicit confirmation of that summary,
+   within a short time window. A print job is created and its status follows the
+   existing MQTT updates.
+3. The printer settings page explains Developer Mode and what it disables (cloud
+   access), and the send option is hidden for printers not in that mode.
+
+Constraints: no print starts without the confirmation step, from the UI or the
+API; upload failures leave no half-started job; tests with mocked FTPS and MQTT.
+```
