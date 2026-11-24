@@ -81,6 +81,7 @@ from app.services import fee_engine, pricing_solver, temporal_pricing
 from app.services.channel_economics import ChannelEconomics, resolve_channel_economics
 from app.services.cost_resolution import (
     cost_load_options,
+    load_bundle_levels,
     product_cost_breakdown,
     with_landed_cost,
 )
@@ -163,6 +164,7 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
     figures in one payload can disagree, and the flat total here is built from
     the same snapshot `GET /products/{id}/cost` itemises (Constitution III).
     """
+    await load_bundle_levels(db, [product])
     policy = await resolve_cost_policy(db, tenant)
     realised = await _realised_costs_for(db, tenant, [product])
 
@@ -369,6 +371,7 @@ async def list_products(
             products = [
                 products_with_rels.get(p.id, p) for p in products if p.id in products_with_rels
             ]
+            await load_bundle_levels(db, products)
 
         # Resolve the operator's policy once per request, not once per row: a
         # rejected setting would otherwise log a warning for every product, and
@@ -465,6 +468,7 @@ async def list_products(
     )
     result = await db.execute(query)
     products = result.scalars().all()
+    await load_bundle_levels(db, products)
 
     # Resolve the operator's policy once per request, not once per row: a
     # rejected setting would otherwise log a warning for every product, and two
@@ -2163,6 +2167,7 @@ async def add_product_component(
     )
     result = await db.execute(query)
     child_product_loaded = result.scalar_one()
+    await load_bundle_levels(db, [child_product_loaded])
 
     child_cost = CostingService.calculate_product_cost(
         child_product_loaded,
@@ -2230,6 +2235,7 @@ async def update_product_component(
     )
     result = await db.execute(query)
     child_product_loaded = result.scalar_one()
+    await load_bundle_levels(db, [child_product_loaded])
 
     child_cost = CostingService.calculate_product_cost(
         child_product_loaded,

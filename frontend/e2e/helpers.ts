@@ -6,7 +6,7 @@
  */
 
 import { Page } from '@playwright/test'
-import { HEALTH_URL } from './config'
+import { API_URL, HEALTH_URL } from './config'
 
 /**
  * Check if the backend API is available
@@ -21,12 +21,39 @@ export async function isBackendAvailable(): Promise<boolean> {
 }
 
 /**
+ * Read the pending email-verification token for a registration.
+ *
+ * Uses the backend's e2e-only hook, which answers 404 unless the backend runs
+ * with E2E_TEST_HOOKS_ENABLED=true (never in production).
+ */
+async function fetchVerificationToken(page: Page, email: string): Promise<string> {
+  const response = await page.request.get(
+    `${API_URL}/api/v1/onboarding/test/verification-token`,
+    { params: { email } }
+  )
+  if (response.status() === 404) {
+    throw new Error(
+      'No verification token from the e2e hook. Start the local backend with ' +
+        'E2E_TEST_HOOKS_ENABLED=true (see e2e/README.md).'
+    )
+  }
+  if (!response.ok()) {
+    throw new Error(`Verification token hook failed: HTTP ${response.status()}`)
+  }
+  const body = (await response.json()) as { token: string }
+  return body.token
+}
+
+/**
  * Register a new user and login
  *
- * Creates a unique user for test isolation.
- * Includes retry logic with exponential backoff to handle rate limiting.
+ * Creates a unique tenant + owner for test isolation by walking the real
+ * signup flow: fill /signup (business name included), read the verification
+ * token through the backend's e2e hook, open /verify-email?token=… (the real
+ * verification, which stores the session), then land on /dashboard.
  *
- * Rate limit is 5/minute for auth endpoints, so we retry with delays.
+ * Includes retry logic with exponential backoff for the 5/minute rate limit
+ * on POST /onboarding/register.
  *
  * @param page - Playwright page object
  * @param maxRetries - Maximum number of retry attempts (default: 3)
@@ -36,40 +63,66 @@ export async function registerAndLogin(page: Page, maxRetries: number = 3): Prom
   const testPassword = 'TestPassword123!'
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const testEmail = `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`
+    const suffix = `${Date.now()}-${Math.random().toString(36).substring(7)}`
+    const testEmail = `test-${suffix}@example.com`
 
     await page.goto('/signup')
+    await page.fill('#businessName', `E2E Shop ${suffix}`)
     await page.fill('#email', testEmail)
     await page.fill('#password', testPassword)
     await page.fill('#confirmPassword', testPassword)
+
+    const registerResponse = page.waitForResponse(
+      (r) => r.url().includes('/onboarding/register') && r.request().method() === 'POST',
+      { timeout: 15000 }
+    )
     await page.click('button[type="submit"]')
+    const status = (await registerResponse).status()
 
-    // Wait for either dashboard (success) or error message (rate limited)
-    const result = await Promise.race([
-      page.waitForURL('/dashboard', { timeout: 15000 }).then(() => 'success'),
-      page.locator('text=Registration failed').waitFor({ timeout: 5000 }).then(() => 'rate_limited'),
-    ]).catch(() => 'timeout')
-
-    if (result === 'success') {
-      return testEmail
-    }
-
-    if (result === 'rate_limited' && attempt < maxRetries) {
-      // Wait with exponential backoff before retrying
-      // Rate limit is 5/minute, so we need to wait a bit
-      const waitTime = Math.min(5000 * Math.pow(2, attempt), 30000) // 5s, 10s, 20s (max 30s)
+    if (status === 429 && attempt < maxRetries) {
+      // Rate limit is 5/minute: back off 5s, 10s, 20s (max 30s)
+      const waitTime = Math.min(5000 * Math.pow(2, attempt), 30000)
       console.log(`Rate limited. Waiting ${waitTime / 1000}s before retry ${attempt + 1}/${maxRetries}`)
       await page.waitForTimeout(waitTime)
       continue
     }
-
-    // If timeout or all retries exhausted, throw
-    if (attempt === maxRetries) {
-      throw new Error(`Registration failed after ${maxRetries} retries. Rate limit may be exceeded.`)
+    if (status !== 201) {
+      throw new Error(`Registration failed: POST /onboarding/register answered HTTP ${status}`)
     }
+
+    await page.getByText('Check your email').waitFor({ timeout: 10000 })
+
+    // Real verification: the page calls POST /verify-email and stores the JWTs.
+    const token = await fetchVerificationToken(page, testEmail)
+    await page.goto(`/verify-email?token=${encodeURIComponent(token)}`)
+    const storedTokens = await page.waitForFunction(
+      () =>
+        localStorage.getItem('batchivo_auth_tokens') ??
+        sessionStorage.getItem('batchivo_auth_tokens'),
+      undefined,
+      { timeout: 15000 }
+    )
+    const { accessToken } = JSON.parse((await storedTokens.jsonValue()) as string) as {
+      accessToken: string
+    }
+
+    // A new signup is a "generic" business until setup step 2 picks the craft,
+    // which decides the modules. Pick 3D printing through that real wizard step,
+    // as the owner would, so the 3D-print screens (models, printers, …) exist.
+    const craft = await page.request.put(`${API_URL}/api/v1/onboarding/wizard/step/2`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      data: { tenant_type: 'three_d_print' },
+    })
+    if (!craft.ok()) {
+      throw new Error(`Setting the business type failed: HTTP ${craft.status()}`)
+    }
+
+    await page.goto('/dashboard')
+    await page.waitForURL('/dashboard', { timeout: 15000 })
+    return testEmail
   }
 
-  throw new Error('Registration failed unexpectedly')
+  throw new Error(`Registration failed after ${maxRetries} retries. Rate limit may be exceeded.`)
 }
 
 /**

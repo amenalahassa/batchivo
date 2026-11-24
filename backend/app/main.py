@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, rate_limiting_enabled
 from app.database import close_db, get_db, init_db
 from app.middleware.security import SecurityHeadersMiddleware
 
@@ -86,7 +86,8 @@ app = FastAPI(
     redirect_slashes=False,  # Don't auto-redirect trailing slashes (causes CORS issues)
 )
 
-# Configure rate limiter
+# Configure rate limiter (off only for local e2e runs; see rate_limiting_enabled)
+limiter.enabled = rate_limiting_enabled(settings)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

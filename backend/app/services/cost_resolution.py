@@ -45,7 +45,7 @@ BUNDLE_LOAD_DEPTH = MAX_RECURSION_DEPTH
 
 
 def cost_load_options() -> list:
-    """Eager-load options for every relationship a cost read walks.
+    """Eager-load options for one product level of a cost read.
 
     The engine issues no queries, which is what lets it recurse through a bill
     of materials cheaply -- but it also means a relationship nobody loaded
@@ -54,18 +54,19 @@ def cost_load_options() -> list:
     caller that costs a product uses it: the product endpoints, and the
     catalogue sweep behind a scenario.
 
-    The bundle chain is generated rather than written out, to the same depth the
-    engine's own guard allows (`MAX_RECURSION_DEPTH`). Writing it out by hand is
-    how the two fell out of step: the list stopped declaring `child_products`
-    two levels down while the engine kept walking, so a three-level bundle
-    reached an unloaded collection. `ProductComponent.child_product` is lazy
-    precisely so that this declaration is the only thing that loads a bundle --
-    an eager link on the model re-entered `Product` and its dozen `selectin`
-    relationships at every level.
+    These options load one level: the product's own cost inputs, and the
+    component rows with the child products they reach. The levels below are
+    loaded by :func:`load_bundle_levels`, which every caller runs on what it
+    loaded before costing. Declaring every level up front, to the engine's
+    depth, looked free (an empty `selectin` level issues no SELECT) but was not:
+    SQLAlchemy keys and compiles the whole option tree on every sub-load, and
+    that tree grows with the square of the depth. Twenty-one levels cost about
+    a second of CPU per flat product read, and 18 s for a one-product scenario.
 
-    Declaring the full depth is close to free: a `selectin` level issues no
-    SELECT when the level above it returned no rows, so a flat catalogue pays
-    for the levels it actually has, not for the limit.
+    `ProductComponent.child_product` stays lazy so that this declaration and
+    the walker are the only things that load a bundle -- an eager link on the
+    model re-entered `Product` and its dozen `selectin` relationships at every
+    level.
     """
     from sqlalchemy.orm import selectinload
 
@@ -107,17 +108,54 @@ def cost_load_options() -> list:
             chain(prefix, Product.packaging_consumable, ConsumableType.purchases),
         ]
 
-    options: list = []
-    prefix = None
-    # One pass per bundle level the engine may descend into. Each level loads
-    # its own cost inputs and the component rows that reach the next, so the
-    # traversal never meets a collection it cannot read.
-    for _ in range(BUNDLE_LOAD_DEPTH + 1):
-        options.extend(cost_inputs(prefix))
-        prefix = chain(prefix, Product.child_products, ProductComponent.child_product)
-        options.append(prefix)
+    # This level's cost inputs, and the component rows that reach the next.
+    return [
+        *cost_inputs(None),
+        chain(None, Product.child_products, ProductComponent.child_product),
+    ]
 
-    return options
+
+async def load_bundle_levels(db: AsyncSession, products: Iterable["Product"]) -> None:
+    """Load the bundle levels below products read with `cost_load_options()`.
+
+    One query per level that has children, down to the same depth the engine's
+    guard allows (`BUNDLE_LOAD_DEPTH`, which is `MAX_RECURSION_DEPTH`): one
+    limit, not two. A flat catalogue issues no query here. A product already
+    loaded on this walk is not loaded again, so a cycle stops at once and is
+    left for the engine to report.
+
+    The child products are already in the session (the level above loaded them
+    through `child_product`); the eager loads still descend into their loaded
+    collections and fill what is missing. Never `populate_existing` here: it
+    refreshes through `Product.parent_products` (selectin by default) and resets
+    the `child_product` link the level above relies on.
+    """
+    from sqlalchemy import select
+
+    from app.models.product import Product
+
+    seen: set[uuid.UUID] = set()
+    level = [product for product in products if product is not None]
+    seen.update(product.id for product in level)
+    for _ in range(BUNDLE_LOAD_DEPTH):
+        child_ids = {
+            component.child_product_id
+            for product in level
+            for component in (product.child_products or [])
+            if component.child_product_id not in seen
+        }
+        if not child_ids:
+            return
+        seen |= child_ids
+        level = list(
+            (
+                await db.execute(
+                    select(Product).where(Product.id.in_(child_ids)).options(*cost_load_options())
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 def with_landed_cost(materials_loader: Any) -> Any:
@@ -267,6 +305,7 @@ async def product_cost_breakdown(
     out unchanged: a cycle in the operator's own data is theirs to fix, and the
     endpoint turns each into a 409 naming the offending chain.
     """
+    await load_bundle_levels(db, [product])
     resolved = policy or await resolve_cost_policy(db, tenant)
     entities = _product_entities(product)
     origins = await resolve_origins(db, tenant, entities)

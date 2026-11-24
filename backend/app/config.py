@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     debug: bool = False
     api_v1_prefix: str = "/api/v1"
 
+    # E2E test hooks (local Playwright runs only). Exposes test-only endpoints such as
+    # reading a pending email-verification token, and switches off the API rate limiter
+    # for the process (app.core.rate_limit). Off by default, refused in production
+    # even when set, and never set in any deployment manifest or VPS instance config.
+    e2e_test_hooks_enabled: bool = False
+
     # Build metadata (injected by CI at deploy time)
     build_sha: str = ""
     build_date: str = ""

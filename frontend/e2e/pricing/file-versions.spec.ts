@@ -62,7 +62,7 @@ test('a new version is made active with only the figures chosen', async ({ page 
   await upload.setInputFiles({ name: 'part_v1.stl', mimeType: 'model/stl', buffer: cubeStl() })
   const v1 = page.getByRole('listitem', { name: 'Version 1' })
   await expect(v1.getByText('part_v1.stl')).toBeVisible()
-  await expect(v1.getByText('Active')).toBeVisible()
+  await expect(v1.getByText('Active', { exact: true })).toBeVisible()
 
   // Version 2: a sliced plate, uploaded into a new version.
   await page.getByRole('combobox', { name: 'Add to version' }).first().click()
@@ -87,7 +87,11 @@ test('a new version is made active with only the figures chosen', async ({ page 
   await dialog.getByRole('button', { name: 'Make active' }).click()
   await expect(dialog).toBeHidden()
 
-  await expect(page.getByRole('listitem', { name: 'Version 2' }).getByText('Active')).toBeVisible()
+  // Exact: a version holding only a sliced file also says "No measurable file
+  // in the active version" (spec 004, FR-013).
+  await expect(
+    page.getByRole('listitem', { name: 'Version 2' }).getByText('Active', { exact: true }),
+  ).toBeVisible()
   // The print time now says it was measured from the file.
   await expect(page.getByTestId('provenance-measured').first()).toBeVisible()
 })

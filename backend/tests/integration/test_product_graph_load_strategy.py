@@ -30,7 +30,7 @@ from app.models.product import Product
 from app.models.product_component import ProductComponent
 from app.models.product_model import ProductModel
 from app.models.tenant import Tenant
-from app.services.cost_resolution import cost_load_options
+from app.services.cost_resolution import cost_load_options, load_bundle_levels
 from app.services.costing import CircularReferenceError, CostingService
 
 LABOR_RATE = Decimal("25.00")
@@ -144,11 +144,13 @@ async def _load(db: AsyncSession, product_id) -> Product:
     missing option would pass here and raise in a request.
     """
     db.expunge_all()
-    return (
+    product = (
         await db.execute(
             select(Product).where(Product.id == product_id).options(*cost_load_options())
         )
     ).scalar_one()
+    await load_bundle_levels(db, [product])
+    return product
 
 
 # ---------------------------------------------------------------------------

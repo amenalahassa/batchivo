@@ -31,7 +31,7 @@ from app.models.product_component import ProductComponent
 from app.models.product_model import ProductModel
 from app.models.spool import Spool
 from app.models.tenant import Tenant
-from app.services.cost_resolution import cost_load_options
+from app.services.cost_resolution import cost_load_options, load_bundle_levels
 from app.services.costing import CostingService
 
 SEED = 20261011
@@ -51,6 +51,7 @@ async def _cost(db: AsyncSession, product_id) -> Decimal:
             select(Product).where(Product.id == product_id).options(*cost_load_options())
         )
     ).scalar_one()
+    await load_bundle_levels(db, [product])
     return CostingService.calculate_product_cost(product, labor_rate=LABOR_RATE).total_make_cost
 
 
