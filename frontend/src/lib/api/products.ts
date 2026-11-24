@@ -148,6 +148,10 @@ export interface Product {
   postage_service?: string | null
   /** e.g. "accepted_packaging_does_not_fit", computed on read (FR-024). */
   packaging_warnings?: string[]
+  /** Spec 007: the idea this was made from, if any. */
+  source_idea_id?: string | null
+  source_idea_title?: string | null
+  source_idea_archived?: boolean | null
 }
 
 /**

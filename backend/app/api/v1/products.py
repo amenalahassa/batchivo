@@ -1,6 +1,5 @@
 """Product catalog API endpoints (sellable items composed of models)."""
 
-import re
 from datetime import date
 from decimal import Decimal
 from typing import Optional
@@ -10,14 +9,6 @@ import ipaddress
 import socket
 
 
-def _slugify(text: str) -> str:
-    """Convert text to a URL-friendly slug."""
-    slug = text.lower().strip()
-    slug = re.sub(r"[^\w\s-]", "", slug)
-    slug = re.sub(r"[\s_-]+", "-", slug)
-    return slug.strip("-")
-
-
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select
@@ -25,6 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import clock
+from app.services.idea_service import (
+    source_idea_fields,
+    source_idea_fields_for,
+    source_idea_fields_many,
+)
+from app.services.product_creation import create_product as create_product_record, slugify
 from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
 from app.auth.dependencies import (
     CurrentTenant,
@@ -116,6 +113,10 @@ from app.schemas.external_listing import (
     ProductSyncStatusResponse,
     SyncStatusChannel,
 )
+
+# Slugs and product creation live in the product creation service, shared with
+# idea conversion (spec 007, research R3).
+_slugify = slugify
 
 router = APIRouter()
 
@@ -267,6 +268,7 @@ async def product_with_cost(product: Product, db: AsyncSession, tenant: Tenant) 
 
     return {
         **{k: v for k, v in product.__dict__.items() if not k.startswith("_")},
+        **await source_idea_fields(db, tenant.id, product.source_idea_id),
         "models": model_responses,
         "child_products": child_product_responses,
         "pricing": pricing_responses,
@@ -309,106 +311,7 @@ async def create_product(
     SKU must be unique per tenant.
     Can optionally include models (product_models) and child products (bundles) in creation.
     """
-    # Check if SKU already exists for this tenant
-    existing = await db.execute(
-        select(Product).where(
-            Product.tenant_id == tenant.id,
-            Product.sku == product_data.sku,
-        )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Product with SKU '{product_data.sku}' already exists",
-        )
-
-    # Validate designer if provided
-    if product_data.designer_id:
-        designer = await db.get(Designer, product_data.designer_id)
-        if not designer or designer.tenant_id != tenant.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Designer {product_data.designer_id} not found",
-            )
-
-    # Extract models and child products for separate processing
-    models_data = product_data.models or []
-    child_products_data = product_data.child_products or []
-    product_dict = product_data.model_dump(exclude={"models", "child_products"})
-
-    fields = await refuse_observed_or_409(
-        db,
-        tenant,
-        entity_type="product",
-        entity=None,
-        changes=product_data.model_dump(exclude_unset=True),
-    )
-
-    # Create product instance
-    product = Product(
-        tenant_id=tenant.id,
-        **product_dict,
-    )
-
-    # Auto-generate seo_slug from name if not explicitly provided
-    if not product.seo_slug:
-        product.seo_slug = _slugify(product.name)
-
-    db.add(product)
-    await db.flush()  # Get the product ID
-    # Packaging and assembly figures the body named are this person's
-    # measurement, not an assumption (FR-001, task T229).
-    await record_operator_origins(
-        db,
-        tenant,
-        entity_type="product",
-        entity_id=product.id,
-        fields=fields,
-        user=user,
-        role=await role_in_tenant(db, user.id, tenant.id),
-    )
-
-    # Add models if provided
-    for model_data in models_data:
-        # Verify model exists and belongs to tenant
-        model = await db.get(Model, model_data.model_id)
-        if not model or model.tenant_id != tenant.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Model {model_data.model_id} not found",
-            )
-
-        product_model = ProductModel(
-            product_id=product.id,
-            model_id=model_data.model_id,
-            quantity=model_data.quantity,
-        )
-        db.add(product_model)
-
-    # Add child products if provided (for bundles)
-    for child_data in child_products_data:
-        # Verify child product exists and belongs to tenant
-        child_product = await db.get(Product, child_data.child_product_id)
-        if not child_product or child_product.tenant_id != tenant.id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Child product {child_data.child_product_id} not found",
-            )
-
-        # Prevent self-reference
-        if child_data.child_product_id == product.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="A product cannot contain itself",
-            )
-
-        product_component = ProductComponent(
-            parent_product_id=product.id,
-            child_product_id=child_data.child_product_id,
-            quantity=child_data.quantity,
-        )
-        db.add(product_component)
-
+    product = await create_product_record(db, tenant, user, product_data)
     await db.commit()
 
     # Reload with relationships
@@ -478,6 +381,9 @@ async def list_products(
 
         # Build response with calculated costs
         product_responses = []
+        source_ideas = await source_idea_fields_many(
+            db, tenant.id, {p.source_idea_id for p in products}
+        )
         for product in products:
             cost_breakdown = CostingService.calculate_product_cost(
                 product,
@@ -528,6 +434,7 @@ async def list_products(
                 "designer_slug": designer.slug if designer else None,
                 "designer_logo_url": designer.logo_url if designer else None,
                 **product_packaging_fields(product, tenant),
+                **source_idea_fields_for(source_ideas, product.source_idea_id),
             }
             product_responses.append(ProductResponse(**product_dict))
 
@@ -571,6 +478,9 @@ async def list_products(
 
     # Build response with calculated costs
     product_responses = []
+    source_ideas = await source_idea_fields_many(
+        db, tenant.id, {p.source_idea_id for p in products}
+    )
     for product in products:
         # Calculate cost breakdown
         cost_breakdown = CostingService.calculate_product_cost(
@@ -625,6 +535,7 @@ async def list_products(
             "designer_slug": designer.slug if designer else None,
             "designer_logo_url": designer.logo_url if designer else None,
             **product_packaging_fields(product, tenant),
+            **source_idea_fields_for(source_ideas, product.source_idea_id),
         }
         product_responses.append(ProductResponse(**product_dict))
 

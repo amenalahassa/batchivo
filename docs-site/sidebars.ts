@@ -23,6 +23,11 @@ const sidebars: SidebarsConfig = {
       label: 'Model Files & Versions',
     },
     {
+      type: 'doc',
+      id: 'ideas',
+      label: 'Ideas',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,

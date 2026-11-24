@@ -37,6 +37,8 @@ import { Consumables } from '@/pages/Consumables'
 import { Packaging } from '@/pages/Packaging'
 import { SalesChannels } from '@/pages/SalesChannels'
 import { Scenarios } from '@/pages/Scenarios'
+import { Ideas } from '@/pages/Ideas'
+import { IdeaDetailPage } from '@/pages/IdeaDetailPage'
 import { QueueProfitability } from '@/pages/QueueProfitability'
 import { SalesChannelDetailPage } from '@/pages/SalesChannelDetailPage'
 import { SalesChannelCreatePage } from '@/pages/SalesChannelCreatePage'
@@ -457,6 +459,31 @@ const scenariosRoute = new Route({
   ),
 })
 
+// Product ideas (spec 007): board/list, then one idea.
+const ideasRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/ideas',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Ideas />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
+const ideaDetailRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/ideas/$ideaId',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <IdeaDetailPage />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
 // The queue by profit per machine-hour (T234, FR-043).
 const queueProfitabilityRoute = new Route({
   getParentRoute: () => rootRoute,
@@ -759,6 +786,8 @@ const routeTree = rootRoute.addChildren([
   salesChannelEditRoute,     // /sales-channels/$channelId/edit before /sales-channels/$channelId
   salesChannelDetailRoute,   // Dynamic route last
   scenariosRoute,            // Catalogue-wide price-shock scenarios
+  ideasRoute,                // Product ideas board and list (static first)
+  ideaDetailRoute,           // One idea (dynamic last)
   queueProfitabilityRoute,   // The queue by profit per machine-hour
   categoriesRoute,           // Categories list
   designersRoute,            // Designers list

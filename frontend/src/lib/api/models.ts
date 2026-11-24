@@ -214,6 +214,10 @@ export interface Model {
   production_cost_updated_at?: string
   /** Length × width × height with where they came from (packaging advisor, FR-001). */
   dimensions?: Dimensions | null
+  /** Spec 007: the idea this was made from, if any. */
+  source_idea_id?: string | null
+  source_idea_title?: string | null
+  source_idea_archived?: boolean | null
 }
 
 export interface ModelDetail extends Model {

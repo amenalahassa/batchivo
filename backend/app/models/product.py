@@ -199,6 +199,16 @@ class Product(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
         comment="Time to assemble/package in minutes",
     )
 
+    source_idea_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        # use_alter: ideas points back here (converted_model_id / converted_product_id).
+        ForeignKey(
+            "ideas.id", ondelete="SET NULL", use_alter=True, name="fk_products_source_idea_id"
+        ),
+        nullable=True,
+        index=True,
+        comment="Idea this record was converted from (feature 007)",
+    )
+
     # Status
     is_active: Mapped[bool] = mapped_column(
         default=True,

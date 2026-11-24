@@ -1,6 +1,8 @@
 """
-Image storage service for product images.
+Image storage service, keyed by owner.
 
+Images live under ``{owner_type}/{owner_id}/`` -- products (the default, so
+existing product paths and URLs never move), ideas and generated assets.
 Supports local filesystem storage and S3/MinIO storage.
 """
 
@@ -30,6 +32,10 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 THUMBNAIL_SIZE = (300, 300)
 DISPLAY_SIZE = (800, 800)
 
+# Owners an image can be stored for. "products" also holds model thumbnails and
+# the shop logo, as it always has; their paths must not move (spec 007 FR-021).
+OWNER_TYPES = ("products", "ideas", "generations")
+
 
 class ImageStorageError(Exception):
     """Error during image storage operation."""
@@ -39,7 +45,7 @@ class ImageStorageError(Exception):
 
 class ImageStorage:
     """
-    Image storage service for product images.
+    Image storage service, keyed by owner type and owner id.
 
     Supports:
     - Local filesystem storage (development)
@@ -82,8 +88,11 @@ class ImageStorage:
         self,
         file_content: bytes,
         content_type: str,
-        product_id: str,
+        owner_id: Optional[str] = None,
         original_filename: Optional[str] = None,
+        *,
+        owner_type: str = "products",
+        product_id: Optional[str] = None,
     ) -> dict:
         """
         Save an image and generate thumbnail.
@@ -91,8 +100,10 @@ class ImageStorage:
         Args:
             file_content: Raw image bytes
             content_type: MIME type of the image
-            product_id: UUID of the product
+            owner_id: Id of the owner the image belongs to (a product by default)
             original_filename: Original filename for reference
+            owner_type: One of OWNER_TYPES; "products" keeps the historical paths
+            product_id: Deprecated alias of ``owner_id`` (existing callers)
 
         Returns:
             dict with:
@@ -104,6 +115,8 @@ class ImageStorage:
         Raises:
             ImageStorageError: If validation or save fails
         """
+        owner_dir = _owner_dir(owner_type, owner_id if owner_id is not None else product_id)
+
         # Validate content type
         if content_type not in ALLOWED_CONTENT_TYPES:
             raise ImageStorageError(
@@ -131,17 +144,33 @@ class ImageStorage:
         filename = f"{image_id}{extension}"
         thumbnail_filename = f"{image_id}_thumb{extension}"
 
-        # Create product directory
-        product_dir = f"products/{product_id}"
-
         if self.storage_type == "local":
             return await self._save_local(
-                img, file_content, product_dir, filename, thumbnail_filename, content_type
+                img, file_content, owner_dir, filename, thumbnail_filename, content_type
             )
         else:
             return await self._save_s3(
-                img, file_content, product_dir, filename, thumbnail_filename, content_type
+                img, file_content, owner_dir, filename, thumbnail_filename, content_type
             )
+
+    async def copy_image(self, source_url: str, owner_type: str, owner_id: str) -> dict:
+        """
+        Copy a stored image to another owner, through the same validation and
+        thumbnailing as an upload.
+
+        Raises:
+            ImageStorageError: If the source cannot be read or the copy fails
+        """
+        content, content_type = await self.get_image(source_url)
+        if content_type not in ALLOWED_CONTENT_TYPES:
+            content_type = _content_type_for(source_url)
+        return await self.save_image(
+            content,
+            content_type,
+            owner_id,
+            original_filename=source_url.rsplit("/", 1)[-1],
+            owner_type=owner_type,
+        )
 
     async def _save_local(
         self,
@@ -524,6 +553,22 @@ class ImageStorage:
             if e.response["Error"]["Code"] == "NoSuchKey":
                 raise ImageStorageError("Image not found")
             raise ImageStorageError(f"Failed to get image from S3: {e}")
+
+
+def _owner_dir(owner_type: str, owner_id: Optional[str]) -> str:
+    """Directory of an owner's images; refuses unknown owners and path tricks."""
+    if owner_type not in OWNER_TYPES:
+        raise ImageStorageError(f"Invalid owner type: {owner_type}")
+    owner = str(owner_id or "")
+    if not owner or "/" in owner or "\\" in owner or ".." in owner:
+        raise ImageStorageError("Invalid owner id")
+    return f"{owner_type}/{owner}"
+
+
+def _content_type_for(url: str) -> str:
+    """Content type from a stored image's extension."""
+    ext = url.rsplit(".", 1)[-1].lower()
+    return {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png"}.get(ext, "image/webp")
 
 
 # Singleton instance

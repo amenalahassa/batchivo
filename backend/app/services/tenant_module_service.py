@@ -30,6 +30,8 @@ DEFAULT_MODULES_BY_TYPE: dict[str, list[str]] = {
         # never-enabled).
         "consumables",
         "designers",
+        # Product ideas, on by default for 3D-print shops (spec 007, FR-001).
+        "ideas",
     ],
     TenantType.HAND_KNITTING.value: [
         "products",
@@ -65,6 +67,7 @@ ALL_MODULES = [
     "sales_channels",
     "consumables",
     "designers",
+    "ideas",
 ]
 
 

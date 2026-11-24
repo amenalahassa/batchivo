@@ -12,6 +12,9 @@ from app.models.model_file_version import ModelFileVersion
 from app.models.model_material import ModelMaterial
 from app.models.model_component import ModelComponent
 
+# Ideas (feature 007)
+from app.models.idea import Idea, IdeaEntry
+
 # Printers and printer-specific configurations
 from app.models.printer import Printer
 from app.models.printer_connection import ConnectionType, PrinterConnection
@@ -143,6 +146,9 @@ __all__ = [
     "ModelFileVersion",
     "ModelMaterial",
     "ModelComponent",
+    # Ideas
+    "Idea",
+    "IdeaEntry",
     # Printers
     "Printer",
     "PrinterConnection",
