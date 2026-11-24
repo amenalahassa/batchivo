@@ -12,7 +12,6 @@ endpoint has one thing to patch in tests and one place to catch a broker that
 cannot be reached.
 """
 
-import asyncio
 import logging
 from typing import Optional
 from uuid import UUID
@@ -20,6 +19,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.tasks.celery_app import celery_app
+from app.tasks.runner import run_in_task_loop
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def run_scenario_task(self, run_id: str, tenant_id: str) -> Optional[str]:
     reason or -- worse -- succeed quietly after an operator had already read
     the failure. Re-running is the operator's call, which is a new request.
     """
-    return asyncio.run(_run(UUID(str(run_id)), UUID(str(tenant_id))))
+    return run_in_task_loop(_run(UUID(str(run_id)), UUID(str(tenant_id))))
 
 
 def dispatch_run(run_id: UUID, tenant_id: UUID) -> Optional[str]:
