@@ -168,9 +168,8 @@ test.describe('Payment Settings', () => {
   })
 
   test('should show connection status', async ({ page }) => {
-    // Should indicate if Square is connected or not
-    const statusIndicator = page.locator('text=/connected|not connected|connect|setup/i')
-    await expect(statusIndicator.first()).toBeVisible({ timeout: 5000 })
+    // A new tenant has no Square credentials yet
+    await expect(page.getByText('Credentials not configured')).toBeVisible({ timeout: 5000 })
   })
 
   test('should have connect button for Square', async ({ page }) => {
@@ -195,19 +194,9 @@ test.describe('Settings Navigation', () => {
     await page.goto('/dashboard')
     await page.waitForLoadState('networkidle')
 
-    // Look for settings link/button in navigation
-    const settingsLink = page.getByRole('link', { name: /settings/i }).or(
-      page.getByRole('button', { name: /settings/i })
-    )
-    
-    if (await settingsLink.isVisible()) {
-      await settingsLink.click()
-      await expect(page).toHaveURL(/\/settings/)
-    } else {
-      // Direct navigation fallback
-      await page.goto('/settings')
-      await expect(page).toHaveURL(/\/settings/)
-    }
+    // The header's Settings entry is a link (wrapped in a button that renders too)
+    await page.getByRole('link', { name: 'Settings', exact: true }).click()
+    await expect(page).toHaveURL(/\/settings/)
   })
 
   test('should require authentication for settings', async ({ page }) => {

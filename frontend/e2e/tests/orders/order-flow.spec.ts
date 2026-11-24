@@ -8,6 +8,7 @@
  */
 
 import { test, expect, type Page, type Route } from '@playwright/test'
+import { isBackendAvailable, registerAndLogin } from '../../helpers'
 
 type E2EOrder = {
   id: string
@@ -23,9 +24,9 @@ type E2EOrder = {
   shipping_postcode: string
   shipping_country: string
   shipping_method: string
-  shipping_cost: number
-  subtotal: number
-  total: number
+  shipping_cost: string
+  subtotal: string
+  total: string
   currency: string
   payment_provider: string
   payment_id: string
@@ -45,8 +46,8 @@ type E2EOrder = {
     product_sku: string
     product_name: string
     quantity: number
-    unit_price: number
-    total_price: number
+    unit_price: string
+    total_price: string
   }[]
 }
 
@@ -69,9 +70,9 @@ function createPaidOrder(): E2EOrder {
     shipping_postcode: 'E1 1AA',
     shipping_country: 'GB',
     shipping_method: 'standard',
-    shipping_cost: 4.99,
-    subtotal: 25,
-    total: 29.99,
+    shipping_cost: '4.99',
+    subtotal: '25.00',
+    total: '29.99',
     currency: 'GBP',
     payment_provider: 'square',
     payment_id: 'sq_e2e_payment',
@@ -92,8 +93,8 @@ function createPaidOrder(): E2EOrder {
         product_sku: 'DRAGON-001',
         product_name: 'Articulated Dragon',
         quantity: 1,
-        unit_price: 25,
-        total_price: 25,
+        unit_price: '25.00',
+        total_price: '25.00',
       },
     ],
   }
@@ -108,19 +109,6 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 async function mockAuthenticatedOrderApi(page: Page, order: E2EOrder) {
-  await page.route('**/api/v1/users/me', async (route) => {
-    await json(route, {
-      id: '44444444-4444-4444-8444-444444444444',
-      email: 'staff@example.com',
-      name: 'E2E Staff',
-      tenant_id: '55555555-5555-4555-8555-555555555555',
-      tenant_name: 'E2E Print Shop',
-      currency_code: 'GBP',
-      currency_symbol: '£',
-      is_platform_admin: false,
-    })
-  })
-
   await page.route('**/api/v1/orders**', async (route) => {
     const url = new URL(route.request().url())
 
@@ -180,18 +168,10 @@ test.describe('Order Processing Workflow', () => {
   test.beforeEach(async ({ page }) => {
     const order = createPaidOrder()
 
-    await page.addInitScript(() => {
-      window.localStorage.setItem(
-        'batchivo_auth_tokens',
-        JSON.stringify({
-          accessToken: 'e2e-access-token',
-          refreshToken: 'e2e-refresh-token',
-          tokenType: 'bearer',
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        }),
-      )
-      window.localStorage.setItem('batchivo_remember_me', '1')
-    })
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
+    // A real session: the app checks it on every call, so a fake token in
+    // storage is signed out. Only the order data itself is mocked.
+    await registerAndLogin(page)
 
     await mockAuthenticatedOrderApi(page, order)
   })
@@ -199,18 +179,18 @@ test.describe('Order Processing Workflow', () => {
   test('shows a paid order and lets staff ship then deliver it', async ({ page }) => {
     await page.goto('/orders')
 
-    await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 2, name: 'Orders', exact: true })).toBeVisible()
     const orderRow = page.locator('tbody tr').filter({ hasText: 'ORD-E2E-001' })
     await expect(orderRow).toBeVisible()
 
-    await orderRow.getByRole('button', { name: /ship/i }).click()
+    await orderRow.getByRole('button', { name: 'Ship', exact: true }).click()
     await page.getByLabel(/tracking number/i).fill('RM123456789GB')
     await page.getByRole('button', { name: /mark as shipped/i }).click()
 
     await expect(page.getByRole('dialog')).toBeHidden()
     await expect(orderRow.getByText('shipped', { exact: true })).toBeVisible()
 
-    await orderRow.getByRole('button', { name: /delivered/i }).click()
+    await orderRow.getByRole('button', { name: 'Delivered', exact: true }).click()
 
     await expect(orderRow.getByText('delivered', { exact: true })).toBeVisible()
   })

@@ -5,6 +5,7 @@
  */
 
 import { test, expect, type Page, type Route } from '@playwright/test'
+import { isBackendAvailable, registerAndLogin } from '../../helpers'
 
 const productId = '33333333-3333-4333-8333-333333333333'
 const channelId = '55555555-5555-4555-8555-555555555555'
@@ -19,19 +20,6 @@ async function json(route: Route, body: unknown, status = 200) {
 }
 
 async function mockAuthenticatedCreateOrderApi(page: Page) {
-  await page.route('**/api/v1/users/me', async (route) => {
-    await json(route, {
-      id: '44444444-4444-4444-8444-444444444444',
-      email: 'staff@example.com',
-      name: 'E2E Staff',
-      tenant_id: '66666666-6666-4666-8666-666666666666',
-      tenant_name: 'E2E Print Shop',
-      currency_code: 'GBP',
-      currency_symbol: '£',
-      is_platform_admin: false,
-    })
-  })
-
   await page.route('**/api/v1/products**', async (route) => {
     await json(route, {
       products: [
@@ -98,9 +86,9 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
         shipping_postcode: 'LS1 1AA',
         shipping_country: 'United Kingdom',
         shipping_method: 'Royal Mail Tracked 48',
-        shipping_cost: 3.5,
-        subtotal: 24.5,
-        total: 28,
+        shipping_cost: '3.50',
+        subtotal: '24.50',
+        total: '28.00',
         currency: 'GBP',
         payment_provider: 'manual',
         payment_id: 'cash-123',
@@ -121,8 +109,8 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
             product_sku: 'DRAGON-001',
             product_name: 'Articulated Dragon',
             quantity: 2,
-            unit_price: 12.25,
-            total_price: 24.5,
+            unit_price: '12.25',
+            total_price: '24.50',
           },
         ],
       })
@@ -133,16 +121,19 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
       const body = route.request().postDataJSON() as {
         customer_email: string
         sales_channel_id: string
-        items: { product_id: string; quantity: number; unit_price: number }[]
+        shipping_cost: string
+        items: { product_id: string; quantity: number; unit_price: string }[]
       }
 
       expect(body.customer_email).toBe('manual@example.com')
       expect(body.sales_channel_id).toBe(channelId)
+      // Money crosses the wire as exact decimal strings, never numbers.
+      expect(body.shipping_cost).toBe('3.50')
       expect(body.items).toEqual([
         {
           product_id: productId,
           quantity: 2,
-          unit_price: 12.25,
+          unit_price: '12.25',
         },
       ])
 
@@ -160,9 +151,9 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
         shipping_postcode: 'LS1 1AA',
         shipping_country: 'United Kingdom',
         shipping_method: 'Royal Mail Tracked 48',
-        shipping_cost: 3.5,
-        subtotal: 24.5,
-        total: 28,
+        shipping_cost: '3.50',
+        subtotal: '24.50',
+        total: '28.00',
         currency: 'GBP',
         payment_provider: 'manual',
         payment_id: 'cash-123',
@@ -183,8 +174,8 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
             product_sku: 'DRAGON-001',
             product_name: 'Articulated Dragon',
             quantity: 2,
-            unit_price: 12.25,
-            total_price: 24.5,
+            unit_price: '12.25',
+            total_price: '24.50',
           },
         ],
       })
@@ -197,18 +188,10 @@ async function mockAuthenticatedCreateOrderApi(page: Page) {
 
 test.describe('Admin Order Creation', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(() => {
-      window.localStorage.setItem(
-        'batchivo_auth_tokens',
-        JSON.stringify({
-          accessToken: 'e2e-access-token',
-          refreshToken: 'e2e-refresh-token',
-          tokenType: 'bearer',
-          expiresAt: Date.now() + 60 * 60 * 1000,
-        }),
-      )
-      window.localStorage.setItem('batchivo_remember_me', '1')
-    })
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
+    // A real session: the app checks it on every call, so a fake token in
+    // storage is signed out. Only the order data itself is mocked.
+    await registerAndLogin(page)
 
     await mockAuthenticatedCreateOrderApi(page)
   })
@@ -216,7 +199,7 @@ test.describe('Admin Order Creation', () => {
   test('lets staff create a manual order and lands on the order detail page', async ({ page }) => {
     await page.goto('/orders/new')
 
-    await expect(page.getByRole('heading', { name: 'New Order' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'New Order', exact: true })).toBeVisible()
 
     await page.getByLabel('Customer email').fill('manual@example.com')
     await page.getByLabel('Customer name').fill('Manual Customer')

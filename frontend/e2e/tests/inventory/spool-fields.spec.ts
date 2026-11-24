@@ -1,708 +1,563 @@
 /**
  * E2E Tests: Inventory - Spool Field Validation
  *
- * Comprehensive tests verifying that each form field correctly
- * saves to the database and is displayed properly in the UI.
+ * Verifies that each field of the Filament Library's "Add Filament" form
+ * (mode "Batch of identical spools": one filament type + N spools) saves to
+ * the database and shows in the UI.
  *
  * Tests cover:
- * - Required fields (spool_id, brand, color, material_type, weights)
- * - Optional text fields (finish, pattern, storage_location, notes)
- * - Numeric fields (diameter, density, temps, prices, quantities)
+ * - Required fields (brand, color, material type, weight per spool) and the
+ *   auto-generated spool ID
+ * - Optional text fields (finish, notes, pattern, color hex, spool type)
+ * - Numeric fields (diameter, density, temps, number of spools)
  * - Boolean fields (translucent, glow)
- * - Select fields (material_type, spool_type, diameter)
- * - Date fields (purchase_date)
  *
- * Prerequisites:
- * - Frontend dev server running
- * - Backend API running on port 8000
- * - At least one material type in the database
+ * The form lives at /filaments (/inventory redirects there). Spool-level
+ * fields the old "Add Spool" dialog had (storage location, purchase date and
+ * price, empty spool weight, a hand-typed spool ID) are not part of it.
  */
 
-import { test, expect, Page } from '@playwright/test'
-import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { test, expect, Page, Locator } from '@playwright/test'
+import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
 
-// Generate unique test data with all fields populated
-function generateCompleteSpoolData() {
-  const timestamp = Date.now()
+// Each test signs up a fresh tenant first; leave room for a busy shared backend.
+test.describe.configure({ timeout: 90_000 })
+
+interface MaterialType {
+  id: string
+  code: string
+  name: string
+}
+
+interface FilamentType {
+  id: string
+  brand: string
+  color: string
+  color_hex: string | null
+  finish: string | null
+  pattern: string | null
+  spool_type: string | null
+  diameter: number
+  density: number | null
+  extruder_temp: number | null
+  bed_temp: number | null
+  translucent: boolean
+  glow: boolean
+  notes: string | null
+  material_type_code: string
+  material_type_name: string
+}
+
+interface SheetSpool {
+  id: string
+  spool_id: string
+  initial_weight: number
+  current_weight: number
+}
+
+interface BulkCreateResult {
+  filament_type_id: string
+  spool_ids: string[]
+}
+
+function generateSpoolData() {
+  const suffix = uniqueSuffix()
   return {
-    spool_id: `FIL-TEST-${timestamp}`,
-    brand: `TestBrand-${timestamp}`,
-    color: `Electric Blue ${timestamp}`,
-    color_hex: 'FF5733',
+    brand: `TestBrand-${suffix}`,
+    color: `Electric Blue ${suffix}`,
+    color_hex: '#FF5733',
     finish: 'Matte',
-    diameter: '1.75',
-    extruder_temp: 215,
-    bed_temp: 60,
-    translucent: true,
-    glow: true,
+    diameter: '2.85',
+    density: '1.27',
+    extruder_temp: '215',
+    bed_temp: '60',
     pattern: 'Marble',
-    spool_type: 'cardboard',
-    initial_weight: 1000,
-    current_weight: 850,
-    empty_spool_weight: 190,
-    purchase_date: '2025-01-15',
-    purchase_price: 24.99,
-    supplier: 'Amazon',
-    quantity: 2,
-    storage_location: 'Shelf A3 - Bin 12',
+    spool_type: 'Cardboard',
+    initial_weight: '1000',
     notes: 'Test spool with all fields populated for E2E validation',
   }
 }
 
-// Helper to get auth token from localStorage for API calls
-async function getAuthToken(page: Page): Promise<string | null> {
-  return await page.evaluate(() => {
-    return localStorage.getItem('access_token')
-  })
+/** Open "Add Filament" and pick "Batch of identical spools". */
+async function openBulkAddForm(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: 'Add Filament' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(
+    dialog.getByRole('heading', { name: 'How would you like to add filament?' })
+  ).toBeVisible()
+  await dialog.getByText('Batch of identical spools').click()
+  await expect(dialog.getByRole('heading', { name: 'Add filament — batch' })).toBeVisible()
+  return dialog
 }
 
-// Helper to open dialog and wait for it to be ready
-async function openAddSpoolDialog(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /add spool/i }).click()
-  await expect(page.getByRole('dialog')).toBeVisible()
-  // Wait for spool_id to be generated (input becomes enabled)
-  await expect(page.locator('#spool_id')).toBeEnabled({ timeout: 10000 })
+/** Pick a material type by its display name in the form's select. */
+async function selectMaterial(page: Page, dialog: Locator, name: string): Promise<void> {
+  await dialog.getByRole('combobox', { name: 'Material type' }).click()
+  await page.getByRole('option', { name, exact: true }).click()
+  await expect(dialog.getByRole('combobox', { name: 'Material type' })).toHaveText(name)
 }
 
-// Helper to fill spool ID with unique value
-async function fillUniqueSpoolId(page: Page, spoolId?: string): Promise<string> {
-  const uniqueId = spoolId || `FIL-TEST-${Date.now()}`
-  const idInput = page.locator('#spool_id')
-  await idInput.clear()
-  await idInput.fill(uniqueId)
-  return uniqueId
+async function firstMaterial(page: Page): Promise<MaterialType> {
+  const api = await apiAs(page)
+  const materials = await api.get<MaterialType[]>('/api/v1/spools/material-types')
+  expect(materials.length).toBeGreaterThan(0)
+  return materials[0]
 }
 
-// Helper to fill required spool fields
-async function fillRequiredSpoolFields(page: Page, data: { brand: string; color: string; initial_weight: number }): Promise<void> {
-  await page.locator('#brand').fill(data.brand)
-  await page.locator('#color').fill(data.color)
-  await page.locator('#initial_weight').fill(data.initial_weight.toString())
-
-  // Select material type
-  const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-  if (await materialSelect.isVisible()) {
-    await materialSelect.click()
-    await page.locator('[role="option"]').first().click()
-  }
+async function fillRequiredFields(
+  page: Page,
+  dialog: Locator,
+  data: { brand: string; color: string }
+): Promise<MaterialType> {
+  await dialog.getByLabel('Brand').fill(data.brand)
+  await dialog.getByLabel('Color', { exact: true }).fill(data.color)
+  const material = await firstMaterial(page)
+  await selectMaterial(page, dialog, material.name)
+  return material
 }
 
-// Helper to submit form and verify creation
-async function submitAndVerifySpool(page: Page, verifyText: string): Promise<void> {
-  await page.getByRole('button', { name: /create spool/i }).click()
-  await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-  // Wait for list to update after dialog closes
-  await page.waitForLoadState('networkidle')
-  // Scroll to top to see the newly created spool and verify it exists in DOM
-  await page.evaluate(() => window.scrollTo(0, 0))
-  const element = page.getByText(verifyText).first()
-  await element.scrollIntoViewIfNeeded()
-  await expect(element).toBeVisible({ timeout: 10000 })
+async function openMoreOptions(dialog: Locator): Promise<void> {
+  await dialog.getByRole('button', { name: 'More options' }).click()
+  await expect(dialog.getByLabel('Color hex')).toBeVisible()
+}
+
+/** Submit the form; returns what the backend created. */
+async function submitBulkForm(page: Page, dialog: Locator): Promise<BulkCreateResult> {
+  const created = page.waitForResponse(
+    (r) => r.url().includes('/api/v1/filament-types/bulk-create') && r.request().method() === 'POST'
+  )
+  await dialog.getByRole('button', { name: 'Add spools' }).click()
+  const response = await created
+  expect(response.status()).toBe(201)
+  await expect(dialog).toBeHidden({ timeout: 15000 })
+  return (await response.json()) as BulkCreateResult
+}
+
+async function getFilamentType(page: Page, id: string): Promise<FilamentType> {
+  const api = await apiAs(page)
+  return api.get<FilamentType>(`/api/v1/filament-types/${id}`)
+}
+
+async function getSpools(page: Page, filamentTypeId: string): Promise<SheetSpool[]> {
+  const api = await apiAs(page)
+  return api.get<SheetSpool[]>(`/api/v1/filament-types/${filamentTypeId}/spools`)
+}
+
+/** The filament type's row in the (desktop) library table. */
+function libraryRow(page: Page, brand: string): Locator {
+  return page.getByRole('row', { name: new RegExp(brand) })
+}
+
+/** Click a library row to open its read-only spool sheet. */
+async function openSpoolSheet(page: Page, brand: string): Promise<Locator> {
+  await libraryRow(page, brand).click()
+  const sheet = page.getByRole('dialog')
+  await expect(sheet.getByRole('columnheader', { name: 'Spool ID' })).toBeVisible()
+  return sheet
 }
 
 test.describe('Spool Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
+    await page.goto('/filaments')
+    await expect(page.getByRole('heading', { level: 1, name: 'Filament Library' })).toBeVisible()
   })
 
-  test('should save spool_id correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+  test('should generate and save spool_id correctly', async ({ page }) => {
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page, testData.spool_id)
-    await fillRequiredSpoolFields(page, testData)
-    await page.locator('#current_weight').fill(testData.current_weight.toString())
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    const created = await submitBulkForm(page, dialog)
 
-    await submitAndVerifySpool(page, testData.spool_id)
+    expect(created.spool_ids).toHaveLength(1)
+    const [spoolId] = created.spool_ids
+    expect(spoolId).toMatch(/^FIL-\d+$/)
+
+    const spools = await getSpools(page, created.filament_type_id)
+    expect(spools.map((s) => s.spool_id)).toEqual([spoolId])
+
+    const sheet = await openSpoolSheet(page, testData.brand)
+    await expect(sheet.getByRole('cell', { name: spoolId, exact: true })).toBeVisible()
   })
 
   test('should save brand correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-    const uniqueBrand = `UniqueBrandTest-${Date.now()}`
+    const testData = generateSpoolData()
+    const uniqueBrand = `UniqueBrandTest-${uniqueSuffix()}`
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(uniqueBrand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, { ...testData, brand: uniqueBrand })
+    const created = await submitBulkForm(page, dialog)
 
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
-
-    await submitAndVerifySpool(page, uniqueBrand)
+    await expect(libraryRow(page, uniqueBrand)).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).brand).toBe(uniqueBrand)
   })
 
   test('should save color correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-    const uniqueColor = `UniqueColor-${Date.now()}`
+    const testData = generateSpoolData()
+    const uniqueColor = `UniqueColor-${uniqueSuffix()}`
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(uniqueColor)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, { ...testData, color: uniqueColor })
+    const created = await submitBulkForm(page, dialog)
 
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
-
-    await submitAndVerifySpool(page, uniqueColor)
+    await expect(libraryRow(page, testData.brand).getByRole('cell', { name: uniqueColor, exact: true })).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).color).toBe(uniqueColor)
   })
 
   test('should save initial_weight and current_weight correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-    const initialWeight = 750
-    const currentWeight = 600
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(initialWeight.toString())
-    await page.locator('#current_weight').fill(currentWeight.toString())
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await dialog.getByLabel('Weight per spool (g)').fill('750')
+    const created = await submitBulkForm(page, dialog)
 
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
+    // A new spool starts full: current weight = initial weight.
+    const spools = await getSpools(page, created.filament_type_id)
+    expect(spools).toHaveLength(1)
+    expect(spools[0].initial_weight).toBe(750)
+    expect(spools[0].current_weight).toBe(750)
 
-    await page.getByRole('button', { name: /create spool/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    // Verify weights appear in the UI (usually shown as percentage or weight display)
-    await expect(page.getByText(testData.brand)).toBeVisible({ timeout: 10000 })
-
-    // Check for weight percentage (600/750 = 80%)
-    const expectedPercentage = Math.round((currentWeight / initialWeight) * 100)
-    // The UI might show this as "80%" or similar
-    const pageContent = await page.textContent('body')
-    expect(
-      pageContent?.includes(`${expectedPercentage}%`) ||
-        pageContent?.includes(`${currentWeight}`) ||
-        pageContent?.includes('g')
-    ).toBeTruthy()
+    const sheet = await openSpoolSheet(page, testData.brand)
+    await expect(sheet.getByRole('cell', { name: '750g / 750g' })).toBeVisible()
   })
 })
 
 test.describe('Spool Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
+    await page.goto('/filaments')
   })
 
   test('should save finish field correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await dialog.getByLabel('Finish').fill('Glossy Metallic')
+    const created = await submitBulkForm(page, dialog)
 
-    const finishInput = page.locator('#finish')
-    if (await finishInput.isVisible()) {
-      await finishInput.fill('Glossy Metallic')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).finish).toBe('Glossy Metallic')
   })
 
   test('should save pattern field correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Pattern').fill('Speckled Granite')
+    const created = await submitBulkForm(page, dialog)
 
-    const patternInput = page.locator('#pattern')
-    if (await patternInput.isVisible()) {
-      await patternInput.fill('Speckled Granite')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
-  })
-
-  test('should save storage_location correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
-
-    const locationInput = page.locator('#storage_location')
-    if (await locationInput.isVisible()) {
-      await locationInput.fill('Cabinet B - Drawer 3')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).pattern).toBe('Speckled Granite')
   })
 
   test('should save notes correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
+    const notes = 'This is a test note with special chars: !@#$%^&*()'
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await dialog.getByLabel('Notes').fill(notes)
+    const created = await submitBulkForm(page, dialog)
 
-    const notesInput = page.locator('#notes')
-    if (await notesInput.isVisible()) {
-      await notesInput.fill('This is a test note with special chars: !@#$%^&*()')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).notes).toBe(notes)
   })
 
   test('should save color_hex correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Color hex').fill('#FF5733')
+    const created = await submitBulkForm(page, dialog)
 
-    const colorHexInput = page.locator('#color_hex')
-    if (await colorHexInput.isVisible()) {
-      await colorHexInput.fill('FF5733')
-    }
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
+    // Stored without the '#'.
+    expect((await getFilamentType(page, created.filament_type_id)).color_hex).toBe('FF5733')
+  })
 
-    await submitAndVerifySpool(page, testData.brand)
+  test('should save spool_type correctly', async ({ page }) => {
+    const testData = generateSpoolData()
+
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Spool type').fill('Cardboard')
+    const created = await submitBulkForm(page, dialog)
+
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
+    expect((await getFilamentType(page, created.filament_type_id)).spool_type).toBe('Cardboard')
   })
 })
 
 test.describe('Spool Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
+    await page.goto('/filaments')
   })
 
   test('should save temperature fields correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Extruder temp (°C)').fill('215')
+    await dialog.getByLabel('Bed temp (°C)').fill('60')
+    const created = await submitBulkForm(page, dialog)
 
-    const extruderTemp = page.locator('#extruder_temp')
-    if (await extruderTemp.isVisible()) {
-      await extruderTemp.fill('215')
-    }
-
-    const bedTemp = page.locator('#bed_temp')
-    if (await bedTemp.isVisible()) {
-      await bedTemp.fill('60')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    const ft = await getFilamentType(page, created.filament_type_id)
+    expect(ft.extruder_temp).toBe(215)
+    expect(ft.bed_temp).toBe(60)
   })
 
-  test('should save empty_spool_weight correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+  test('should save density correctly', async ({ page }) => {
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Density (g/cm³)').fill('1.27')
+    const created = await submitBulkForm(page, dialog)
 
-    const emptySpoolWeight = page.locator('#empty_spool_weight')
-    if (await emptySpoolWeight.isVisible()) {
-      await emptySpoolWeight.fill('190')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    expect((await getFilamentType(page, created.filament_type_id)).density).toBe(1.27)
   })
 
-  test('should save purchase_price correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+  test('should save diameter correctly (1.75mm)', async ({ page }) => {
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Diameter (mm)').fill('1.75')
+    const created = await submitBulkForm(page, dialog)
 
-    const purchasePrice = page.locator('#purchase_price')
-    if (await purchasePrice.isVisible()) {
-      await purchasePrice.fill('24.99')
-    }
+    expect((await getFilamentType(page, created.filament_type_id)).diameter).toBe(1.75)
+  })
 
-    await submitAndVerifySpool(page, testData.brand)
+  test('should save diameter correctly (2.85mm)', async ({ page }) => {
+    const testData = generateSpoolData()
+
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Diameter (mm)').fill('2.85')
+    const created = await submitBulkForm(page, dialog)
+
+    expect((await getFilamentType(page, created.filament_type_id)).diameter).toBe(2.85)
   })
 
   test('should save quantity fields correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await dialog.getByRole('button', { name: 'Increase quantity' }).click()
+    await dialog.getByRole('button', { name: 'Increase quantity' }).click()
+    const created = await submitBulkForm(page, dialog)
 
-    const quantityInput = page.locator('#quantity')
-    if (await quantityInput.isVisible()) {
-      await quantityInput.fill('3')
+    expect(created.spool_ids).toHaveLength(3)
+    expect(await getSpools(page, created.filament_type_id)).toHaveLength(3)
+
+    await expect(libraryRow(page, testData.brand).getByText('3 spools')).toBeVisible()
+    const sheet = await openSpoolSheet(page, testData.brand)
+    for (const spoolId of created.spool_ids) {
+      await expect(sheet.getByRole('cell', { name: spoolId, exact: true })).toBeVisible()
     }
-
-    await submitAndVerifySpool(page, testData.brand)
   })
 })
 
 test.describe('Spool Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
+    await page.goto('/filaments')
   })
 
   test('should save translucent toggle correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Translucent').check()
+    const created = await submitBulkForm(page, dialog)
 
-    const translucentSwitch = page.locator('#translucent')
-    if (await translucentSwitch.isVisible()) {
-      await translucentSwitch.click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    const ft = await getFilamentType(page, created.filament_type_id)
+    expect(ft.translucent).toBe(true)
+    expect(ft.glow).toBe(false)
   })
 
   test('should save glow toggle correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Glow in the dark').check()
+    const created = await submitBulkForm(page, dialog)
 
-    const glowSwitch = page.locator('#glow')
-    if (await glowSwitch.isVisible()) {
-      await glowSwitch.click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    const ft = await getFilamentType(page, created.filament_type_id)
+    expect(ft.glow).toBe(true)
+    expect(ft.translucent).toBe(false)
   })
 
   test('should save both boolean fields when enabled', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Translucent').check()
+    await dialog.getByLabel('Glow in the dark').check()
+    const created = await submitBulkForm(page, dialog)
 
-    const translucentSwitch = page.locator('#translucent')
-    if (await translucentSwitch.isVisible()) {
-      await translucentSwitch.click()
-    }
-
-    const glowSwitch = page.locator('#glow')
-    if (await glowSwitch.isVisible()) {
-      await glowSwitch.click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    const ft = await getFilamentType(page, created.filament_type_id)
+    expect(ft.translucent).toBe(true)
+    expect(ft.glow).toBe(true)
   })
 })
 
 test.describe('Spool Field Validation - Select Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
-  })
-
-  test('should save diameter selection correctly (1.75mm)', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
-
-    const diameterSelect = page.locator('#diameter')
-    if (await diameterSelect.isVisible()) {
-      await diameterSelect.click()
-      await page.getByRole('option', { name: /1\.75/i }).click()
-    }
-
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
-  })
-
-  test('should save diameter selection correctly (2.85mm)', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
-
-    const diameterSelect = page.locator('#diameter')
-    if (await diameterSelect.isVisible()) {
-      await diameterSelect.click()
-      await page.getByRole('option', { name: /2\.85/i }).click()
-    }
-
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
-  })
-
-  test('should save spool_type selection correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
-
-    const spoolTypeSelect = page.locator('#spool_type')
-    if (await spoolTypeSelect.isVisible()) {
-      await spoolTypeSelect.click()
-      await page.getByRole('option', { name: /cardboard/i }).click()
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    await page.goto('/filaments')
   })
 
   test('should save different material types correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
+    const api = await apiAs(page)
+    const materials = await api.get<MaterialType[]>('/api/v1/spools/material-types')
+    expect(materials.length).toBeGreaterThan(1)
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
+    const dialog = await openBulkAddForm(page)
+    await dialog.getByLabel('Brand').fill(testData.brand)
+    await dialog.getByLabel('Color', { exact: true }).fill(testData.color)
 
-    // Click material type dropdown and check available options
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    await materialSelect.click()
+    // Every material type is offered.
+    await dialog.getByRole('combobox', { name: 'Material type' }).click()
+    await expect(page.getByRole('option')).toHaveCount(materials.length)
+    await page.keyboard.press('Escape')
 
-    // Check that material options are available
-    const options = page.locator('[role="option"]')
-    const optionCount = await options.count()
-    expect(optionCount).toBeGreaterThan(0)
+    // Pick one that is not the first (default-looking) option.
+    const material = materials[materials.length - 1]
+    await selectMaterial(page, dialog, material.name)
+    const created = await submitBulkForm(page, dialog)
 
-    // Select first available option
-    await options.first().click()
-
-    await submitAndVerifySpool(page, testData.brand)
-  })
-})
-
-test.describe('Spool Field Validation - Date Fields', () => {
-  test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
-    await page.goto('/inventory')
-  })
-
-  test('should save purchase_date correctly', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page)
-    await fillRequiredSpoolFields(page, testData)
-
-    const purchaseDate = page.locator('#purchase_date')
-    if (await purchaseDate.isVisible()) {
-      await purchaseDate.fill('2025-01-15')
-    }
-
-    await submitAndVerifySpool(page, testData.brand)
+    expect((await getFilamentType(page, created.filament_type_id)).material_type_code).toBe(
+      material.code
+    )
+    await expect(
+      libraryRow(page, testData.brand).getByRole('cell', { name: material.name, exact: true })
+    ).toBeVisible()
   })
 })
 
 test.describe('Spool Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
-    await page.goto('/inventory')
+    await page.goto('/filaments')
   })
 
   test('should save spool with ALL fields populated', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page, testData.spool_id)
+    const dialog = await openBulkAddForm(page)
+    const material = await fillRequiredFields(page, dialog, testData)
+    await dialog.getByLabel('Finish').fill(testData.finish)
+    await dialog.getByLabel('Notes').fill(testData.notes)
 
-    // Required fields
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill(testData.initial_weight.toString())
-    await page.locator('#current_weight').fill(testData.current_weight.toString())
+    await openMoreOptions(dialog)
+    await dialog.getByLabel('Color hex').fill(testData.color_hex)
+    await dialog.getByLabel('Diameter (mm)').fill(testData.diameter)
+    await dialog.getByLabel('Extruder temp (°C)').fill(testData.extruder_temp)
+    await dialog.getByLabel('Bed temp (°C)').fill(testData.bed_temp)
+    await dialog.getByLabel('Density (g/cm³)').fill(testData.density)
+    await dialog.getByLabel('Pattern').fill(testData.pattern)
+    await dialog.getByLabel('Spool type').fill(testData.spool_type)
+    await dialog.getByLabel('Translucent').check()
+    await dialog.getByLabel('Glow in the dark').check()
 
-    // Material type
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
+    await dialog.getByLabel('Weight per spool (g)').fill(testData.initial_weight)
+    await dialog.getByRole('button', { name: 'Increase quantity' }).click()
+
+    const created = await submitBulkForm(page, dialog)
+
+    // UI: the library row
+    const row = libraryRow(page, testData.brand)
+    await expect(row.getByRole('cell', { name: testData.color, exact: true })).toBeVisible()
+    await expect(row.getByRole('cell', { name: material.name, exact: true })).toBeVisible()
+    await expect(row.getByText('2 spools')).toBeVisible()
+
+    // Database: every field
+    const ft = await getFilamentType(page, created.filament_type_id)
+    expect(ft).toMatchObject({
+      brand: testData.brand,
+      color: testData.color,
+      color_hex: 'FF5733',
+      finish: testData.finish,
+      notes: testData.notes,
+      diameter: 2.85,
+      extruder_temp: 215,
+      bed_temp: 60,
+      density: 1.27,
+      pattern: testData.pattern,
+      spool_type: testData.spool_type,
+      translucent: true,
+      glow: true,
+      material_type_code: material.code,
+    })
+    const spools = await getSpools(page, created.filament_type_id)
+    expect(spools).toHaveLength(2)
+    for (const spool of spools) {
+      expect(spool.initial_weight).toBe(1000)
+      expect(spool.current_weight).toBe(1000)
     }
-
-    // Optional text fields
-    const finishInput = page.locator('#finish')
-    if (await finishInput.isVisible()) {
-      await finishInput.fill(testData.finish)
-    }
-
-    const colorHexInput = page.locator('#color_hex')
-    if (await colorHexInput.isVisible()) {
-      await colorHexInput.fill(testData.color_hex)
-    }
-
-    const patternInput = page.locator('#pattern')
-    if (await patternInput.isVisible()) {
-      await patternInput.fill(testData.pattern)
-    }
-
-    const storageInput = page.locator('#storage_location')
-    if (await storageInput.isVisible()) {
-      await storageInput.fill(testData.storage_location)
-    }
-
-    const notesInput = page.locator('#notes')
-    if (await notesInput.isVisible()) {
-      await notesInput.fill(testData.notes)
-    }
-
-    // Numeric fields
-    const extruderTemp = page.locator('#extruder_temp')
-    if (await extruderTemp.isVisible()) {
-      await extruderTemp.fill(testData.extruder_temp.toString())
-    }
-
-    const bedTemp = page.locator('#bed_temp')
-    if (await bedTemp.isVisible()) {
-      await bedTemp.fill(testData.bed_temp.toString())
-    }
-
-    const emptySpoolWeight = page.locator('#empty_spool_weight')
-    if (await emptySpoolWeight.isVisible()) {
-      await emptySpoolWeight.fill(testData.empty_spool_weight.toString())
-    }
-
-    const purchasePrice = page.locator('#purchase_price')
-    if (await purchasePrice.isVisible()) {
-      await purchasePrice.fill(testData.purchase_price.toString())
-    }
-
-    const quantityInput = page.locator('#quantity')
-    if (await quantityInput.isVisible()) {
-      await quantityInput.fill(testData.quantity.toString())
-    }
-
-    // Date fields
-    const purchaseDate = page.locator('#purchase_date')
-    if (await purchaseDate.isVisible()) {
-      await purchaseDate.fill(testData.purchase_date)
-    }
-
-    // Boolean fields (toggles)
-    const translucentSwitch = page.locator('#translucent')
-    if (await translucentSwitch.isVisible() && testData.translucent) {
-      await translucentSwitch.click()
-    }
-
-    const glowSwitch = page.locator('#glow')
-    if (await glowSwitch.isVisible() && testData.glow) {
-      await glowSwitch.click()
-    }
-
-    // Select fields
-    const diameterSelect = page.locator('#diameter')
-    if (await diameterSelect.isVisible()) {
-      await diameterSelect.click()
-      await page.getByRole('option', { name: new RegExp(testData.diameter) }).click()
-    }
-
-    const spoolTypeSelect = page.locator('#spool_type')
-    if (await spoolTypeSelect.isVisible()) {
-      await spoolTypeSelect.click()
-      await page.getByRole('option', { name: new RegExp(testData.spool_type, 'i') }).click()
-    }
-
-    // Submit form
-    await page.getByRole('button', { name: /create spool/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    // Verify spool was created with all data
-    await expect(page.getByText(testData.spool_id)).toBeVisible({ timeout: 10000 })
-    await expect(page.getByText(testData.brand)).toBeVisible()
-    await expect(page.getByText(testData.color)).toBeVisible()
   })
 
   test('should verify created spool data via API', async ({ page }) => {
-    const testData = generateCompleteSpoolData()
-    const uniqueSpoolId = `API-TEST-${Date.now()}`
+    const testData = generateSpoolData()
 
-    await openAddSpoolDialog(page)
-    await fillUniqueSpoolId(page, uniqueSpoolId)
+    const dialog = await openBulkAddForm(page)
+    await fillRequiredFields(page, dialog, testData)
+    await dialog.getByLabel('Finish').fill('Silk')
+    await dialog.getByLabel('Notes').fill('Test Location')
+    await dialog.getByLabel('Weight per spool (g)').fill('750')
+    const created = await submitBulkForm(page, dialog)
 
-    // Fill required fields
-    await page.locator('#brand').fill(testData.brand)
-    await page.locator('#color').fill(testData.color)
-    await page.locator('#initial_weight').fill('1000')
-    await page.locator('#current_weight').fill('750')
+    await expect(libraryRow(page, testData.brand)).toBeVisible()
 
-    // Add some optional fields
-    const finishInput = page.locator('#finish')
-    if (await finishInput.isVisible()) {
-      await finishInput.fill('Silk')
-    }
-
-    const storageInput = page.locator('#storage_location')
-    if (await storageInput.isVisible()) {
-      await storageInput.fill('Test Location')
-    }
-
-    const materialSelect = page.locator('#material_type_id, [name="material_type_id"]').first()
-    if (await materialSelect.isVisible()) {
-      await materialSelect.click()
-      await page.locator('[role="option"]').first().click()
-    }
-
-    await page.getByRole('button', { name: /create spool/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    // Wait for spool to appear
-    await expect(page.getByText(uniqueSpoolId)).toBeVisible({ timeout: 10000 })
-
-    // Verify via API call
-    const token = await getAuthToken(page)
-    if (token) {
-      const response = await page.request.get(`${API_URL}/api/v1/spools`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      })
-
-      expect(response.ok()).toBeTruthy()
-      const data = await response.json()
-
-      // Find our created spool
-      const createdSpool = data.spools.find((s: { spool_id: string }) => s.spool_id === uniqueSpoolId)
-      expect(createdSpool).toBeTruthy()
-
-      // Verify fields match
-      expect(createdSpool.brand).toBe(testData.brand)
-      expect(createdSpool.color).toBe(testData.color)
-      expect(parseFloat(createdSpool.initial_weight)).toBe(1000)
-      expect(parseFloat(createdSpool.current_weight)).toBe(750)
-      expect(createdSpool.finish).toBe('Silk')
-      expect(createdSpool.storage_location).toBe('Test Location')
-    }
+    // The spool, read back through the spools API with its filament type.
+    const api = await apiAs(page)
+    const data = await api.get<{
+      spools: Array<{
+        spool_id: string
+        initial_weight: number | string
+        current_weight: number | string
+        filament_type: FilamentType | null
+      }>
+    }>('/api/v1/spools')
+    const createdSpool = data.spools.find((s) => s.spool_id === created.spool_ids[0])
+    expect(createdSpool).toBeTruthy()
+    expect(parseFloat(String(createdSpool!.initial_weight))).toBe(750)
+    expect(parseFloat(String(createdSpool!.current_weight))).toBe(750)
+    expect(createdSpool!.filament_type).toMatchObject({
+      id: created.filament_type_id,
+      brand: testData.brand,
+      color: testData.color,
+      finish: 'Silk',
+      notes: 'Test Location',
+    })
   })
 })

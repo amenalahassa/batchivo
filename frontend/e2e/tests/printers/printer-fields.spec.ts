@@ -12,15 +12,16 @@
  */
 
 import { test, expect, Page } from '@playwright/test'
-import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
 
 function generateCompletePrinterData() {
   const timestamp = Date.now()
   return {
     name: `Test Printer ${timestamp}`,
     manufacturer: 'Bambu Lab',
-    model: 'X1 Carbon',
+    // The model is picked from the known-model list (stored as its key)
+    model: 'Bambu X1 Carbon',
+    modelKey: 'bambu_x1c',
     serial_number: `SN-${timestamp}`,
     bed_size_x_mm: 256,
     bed_size_y_mm: 256,
@@ -32,8 +33,17 @@ function generateCompletePrinterData() {
   }
 }
 
-async function getAuthToken(page: Page): Promise<string | null> {
-  return await page.evaluate(() => localStorage.getItem('access_token'))
+// Pick a model from the known-model select
+async function selectModel(page: Page, displayName: string): Promise<void> {
+  await page.locator('#model').click()
+  await page.getByRole('option', { name: displayName, exact: true }).click()
+}
+
+// The saved printer, read back through the API
+async function savedPrinter(page: Page, name: string) {
+  const api = await apiAs(page)
+  const data = await api.get('/api/v1/printers')
+  return data.printers.find((p: { name: string }) => p.name === name)
 }
 
 // Helper to open dialog and wait for it to be ready
@@ -51,9 +61,10 @@ async function fillRequiredPrinterFields(page: Page, name: string): Promise<void
 async function submitAndVerifyPrinter(page: Page, verifyText: string): Promise<void> {
   await page.getByRole('button', { name: /add printer$/i }).click()
   await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-  // Wait for list to update after dialog closes
-  await page.waitForLoadState('networkidle')
-  await expect(page.getByRole('cell', { name: verifyText })).toBeVisible({ timeout: 10000 })
+  // The name cell (exact: the row's cost button is labelled "Machine cost for <name>")
+  await expect(page.getByRole('cell', { name: verifyText, exact: true })).toBeVisible({
+    timeout: 10000,
+  })
 }
 
 test.describe('Printer Field Validation - Required Fields', () => {
@@ -64,7 +75,7 @@ test.describe('Printer Field Validation - Required Fields', () => {
   })
 
   test('should display printers page with add button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /add printer/i })).toBeVisible()
+    await expect(page.getByRole('button', { name: /add printer/i }).first()).toBeVisible()
   })
 
   test('should open add printer dialog', async ({ page }) => {
@@ -95,6 +106,7 @@ test.describe('Printer Field Validation - Optional Text Fields', () => {
     await fillRequiredPrinterFields(page, testData.name)
     await page.locator('#manufacturer').fill('Prusa Research')
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).manufacturer).toBe('Prusa Research')
   })
 
   test('should save model correctly', async ({ page }) => {
@@ -102,17 +114,24 @@ test.describe('Printer Field Validation - Optional Text Fields', () => {
 
     await openAddPrinterDialog(page)
     await fillRequiredPrinterFields(page, testData.name)
-    await page.locator('#model').fill('MK4')
+    await selectModel(page, 'Bambu X1 Carbon')
+    // Picking a known model fills in its manufacturer
+    await expect(page.locator('#manufacturer')).toHaveValue('Bambu Lab')
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).model).toBe('bambu_x1c')
   })
 
-  test('should save serial_number correctly', async ({ page }) => {
+  // App bug: the form has a Serial Number field, but the printer model and API
+  // schemas have no serial_number, so the value is silently dropped
+  // (.specify/bugs/e2e-stale-specs).
+  test.fixme('should save serial_number correctly', async ({ page }) => {
     const testData = generateCompletePrinterData()
 
     await openAddPrinterDialog(page)
     await fillRequiredPrinterFields(page, testData.name)
     await page.locator('#serial_number').fill('SN-TEST-12345')
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).serial_number).toBe('SN-TEST-12345')
   })
 
   test('should save notes correctly', async ({ page }) => {
@@ -121,12 +140,9 @@ test.describe('Printer Field Validation - Optional Text Fields', () => {
     await openAddPrinterDialog(page)
     await fillRequiredPrinterFields(page, testData.name)
 
-    const notesInput = page.locator('#notes')
-    if (await notesInput.isVisible()) {
-      await notesInput.fill('Test notes with special chars: @#$%')
-    }
-
+    await page.locator('#notes').fill('Test notes with special chars: @#$%')
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).notes).toBe('Test notes with special chars: @#$%')
   })
 })
 
@@ -146,6 +162,8 @@ test.describe('Printer Field Validation - Numeric Fields', () => {
     await page.locator('#bed_size_y_mm').fill('300')
     await page.locator('#bed_size_z_mm').fill('400')
     await submitAndVerifyPrinter(page, testData.name)
+    const saved = await savedPrinter(page, testData.name)
+    expect([saved.bed_size_x_mm, saved.bed_size_y_mm, saved.bed_size_z_mm]).toEqual([300, 300, 400])
   })
 
   test('should save nozzle_diameter_mm correctly', async ({ page }) => {
@@ -155,6 +173,7 @@ test.describe('Printer Field Validation - Numeric Fields', () => {
     await fillRequiredPrinterFields(page, testData.name)
     await page.locator('#nozzle_diameter_mm').fill('0.6')
     await submitAndVerifyPrinter(page, testData.name)
+    expect(Number((await savedPrinter(page, testData.name)).nozzle_diameter_mm)).toBe(0.6)
   })
 
   test('should save temperature defaults correctly', async ({ page }) => {
@@ -165,6 +184,8 @@ test.describe('Printer Field Validation - Numeric Fields', () => {
     await page.locator('#default_bed_temp').fill('65')
     await page.locator('#default_nozzle_temp').fill('215')
     await submitAndVerifyPrinter(page, testData.name)
+    const saved = await savedPrinter(page, testData.name)
+    expect([saved.default_bed_temp, saved.default_nozzle_temp]).toEqual([65, 215])
   })
 })
 
@@ -182,12 +203,9 @@ test.describe('Printer Field Validation - Boolean Fields', () => {
     await fillRequiredPrinterFields(page, testData.name)
 
     // is_active should be checked by default
-    const activeSwitch = page.locator('#is_active')
-    if (await activeSwitch.isVisible()) {
-      await expect(activeSwitch).toBeChecked()
-    }
-
+    await expect(page.locator('#is_active')).toBeChecked()
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).is_active).toBe(true)
   })
 
   test('should save is_active toggle when disabled', async ({ page }) => {
@@ -197,12 +215,10 @@ test.describe('Printer Field Validation - Boolean Fields', () => {
     await fillRequiredPrinterFields(page, testData.name)
 
     // Toggle off is_active
-    const activeSwitch = page.locator('#is_active')
-    if (await activeSwitch.isVisible()) {
-      await activeSwitch.click()
-    }
-
+    await page.locator('#is_active').click()
+    await expect(page.locator('#is_active')).not.toBeChecked()
     await submitAndVerifyPrinter(page, testData.name)
+    expect((await savedPrinter(page, testData.name)).is_active).toBe(false)
   })
 })
 
@@ -220,8 +236,8 @@ test.describe('Printer Field Validation - Complete Form', () => {
     await fillRequiredPrinterFields(page, testData.name)
 
     // Optional text fields
+    await selectModel(page, testData.model)
     await page.locator('#manufacturer').fill(testData.manufacturer)
-    await page.locator('#model').fill(testData.model)
     await page.locator('#serial_number').fill(testData.serial_number)
 
     // Build volume
@@ -235,12 +251,18 @@ test.describe('Printer Field Validation - Complete Form', () => {
     await page.locator('#default_nozzle_temp').fill(testData.default_nozzle_temp.toString())
 
     // Notes
-    const notesInput = page.locator('#notes')
-    if (await notesInput.isVisible()) {
-      await notesInput.fill(testData.notes)
-    }
+    await page.locator('#notes').fill(testData.notes)
 
     await submitAndVerifyPrinter(page, testData.name)
+    const saved = await savedPrinter(page, testData.name)
+    expect(saved).toMatchObject({
+      manufacturer: testData.manufacturer,
+      model: testData.modelKey,
+      bed_size_x_mm: testData.bed_size_x_mm,
+      default_bed_temp: testData.default_bed_temp,
+      default_nozzle_temp: testData.default_nozzle_temp,
+      notes: testData.notes,
+    })
   })
 
   test('should verify created printer data via API', async ({ page }) => {
@@ -251,27 +273,13 @@ test.describe('Printer Field Validation - Complete Form', () => {
     await page.locator('#manufacturer').fill('Test Manufacturer')
     await page.locator('#bed_size_x_mm').fill('250')
 
-    await page.getByRole('button', { name: /add printer$/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-    await page.waitForLoadState('networkidle')
-
-    await expect(page.getByRole('cell', { name: uniqueName })).toBeVisible({ timeout: 10000 })
+    await submitAndVerifyPrinter(page, uniqueName)
 
     // Verify via API
-    const token = await getAuthToken(page)
-    if (token) {
-      const response = await page.request.get(`${API_URL}/api/v1/printers`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-
-      expect(response.ok()).toBeTruthy()
-      const data = await response.json()
-
-      const created = data.find((p: { name: string }) => p.name === uniqueName)
-      expect(created).toBeTruthy()
-      expect(created.manufacturer).toBe('Test Manufacturer')
-      expect(created.bed_size_x_mm).toBe(250)
-    }
+    const created = await savedPrinter(page, uniqueName)
+    expect(created).toBeTruthy()
+    expect(created.manufacturer).toBe('Test Manufacturer')
+    expect(created.bed_size_x_mm).toBe(250)
   })
 })
 
