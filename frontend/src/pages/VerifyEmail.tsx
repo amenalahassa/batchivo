@@ -2,7 +2,7 @@
  * Email verification page - Handles token from verification link
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -23,8 +23,15 @@ export function VerifyEmail() {
   const [resendSuccess, setResendSuccess] = useState(false)
   const navigate = useNavigate()
   const { refreshUser } = useAuth()
+  // The token is single-use: verify it once per mount. React StrictMode runs this
+  // effect twice in development, and two concurrent calls race on the same token
+  // (one fails with a 500, sometimes both).
+  const verificationStarted = useRef(false)
 
   useEffect(() => {
+    if (verificationStarted.current) return
+    verificationStarted.current = true
+
     const urlParams = new URLSearchParams(window.location.search)
     const token = urlParams.get('token')
     const email = urlParams.get('email')
