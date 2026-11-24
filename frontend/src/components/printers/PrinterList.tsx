@@ -28,6 +28,10 @@ import { Badge } from '@/components/ui/badge'
 import { PrinterFormDialog } from './PrinterFormDialog'
 import { DeletePrinterDialog } from './DeletePrinterDialog'
 import { PrinterCostPolicyDialog } from './PrinterCostPolicyDialog'
+import { PrinterConnectionDialog } from './PrinterConnectionDialog'
+import { PrinterSendActions } from './PrinterSendActions'
+import { PrinterSendsDialog } from './PrinterSendsDialog'
+import { SendPrintDialog } from './SendPrintDialog'
 
 export function PrinterList() {
   const [search, setSearch] = useState('')
@@ -38,6 +42,10 @@ export function PrinterList() {
   const [deletingPrinter, setDeletingPrinter] = useState<Printer | null>(null)
   const [costDialogOpen, setCostDialogOpen] = useState(false)
   const [costPrinter, setCostPrinter] = useState<Printer | null>(null)
+  // Print send (spec 011): which printer each dialog is open for
+  const [connectionPrinter, setConnectionPrinter] = useState<Printer | null>(null)
+  const [sendPrinter, setSendPrinter] = useState<Printer | null>(null)
+  const [sendsPrinter, setSendsPrinter] = useState<Printer | null>(null)
 
   const { user } = useAuth()
   // The hourly rate is a monetary figure (FR-007a). A member or viewer opens
@@ -243,7 +251,7 @@ export function PrinterList() {
                     )}
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={() => handleEdit(printer)}>
                       <Edit className="h-3 w-3 mr-1" />
                       Edit
@@ -256,6 +264,12 @@ export function PrinterList() {
                       <Gauge className="h-3 w-3 mr-1" />
                       Machine cost
                     </Button>
+                    <PrinterSendActions
+                      printer={printer}
+                      onConnection={setConnectionPrinter}
+                      onSend={setSendPrinter}
+                      onSends={setSendsPrinter}
+                    />
                     <Button
                       variant="outline"
                       size="sm"
@@ -335,6 +349,13 @@ export function PrinterList() {
                           >
                             <Gauge className="h-4 w-4" />
                           </Button>
+                          <PrinterSendActions
+                            printer={printer}
+                            compact
+                            onConnection={setConnectionPrinter}
+                            onSend={setSendPrinter}
+                            onSends={setSendsPrinter}
+                          />
                           <Button
                             variant="ghost"
                             size="sm"
@@ -374,6 +395,31 @@ export function PrinterList() {
         printerName={costPrinter?.name}
         canEdit={canEditCost}
       />
+
+      {connectionPrinter && (
+        <PrinterConnectionDialog
+          open
+          onOpenChange={(open) => !open && setConnectionPrinter(null)}
+          printerId={connectionPrinter.id}
+          printerName={connectionPrinter.name}
+        />
+      )}
+      {sendPrinter && (
+        <SendPrintDialog
+          open
+          onOpenChange={(open) => !open && setSendPrinter(null)}
+          printerId={sendPrinter.id}
+          printerName={sendPrinter.name}
+        />
+      )}
+      {sendsPrinter && (
+        <PrinterSendsDialog
+          open
+          onOpenChange={(open) => !open && setSendsPrinter(null)}
+          printerId={sendsPrinter.id}
+          printerName={sendsPrinter.name}
+        />
+      )}
     </div>
   )
 }

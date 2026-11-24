@@ -122,3 +122,36 @@ export interface PrinterStateMessage {
   type: 'printer_state';
   data: PrinterLiveState[];
 }
+
+/**
+ * Printer connection settings (Bambu LAN, Moonraker, ...)
+ *
+ * The access code is masked in responses; send it only when the operator
+ * types a new one.
+ */
+export interface PrinterConnection {
+  id: string;
+  printer_id: string;
+  connection_type: string;
+  serial_number?: string | null;
+  ip_address?: string | null;
+  port: number;
+  access_code?: string | null;
+  ams_count: number;
+  is_enabled: boolean;
+  /** Operator-declared Bambu Developer Mode (spec 011). */
+  developer_mode: boolean;
+  /** Developer Mode on a Bambu LAN connection: prints can be sent. */
+  can_send_prints: boolean;
+  is_connected: boolean;
+  connection_error?: string | null;
+}
+
+export interface PrinterConnectionSave {
+  connection_type: string;
+  serial_number?: string | null;
+  ip_address?: string | null;
+  access_code?: string;
+  ams_count?: number;
+  developer_mode: boolean;
+}

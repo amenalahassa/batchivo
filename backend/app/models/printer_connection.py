@@ -119,6 +119,16 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
         comment="Number of AMS units connected (0-4)",
     )
 
+    # Developer Mode (spec 011): declared by the operator; LAN printers in this
+    # mode accept file uploads and start commands from Batchivo.
+    developer_mode: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+        comment="Operator-declared Bambu Developer Mode (enables print send, disables cloud)",
+    )
+
     # Connection status (runtime state)
     is_enabled: Mapped[bool] = mapped_column(
         Boolean,
@@ -182,6 +192,11 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
             ConnectionType.BAMBU_LAN.value,
             ConnectionType.BAMBU_CLOUD.value,
         )
+
+    @property
+    def can_send_prints(self) -> bool:
+        """Whether Batchivo may send prints to this printer (spec 011, FR-012)."""
+        return bool(self.developer_mode) and self.connection_type == ConnectionType.BAMBU_LAN.value
 
     @property
     def mqtt_topic_prefix(self) -> Optional[str]:

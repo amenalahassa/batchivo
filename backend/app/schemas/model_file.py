@@ -191,6 +191,9 @@ class LocalPathValidationResponse(BaseModel):
 class ThreeMFFilamentUse(BaseModel):
     """One filament a plate uses, as the slicer reports it (spec 004, T063)."""
 
+    id: Optional[int] = Field(
+        None, description="Slicer filament number (1-based) as in slice_info.config"
+    )
     type: Optional[str] = Field(None, description="Material, e.g. PLA")
     color: Optional[str] = Field(None, description="Colour as #RRGGBB")
     grams: Optional[float] = Field(None, description="Grams of this filament on the plate")

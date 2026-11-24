@@ -23,6 +23,7 @@ from app.models.model_printer_config import ModelPrinterConfig
 
 # Print queue
 from app.models.print_job import JobPriority, JobStatus, PrintJob
+from app.models.print_send import PrintSend
 
 # Product (sellable items composed of models and/or other products)
 from app.models.category import Category, product_categories
@@ -157,6 +158,7 @@ __all__ = [
     "ModelPrinterConfig",
     # Print queue
     "PrintJob",
+    "PrintSend",
     "JobPriority",
     "JobStatus",
     # Products (sellable items)

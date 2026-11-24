@@ -47,6 +47,9 @@ NOT_MONEY_PATHS: dict[str, str] = {
     "platform_admin": "counts tenants' orders and products for the admin console",
     "inventory_transaction": "moves grams between spools; the money is `run_costs`'",
     "print_queue_service": "ranks jobs by the margin the engine serves; computes none",
+    "print_send_service": (
+        "sends a sliced file to a printer and proposes grams to deduct; computes no money"
+    ),
     "production_run": "the run workflow; its money lives in `run_costs`, which is listed",
     "item_dimensions": "reads a product's and its packaging's sizes; computes no money",
     "model_file_version_service": (

@@ -64,6 +64,12 @@ async def lifespan(app: FastAPI):
         setup_metrics(prometheus_port=9090)
         logger.info("OpenTelemetry metrics enabled")
 
+    # Follow prints sent to Bambu printers through their MQTT status (spec 011)
+    from app.services.bambu_mqtt import get_bambu_mqtt_service
+    from app.services.print_send_tracker import register_print_send_tracker
+
+    register_print_send_tracker(get_bambu_mqtt_service())
+
     yield
 
     # Shutdown
@@ -233,6 +239,7 @@ from app.api.v1 import (
     platform,
     pricing_policy,
     print_queue,
+    print_sends,
     printer_bambu,
     printer_ws,
     printers,
@@ -300,6 +307,11 @@ app.include_router(
     printer_bambu.router,
     prefix=f"{settings.api_v1_prefix}/printers",
     tags=["printers-bambu"],
+)
+app.include_router(
+    print_sends.router,
+    prefix=f"{settings.api_v1_prefix}/printers",
+    tags=["printers-send"],
 )
 # WebSocket endpoint — mounted at /ws/printers (no /api/v1 prefix)
 app.include_router(printer_ws.router, tags=["printers-ws"])
