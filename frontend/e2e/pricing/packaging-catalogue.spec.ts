@@ -14,13 +14,14 @@
 
 import { expect, test } from '@playwright/test'
 
-import { OWNER_STATE } from './pricing-helpers'
+import { OWNER_STATE, openPricingSettings } from './pricing-helpers'
 
 test.use({ storageState: OWNER_STATE })
 
 test('the standard catalogue is added and listed as defaults', async ({ page }) => {
   await page.goto('/packaging')
-  await expect(page.getByRole('heading', { name: 'Packaging' })).toBeVisible()
+  // Exact: the list's "Your packaging" card title is a heading too.
+  await expect(page.getByRole('heading', { name: 'Packaging', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Add standard packaging' }).click()
   const dialog = page.getByRole('dialog', { name: 'Add standard packaging' })
@@ -45,17 +46,22 @@ test('the standard catalogue is added and listed as defaults', async ({ page }) 
 })
 
 test('the suggested carrier is added and a default service chosen', async ({ page }) => {
-  await page.goto('/settings')
+  // Settings → Postage is the postage panel of the Pricing tab.
+  await openPricingSettings(page)
   const panel = page.getByTestId('shipping-profiles-panel')
   await panel.scrollIntoViewIfNeeded()
   const section = panel.getByTestId('carrier-section')
   await expect(section).toBeVisible()
 
+  // Decide on loaded data: the suggestion (first run) or the carrier's
+  // services (a rerun, the carrier already added).
   const suggestion = section.getByRole('button', { name: /^Add .+ postage$/ })
+  const services = section.getByTestId('carrier-services')
+  await expect(suggestion.or(services)).toBeVisible()
   if (await suggestion.isVisible()) {
     await suggestion.click()
   }
-  await expect(section.getByTestId('carrier-services')).toBeVisible()
+  await expect(services).toBeVisible()
   await expect(panel.getByTestId('seeded-profile').first()).toBeVisible()
 
   const defaultService = section.getByRole('combobox', { name: 'Default service' })

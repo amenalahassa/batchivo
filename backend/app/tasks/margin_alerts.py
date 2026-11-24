@@ -38,7 +38,6 @@ revision is ``variance_service``'s proposal for an operator to accept
 (FR-042b) -- and no price changes. Telemetry proposes; it does not reprice.
 """
 
-import asyncio
 import logging
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any, Optional
@@ -48,6 +47,7 @@ from sqlalchemy import select
 
 from app.core import clock
 from app.tasks.celery_app import celery_app
+from app.tasks.runner import run_in_task_loop
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -222,7 +222,7 @@ def sweep_margin_alerts_task(self: Any, tenant_id: Optional[str] = None) -> int:
     ``max_retries=0``: the sweep is read-only and runs again on the schedule,
     so a retry would only duplicate the warnings an operator has already read.
     """
-    return asyncio.run(_sweep_all(UUID(str(tenant_id)) if tenant_id else None))
+    return run_in_task_loop(_sweep_all(UUID(str(tenant_id)) if tenant_id else None))
 
 
 __all__ = [
