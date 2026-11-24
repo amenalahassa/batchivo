@@ -10,7 +10,7 @@
 import { expect, test } from '@playwright/test'
 
 import { E2E_CHANNEL } from '../config'
-import { OWNER_STATE, openProduct } from './pricing-helpers'
+import { OWNER_STATE, baseChannelRow, openProduct } from './pricing-helpers'
 
 test.use({ storageState: OWNER_STATE })
 
@@ -43,7 +43,10 @@ test.describe('the margin on one price row', () => {
   test('itemises fees, sets postage against shipping, and names its basis', async ({ page }) => {
     await openProduct(page)
 
-    await page.getByRole('button', { name: `Margin breakdown for ${E2E_CHANNEL}` }).click()
+    // The base (1+) row: the tier journey may have added a 10+ row on the channel
+    await baseChannelRow(page)
+      .getByRole('button', { name: `Margin breakdown for ${E2E_CHANNEL}` })
+      .click()
     const dialog = page.getByRole('dialog', { name: 'Margin breakdown' })
 
     await expect(dialog.getByText('transaction')).toBeVisible()

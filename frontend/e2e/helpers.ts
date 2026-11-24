@@ -26,7 +26,7 @@ export async function isBackendAvailable(): Promise<boolean> {
  * Uses the backend's e2e-only hook, which answers 404 unless the backend runs
  * with E2E_TEST_HOOKS_ENABLED=true (never in production).
  */
-async function fetchVerificationToken(page: Page, email: string): Promise<string> {
+export async function fetchVerificationToken(page: Page, email: string): Promise<string> {
   const response = await page.request.get(
     `${API_URL}/api/v1/onboarding/test/verification-token`,
     { params: { email } }
@@ -95,16 +95,10 @@ export async function registerAndLogin(page: Page, maxRetries: number = 3): Prom
     // Real verification: the page calls POST /verify-email and stores the JWTs.
     const token = await fetchVerificationToken(page, testEmail)
     await page.goto(`/verify-email?token=${encodeURIComponent(token)}`)
-    const storedTokens = await page.waitForFunction(
-      () =>
-        localStorage.getItem('batchivo_auth_tokens') ??
-        sessionStorage.getItem('batchivo_auth_tokens'),
-      undefined,
-      { timeout: 15000 }
-    )
-    const { accessToken } = JSON.parse((await storedTokens.jsonValue()) as string) as {
-      accessToken: string
-    }
+    // Poll from Node until the page has stored the session. Not waitForFunction():
+    // the page loads zone.js, and on WebKit that turns the predicate's result into
+    // a (truthy) promise object, so the wait returns before anything is stored.
+    const accessToken = await pollAccessToken(page, 15000)
 
     // A new signup is a "generic" business until setup step 2 picks the craft,
     // which decides the modules. Pick 3D printing through that real wizard step,
@@ -163,4 +157,62 @@ export async function clickAndNavigate(
   await page.click(selector)
   await page.waitForURL(expectedUrl, { timeout })
   await waitForPageStable(page)
+}
+
+/**
+ * Read the signed-in user's access token from browser storage.
+ */
+export async function getAccessToken(page: Page): Promise<string> {
+  const token = await readAccessToken(page)
+  if (!token) throw new Error('No stored session: call registerAndLogin first')
+  return token
+}
+
+async function readAccessToken(page: Page): Promise<string | null> {
+  const raw = await page.evaluate(
+    () =>
+      localStorage.getItem('batchivo_auth_tokens') ??
+      sessionStorage.getItem('batchivo_auth_tokens')
+  )
+  return typeof raw === 'string' ? (JSON.parse(raw) as { accessToken: string }).accessToken : null
+}
+
+async function pollAccessToken(page: Page, timeout: number): Promise<string> {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    const token = await readAccessToken(page).catch(() => null) // navigation in flight
+    if (token) return token
+    await page.waitForTimeout(200)
+  }
+  throw new Error(`No stored session ${timeout / 1000}s after opening the verification link`)
+}
+
+/**
+ * Authorized JSON API calls as the signed-in user, for seeding test data that
+ * a spec needs but does not test (a product to attach a category to, …).
+ */
+export async function apiAs(page: Page) {
+  const headers = { Authorization: `Bearer ${await getAccessToken(page)}` }
+  async function call<T>(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, data?: unknown): Promise<T> {
+    const response = await page.request[method](`${API_URL}${path}`, { headers, data })
+    if (!response.ok()) {
+      throw new Error(`${method.toUpperCase()} ${path} answered HTTP ${response.status()}: ${await response.text()}`)
+    }
+    return (response.status() === 204 ? undefined : await response.json()) as T
+  }
+  // Responses are untyped JSON: specs read the few fields they assert on.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  return {
+    get: <T = any>(path: string) => call<T>('get', path),
+    post: <T = any>(path: string, data?: unknown) => call<T>('post', path, data ?? {}),
+    put: <T = any>(path: string, data?: unknown) => call<T>('put', path, data ?? {}),
+    patch: <T = any>(path: string, data?: unknown) => call<T>('patch', path, data ?? {}),
+    delete: <T = any>(path: string) => call<T>('delete', path),
+  }
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+}
+
+/** A unique suffix for test data names. */
+export function uniqueSuffix(): string {
+  return `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`
 }

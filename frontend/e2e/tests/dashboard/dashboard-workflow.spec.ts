@@ -72,40 +72,25 @@ test.describe('Dashboard Navigation', () => {
     await page.waitForLoadState('networkidle')
   })
 
+  // The desktop header navigation. Its entries are links (the Button wrapper
+  // around each one renders as a button too, so match the link role only).
+  const navLink = (page: import('@playwright/test').Page, name: string) =>
+    page.getByRole('navigation').getByRole('link', { name, exact: true })
+
   test('should navigate to inventory from dashboard', async ({ page }) => {
-    // Look for inventory link in navigation
-    const inventoryLink = page.getByRole('link', { name: /inventory/i }).or(
-      page.getByRole('button', { name: /inventory/i })
-    )
-    
-    if (await inventoryLink.isVisible()) {
-      await inventoryLink.click()
-      await expect(page).toHaveURL(/\/inventory/)
-    }
+    // The filament inventory lives at /filaments (/inventory redirects there)
+    await navLink(page, 'Filaments').click()
+    await expect(page).toHaveURL(/\/filaments/)
   })
 
   test('should navigate to production runs from dashboard', async ({ page }) => {
-    // Look for production runs link
-    const productionLink = page.getByRole('link', { name: /production/i }).or(
-      page.getByRole('button', { name: /production/i })
-    )
-    
-    if (await productionLink.isVisible()) {
-      await productionLink.click()
-      await expect(page).toHaveURL(/\/production/)
-    }
+    await navLink(page, 'Runs').click()
+    await expect(page).toHaveURL(/\/production-runs/)
   })
 
   test('should navigate to products from dashboard', async ({ page }) => {
-    // Look for products link
-    const productsLink = page.getByRole('link', { name: /products/i }).or(
-      page.getByRole('button', { name: /products/i })
-    )
-    
-    if (await productsLink.isVisible()) {
-      await productsLink.click()
-      await expect(page).toHaveURL(/\/products/)
-    }
+    await navLink(page, 'Products').click()
+    await expect(page).toHaveURL(/\/products/)
   })
 
   test('should navigate to settings from dashboard', async ({ page }) => {
@@ -165,8 +150,8 @@ test.describe('Dashboard Loading States', () => {
     await page.waitForLoadState('networkidle')
     
     // Verify page has loaded (no error message)
-    const errorMessage = page.locator('text=/error|failed|something went wrong/i')
-    await expect(errorMessage).not.toBeVisible({ timeout: 5000 })
+    // ("Failed Today" is a stat card title, not an error)
+    await expect(page.getByText(/something went wrong|failed to load/i)).toHaveCount(0)
     
     // Main content should be visible
     await expect(page.getByRole('main')).toBeVisible()
@@ -205,17 +190,12 @@ test.describe('Dashboard Responsive Design', () => {
     // Dashboard should still be accessible
     await expect(page.getByRole('main')).toBeVisible()
     
-    // Navigation might be in a hamburger menu
-    const hamburgerMenu = page.locator('button[aria-label*="menu" i]').or(
-      page.locator('button[class*="menu"]')
-    )
-    
-    // Either navigation is visible or hamburger menu exists
-    const nav = page.locator('nav')
-    const navVisible = await nav.isVisible().catch(() => false)
-    const hamburgerVisible = await hamburgerMenu.isVisible().catch(() => false)
-    
-    expect(navVisible || hamburgerVisible).toBeTruthy()
+    // The header navigation collapses into a menu button that opens a sheet
+    await expect(page.getByRole('navigation')).toBeHidden()
+    await page.locator('header button:has(svg.lucide-menu)').click()
+    const menu = page.getByRole('dialog', { name: 'Menu' })
+    await expect(menu).toBeVisible()
+    await expect(menu.getByRole('link', { name: 'Products', exact: true })).toBeVisible()
   })
 
   test('should be usable on tablet viewport', async ({ page }) => {

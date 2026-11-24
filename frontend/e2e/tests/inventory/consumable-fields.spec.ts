@@ -12,15 +12,34 @@
  * - Select: category, unit_of_measure
  */
 
-import { test, expect, Page } from '@playwright/test'
-import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { test, expect, Page, Locator } from '@playwright/test'
+import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+
+// Each test signs up a fresh tenant first; leave room for a busy shared backend.
+test.describe.configure({ timeout: 90_000 })
+
+interface Consumable {
+  sku: string
+  name: string
+  description: string | null
+  category: string | null
+  unit_of_measure: string
+  current_cost_per_unit: string | number | null
+  quantity_on_hand: number
+  reorder_point: number | null
+  reorder_quantity: number | null
+  preferred_supplier: string | null
+  supplier_sku: string | null
+  supplier_url: string | null
+  typical_lead_days: number | null
+  is_active: boolean
+}
 
 function generateCompleteConsumableData() {
-  const timestamp = Date.now()
+  const suffix = uniqueSuffix()
   return {
-    sku: `COM-TEST-${timestamp}`,
-    name: `Test Magnet ${timestamp}`,
+    sku: `COM-TEST-${suffix}`.toUpperCase(),
+    name: `Test Magnet ${suffix}`,
     description: 'Test consumable with all fields populated',
     category: 'hardware',
     unit_of_measure: 'each',
@@ -35,169 +54,176 @@ function generateCompleteConsumableData() {
   }
 }
 
-async function getAuthToken(page: Page): Promise<string | null> {
-  return await page.evaluate(() => localStorage.getItem('access_token'))
+/**
+ * Open the dialog from the page header's "Add Consumable" button (an empty
+ * list shows a second one) and wait for the auto-generated SKU.
+ */
+async function openAddConsumableDialog(page: Page): Promise<Locator> {
+  await page.getByRole('button', { name: 'Add Consumable' }).first().click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('heading', { name: 'Add New Consumable' })).toBeVisible()
+  await expect(dialog.locator('#sku')).not.toHaveValue('', { timeout: 30000 })
+  return dialog
 }
 
-// Helper to open dialog and wait for SKU to be ready
-async function openAddConsumableDialog(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /add consumable/i }).first().click()
-  await expect(page.getByRole('dialog')).toBeVisible()
-  // Wait for SKU to be generated (input becomes enabled)
-  await expect(page.locator('#sku')).toBeEnabled({ timeout: 10000 })
-}
-
-// Helper to fill SKU with unique value
-async function fillUniqueSku(page: Page, sku?: string): Promise<string> {
-  const uniqueSku = sku || `COM-TEST-${Date.now()}`
-  const skuInput = page.locator('#sku')
-  await skuInput.clear()
-  await skuInput.fill(uniqueSku)
+/** Replace the auto-generated SKU with a known one. */
+async function fillUniqueSku(dialog: Locator, sku?: string): Promise<string> {
+  const uniqueSku = sku || `COM-TEST-${uniqueSuffix()}`.toUpperCase()
+  await dialog.locator('#sku').fill(uniqueSku)
   return uniqueSku
 }
 
-// Helper to submit form and verify creation
-async function submitAndVerifyConsumable(page: Page, name: string): Promise<void> {
-  await page.getByRole('button', { name: /create consumable/i }).click()
+async function pickOption(page: Page, trigger: Locator, option: string): Promise<void> {
+  await trigger.click()
+  await page.getByRole('option', { name: option, exact: true }).click()
+  await expect(trigger).toHaveText(option)
+}
+
+/** Submit, check the new row in the list, and return the saved record. */
+async function submitAndVerifyConsumable(page: Page, sku: string, name: string): Promise<Consumable> {
+  await page.getByRole('dialog').getByRole('button', { name: 'Create Consumable' }).click()
   await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-  await expect(page.getByRole('cell', { name }).first()).toBeVisible({ timeout: 10000 })
+
+  const row = page.getByRole('row', { name: new RegExp(sku) })
+  await expect(row.getByRole('cell', { name: sku, exact: true })).toBeVisible({ timeout: 10000 })
+  await expect(row.getByText(name, { exact: true })).toBeVisible()
+
+  return getConsumable(page, sku)
+}
+
+async function getConsumable(page: Page, sku: string): Promise<Consumable> {
+  const api = await apiAs(page)
+  const data = await api.get<{ consumables: Consumable[] }>(
+    `/api/v1/consumables/types?search=${encodeURIComponent(sku)}`
+  )
+  const created = data.consumables.find((c) => c.sku === sku)
+  expect(created, `consumable ${sku} saved`).toBeTruthy()
+  return created!
 }
 
 test.describe('Consumable Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
   test('should display consumables page with add button', async ({ page }) => {
-    await expect(page.getByRole('button', { name: /add consumable/i })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: 'Consumables Inventory' })).toBeVisible()
+    // Header button, plus the empty state's own for a new tenant
+    await expect(page.getByRole('button', { name: 'Add Consumable' })).toHaveCount(2)
+    await expect(page.getByRole('button', { name: 'Add Consumable' }).first()).toBeVisible()
+    await expect(page.getByText('No consumables found')).toBeVisible()
   })
 
   test('should open add consumable dialog', async ({ page }) => {
-    await page.getByRole('button', { name: /add consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeVisible()
-    await expect(page.getByText('Add New Consumable')).toBeVisible()
+    const dialog = await openAddConsumableDialog(page)
+    await expect(dialog.getByLabel(/^SKU/)).toBeVisible()
+    await expect(dialog.getByLabel(/^Name/)).toBeVisible()
+
+    // The empty state's button opens the same dialog
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    await page.getByRole('button', { name: 'Add Consumable' }).last().click()
+    await expect(dialog.getByRole('heading', { name: 'Add New Consumable' })).toBeVisible()
   })
 
   test('should save sku correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await page.getByRole('button', { name: /add consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeVisible()
-
-    // Wait for SKU to be generated (input becomes enabled)
-    const skuInput = page.locator('#sku')
-    await expect(skuInput).toBeEnabled({ timeout: 10000 })
-
+    const dialog = await openAddConsumableDialog(page)
     // Clear auto-generated SKU and fill with test SKU
-    await skuInput.clear()
-    await skuInput.fill(testData.sku)
-    await page.locator('#name').fill(testData.name)
+    await fillUniqueSku(dialog, testData.sku)
+    await dialog.locator('#name').fill(testData.name)
 
-    await page.getByRole('button', { name: /create consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
+    const saved = await submitAndVerifyConsumable(page, testData.sku, testData.name)
+    expect(saved.sku).toBe(testData.sku)
+  })
 
-    // Verify SKU appears in table (look for table cell containing the SKU)
-    await expect(page.getByRole('cell', { name: testData.sku })).toBeVisible({ timeout: 10000 })
+  test('should save auto-generated sku', async ({ page }) => {
+    const name = `Auto SKU ${uniqueSuffix()}`
+
+    const dialog = await openAddConsumableDialog(page)
+    const generated = await dialog.locator('#sku').inputValue()
+    expect(generated).toMatch(/^COM-/)
+    await dialog.locator('#name').fill(name)
+
+    const saved = await submitAndVerifyConsumable(page, generated, name)
+    expect(saved.name).toBe(name)
   })
 
   test('should save name correctly', async ({ page }) => {
-    const uniqueName = `Unique Consumable ${Date.now()}`
-    const uniqueSku = `COM-NAME-${Date.now()}`
+    const uniqueName = `Unique Consumable ${uniqueSuffix()}`
 
-    await page.getByRole('button', { name: /add consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeVisible()
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(uniqueName)
 
-    // Wait for SKU to be generated (input becomes enabled)
-    const skuInput = page.locator('#sku')
-    await expect(skuInput).toBeEnabled({ timeout: 10000 })
-
-    // Must provide unique SKU to avoid duplicates
-    await skuInput.clear()
-    await skuInput.fill(uniqueSku)
-    await page.locator('#name').fill(uniqueName)
-
-    await page.getByRole('button', { name: /create consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    // Verify name appears in table
-    await expect(page.getByRole('cell', { name: uniqueName })).toBeVisible({ timeout: 10000 })
+    const saved = await submitAndVerifyConsumable(page, sku, uniqueName)
+    expect(saved.name).toBe(uniqueName)
   })
 })
 
 test.describe('Consumable Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
   test('should save description correctly', async ({ page }) => {
-    const uniqueName = `Description Test ${Date.now()}`
+    const uniqueName = `Description Test ${uniqueSuffix()}`
     const description = 'Detailed description with special chars: @#$%^&*()'
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(uniqueName)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(uniqueName)
+    await dialog.locator('#description').fill(description)
 
-    const descriptionInput = page.locator('#description')
-    if (await descriptionInput.isVisible()) {
-      await descriptionInput.fill(description)
-    }
-
-    await submitAndVerifyConsumable(page, uniqueName)
+    const saved = await submitAndVerifyConsumable(page, sku, uniqueName)
+    expect(saved.description).toBe(description)
   })
 
   test('should save preferred_supplier correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#preferred_supplier').fill('Amazon UK')
 
-    const supplierInput = page.locator('#preferred_supplier')
-    if (await supplierInput.isVisible()) {
-      await supplierInput.fill('Amazon UK')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.preferred_supplier).toBe('Amazon UK')
   })
 
   test('should save supplier_sku correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#supplier_sku').fill('B09SUPPLIER123')
 
-    const supplierSkuInput = page.locator('#supplier_sku')
-    if (await supplierSkuInput.isVisible()) {
-      await supplierSkuInput.fill('B09SUPPLIER123')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.supplier_sku).toBe('B09SUPPLIER123')
   })
 
   test('should save supplier_url correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#supplier_url').fill('https://amazon.co.uk/dp/B09TEST123')
 
-    const urlInput = page.locator('#supplier_url')
-    if (await urlInput.isVisible()) {
-      await urlInput.fill('https://amazon.co.uk/dp/B09TEST123')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.supplier_url).toBe('https://amazon.co.uk/dp/B09TEST123')
   })
 })
 
 test.describe('Consumable Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
@@ -205,82 +231,67 @@ test.describe('Consumable Field Validation - Numeric Fields', () => {
   test('should save current_cost_per_unit correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#current_cost_per_unit').fill('0.0575')
 
-    const costInput = page.locator('#current_cost_per_unit')
-    if (await costInput.isVisible()) {
-      await costInput.fill('0.0575')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(parseFloat(String(saved.current_cost_per_unit))).toBe(0.0575)
   })
 
   test('should save quantity_on_hand correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#quantity_on_hand').fill('500')
 
-    const quantityInput = page.locator('#quantity_on_hand')
-    if (await quantityInput.isVisible()) {
-      await quantityInput.fill('500')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.quantity_on_hand).toBe(500)
   })
 
   test('should save reorder_point correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#reorder_point').fill('100')
 
-    const reorderPointInput = page.locator('#reorder_point')
-    if (await reorderPointInput.isVisible()) {
-      await reorderPointInput.fill('100')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.reorder_point).toBe(100)
   })
 
   test('should save reorder_quantity correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#reorder_quantity').fill('200')
 
-    const reorderQtyInput = page.locator('#reorder_quantity')
-    if (await reorderQtyInput.isVisible()) {
-      await reorderQtyInput.fill('200')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.reorder_quantity).toBe(200)
   })
 
   test('should save typical_lead_days correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#typical_lead_days').fill('5')
 
-    const leadDaysInput = page.locator('#typical_lead_days')
-    if (await leadDaysInput.isVisible()) {
-      await leadDaysInput.fill('5')
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.typical_lead_days).toBe(5)
   })
 })
 
 test.describe('Consumable Field Validation - Select Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
@@ -288,54 +299,40 @@ test.describe('Consumable Field Validation - Select Fields', () => {
   test('should save category selection correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await pickOption(page, dialog.locator('#category'), 'Magnets')
 
-    // Select category
-    const categorySelect = page.locator('#category')
-    if (await categorySelect.isVisible()) {
-      await categorySelect.click()
-      await page.getByRole('option', { name: /packaging/i }).click()
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.category).toBe('magnets')
   })
 
   test('should save unit_of_measure selection correctly', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
+    await pickOption(page, dialog.locator('#unit_of_measure'), 'pack')
 
-    // Select unit of measure
-    const unitSelect = page.locator('#unit_of_measure')
-    if (await unitSelect.isVisible()) {
-      await unitSelect.click()
-      await page.getByRole('option', { name: /pack/i }).first().click()
-    }
-
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.unit_of_measure).toBe('pack')
   })
 
   test('should verify all category options exist', async ({ page }) => {
-    await openAddConsumableDialog(page)
+    const dialog = await openAddConsumableDialog(page)
 
-    const categorySelect = page.locator('#category')
-    if (await categorySelect.isVisible()) {
-      await categorySelect.click()
-
-      // Check that expected categories are available
-      await expect(page.getByRole('option', { name: /hardware/i })).toBeVisible()
-      await expect(page.getByRole('option', { name: /packaging/i })).toBeVisible()
+    await dialog.locator('#category').click()
+    for (const category of ['Magnets', 'Inserts', 'Hardware', 'Finishing', 'Packaging', 'Adhesives', 'Other']) {
+      await expect(page.getByRole('option', { name: category, exact: true })).toBeVisible()
     }
   })
 })
 
 test.describe('Consumable Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
@@ -343,39 +340,36 @@ test.describe('Consumable Field Validation - Boolean Fields', () => {
   test('should save is_active toggle correctly (enabled by default)', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
 
     // is_active should be checked by default
-    const activeSwitch = page.locator('#is_active')
-    if (await activeSwitch.isVisible()) {
-      await expect(activeSwitch).toBeChecked()
-    }
+    await expect(dialog.locator('#is_active')).toBeChecked()
 
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.is_active).toBe(true)
   })
 
   test('should save is_active toggle when disabled', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    const sku = await fillUniqueSku(dialog)
+    await dialog.locator('#name').fill(testData.name)
 
-    // Toggle off is_active
-    const activeSwitch = page.locator('#is_active')
-    if (await activeSwitch.isVisible()) {
-      await activeSwitch.click()
-    }
+    const activeSwitch = dialog.locator('#is_active')
+    await activeSwitch.click()
+    await expect(activeSwitch).not.toBeChecked()
 
-    await submitAndVerifyConsumable(page, testData.name)
+    const saved = await submitAndVerifyConsumable(page, sku, testData.name)
+    expect(saved.is_active).toBe(false)
   })
 })
 
 test.describe('Consumable Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
     await page.goto('/consumables')
   })
@@ -383,138 +377,75 @@ test.describe('Consumable Field Validation - Complete Form', () => {
   test('should create consumable with ALL fields populated', async ({ page }) => {
     const testData = generateCompleteConsumableData()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page, testData.sku)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    await fillUniqueSku(dialog, testData.sku)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#description').fill(testData.description)
+    await pickOption(page, dialog.locator('#category'), 'Hardware')
+    await pickOption(page, dialog.locator('#unit_of_measure'), 'box')
+    await dialog.locator('#current_cost_per_unit').fill(testData.current_cost_per_unit.toString())
+    await dialog.locator('#quantity_on_hand').fill(testData.quantity_on_hand.toString())
+    await dialog.locator('#reorder_point').fill(testData.reorder_point.toString())
+    await dialog.locator('#reorder_quantity').fill(testData.reorder_quantity.toString())
+    await dialog.locator('#preferred_supplier').fill(testData.preferred_supplier)
+    await dialog.locator('#supplier_sku').fill(testData.supplier_sku)
+    await dialog.locator('#supplier_url').fill(testData.supplier_url)
+    await dialog.locator('#typical_lead_days').fill(testData.typical_lead_days.toString())
 
-    // Description
-    const descriptionInput = page.locator('#description')
-    if (await descriptionInput.isVisible()) {
-      await descriptionInput.fill(testData.description)
-    }
-
-    // Category select
-    const categorySelect = page.locator('#category')
-    if (await categorySelect.isVisible()) {
-      await categorySelect.click()
-      await page.getByRole('option', { name: /hardware/i }).click()
-    }
-
-    // Unit of measure select
-    const unitSelect = page.locator('#unit_of_measure')
-    if (await unitSelect.isVisible()) {
-      await unitSelect.click()
-      await page.getByRole('option', { name: /each/i }).click()
-    }
-
-    // Numeric fields
-    const costInput = page.locator('#current_cost_per_unit')
-    if (await costInput.isVisible()) {
-      await costInput.fill(testData.current_cost_per_unit.toString())
-    }
-
-    const quantityInput = page.locator('#quantity_on_hand')
-    if (await quantityInput.isVisible()) {
-      await quantityInput.fill(testData.quantity_on_hand.toString())
-    }
-
-    const reorderPointInput = page.locator('#reorder_point')
-    if (await reorderPointInput.isVisible()) {
-      await reorderPointInput.fill(testData.reorder_point.toString())
-    }
-
-    const reorderQtyInput = page.locator('#reorder_quantity')
-    if (await reorderQtyInput.isVisible()) {
-      await reorderQtyInput.fill(testData.reorder_quantity.toString())
-    }
-
-    // Supplier fields
-    const supplierInput = page.locator('#preferred_supplier')
-    if (await supplierInput.isVisible()) {
-      await supplierInput.fill(testData.preferred_supplier)
-    }
-
-    const supplierSkuInput = page.locator('#supplier_sku')
-    if (await supplierSkuInput.isVisible()) {
-      await supplierSkuInput.fill(testData.supplier_sku)
-    }
-
-    const urlInput = page.locator('#supplier_url')
-    if (await urlInput.isVisible()) {
-      await urlInput.fill(testData.supplier_url)
-    }
-
-    const leadDaysInput = page.locator('#typical_lead_days')
-    if (await leadDaysInput.isVisible()) {
-      await leadDaysInput.fill(testData.typical_lead_days.toString())
-    }
-
-    await page.getByRole('button', { name: /create consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    // Verify consumable was created
-    await expect(page.getByRole('cell', { name: testData.sku })).toBeVisible({ timeout: 10000 })
+    const saved = await submitAndVerifyConsumable(page, testData.sku, testData.name)
+    expect(saved).toMatchObject({
+      sku: testData.sku,
+      name: testData.name,
+      description: testData.description,
+      category: 'hardware',
+      unit_of_measure: 'box',
+      quantity_on_hand: testData.quantity_on_hand,
+      reorder_point: testData.reorder_point,
+      reorder_quantity: testData.reorder_quantity,
+      preferred_supplier: testData.preferred_supplier,
+      supplier_sku: testData.supplier_sku,
+      supplier_url: testData.supplier_url,
+      typical_lead_days: testData.typical_lead_days,
+      is_active: true,
+    })
+    expect(parseFloat(String(saved.current_cost_per_unit))).toBe(testData.current_cost_per_unit)
   })
 
   test('should verify created consumable data via API', async ({ page }) => {
     const testData = generateCompleteConsumableData()
-    const uniqueSku = `API-COM-${Date.now()}`
+    const uniqueSku = `API-COM-${uniqueSuffix()}`.toUpperCase()
 
-    await openAddConsumableDialog(page)
-    await fillUniqueSku(page, uniqueSku)
-    await page.locator('#name').fill(testData.name)
+    const dialog = await openAddConsumableDialog(page)
+    await fillUniqueSku(dialog, uniqueSku)
+    await dialog.locator('#name').fill(testData.name)
+    await dialog.locator('#quantity_on_hand').fill('250')
+    await dialog.locator('#current_cost_per_unit').fill('0.05')
 
-    const quantityInput = page.locator('#quantity_on_hand')
-    if (await quantityInput.isVisible()) {
-      await quantityInput.fill('250')
-    }
+    await submitAndVerifyConsumable(page, uniqueSku, testData.name)
 
-    const costInput = page.locator('#current_cost_per_unit')
-    if (await costInput.isVisible()) {
-      await costInput.fill('0.05')
-    }
-
-    await page.getByRole('button', { name: /create consumable/i }).click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-
-    await expect(page.getByRole('cell', { name: uniqueSku })).toBeVisible({ timeout: 10000 })
-
-    // Verify via API
-    const token = await getAuthToken(page)
-    if (token) {
-      const response = await page.request.get(`${API_URL}/api/v1/consumables`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-
-      expect(response.ok()).toBeTruthy()
-      const data = await response.json()
-
-      const created = data.consumables.find((c: { sku: string }) => c.sku === uniqueSku)
-      expect(created).toBeTruthy()
-      expect(created.name).toBe(testData.name)
-      expect(created.quantity_on_hand).toBe(250)
-      expect(parseFloat(created.current_cost_per_unit)).toBe(0.05)
-    }
+    // Read back through the plain list endpoint, unfiltered
+    const api = await apiAs(page)
+    const data = await api.get<{ consumables: Consumable[] }>('/api/v1/consumables/types')
+    const created = data.consumables.find((c) => c.sku === uniqueSku)
+    expect(created).toBeTruthy()
+    expect(created!.name).toBe(testData.name)
+    expect(created!.quantity_on_hand).toBe(250)
+    expect(parseFloat(String(created!.current_cost_per_unit))).toBe(0.05)
   })
 })
 
 test.describe('Consumable Navigation', () => {
   test.beforeEach(async ({ page }) => {
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
     await registerAndLogin(page)
   })
 
   test('should navigate to consumables page from dashboard', async ({ page }) => {
     await page.goto('/dashboard')
 
-    const consumablesLink = page.getByRole('link', { name: /consumables/i })
-    if (await consumablesLink.isVisible()) {
-      await consumablesLink.click()
-      await expect(page).toHaveURL(/\/consumables/)
-    } else {
-      await page.goto('/consumables')
-      await expect(page).toHaveURL(/\/consumables/)
-    }
+    await page.getByRole('navigation').getByRole('link', { name: 'Consumables', exact: true }).click()
+    await expect(page).toHaveURL(/\/consumables/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Consumables Inventory' })).toBeVisible()
   })
 
   test('should require authentication for consumables page', async ({ page }) => {

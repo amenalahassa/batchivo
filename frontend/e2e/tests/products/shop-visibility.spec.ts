@@ -6,10 +6,14 @@
  * - Set shop description
  * - Toggle featured status
  * - Set feature title and backstory
+ *
+ * These settings live on the product edit page ("Shop Display Settings").
  */
 
 import { test, expect, type Page } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+
+const PRODUCT_DETAIL_URL = /\/products\/[0-9a-f-]{36}$/
 
 // Generate unique test data
 const generateTestProduct = () => ({
@@ -21,41 +25,30 @@ const generateTestProduct = () => ({
   backstory: 'This rare dragon was discovered in the mystical forests...',
 })
 
-// Helper: Create a test product and return its ID
+// Helper: Seed a test product through the API and return its ID
 async function createTestProduct(page: Page, product: ReturnType<typeof generateTestProduct>): Promise<string> {
-  await page.goto('/products/new')
-  await page.waitForLoadState('networkidle')
-
-  // Fill basic fields
-  await page.fill('input[name="sku"]', product.sku)
-  await page.fill('input[name="name"]', product.name)
-  await page.fill('textarea[name="description"]', product.description)
-
-  // Submit
-  await page.click('button[type="submit"]')
-  await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
-
-  // Extract product ID from URL
-  const url = page.url()
-  return url.split('/').pop()!
+  const created = await (await apiAs(page)).post('/api/v1/products', {
+    sku: product.sku,
+    name: product.name,
+    description: product.description,
+  })
+  return created.id
 }
 
-// Helper: Navigate to product edit page
-async function navigateToProductEdit(page: Page, productId: string) {
+// Helper: Open the product edit page once its form holds the product
+async function navigateToProductEdit(page: Page, productId: string, productName: string) {
   await page.goto(`/products/${productId}/edit`)
-  await page.waitForLoadState('networkidle')
+  await expect(page.locator('input[name="name"]')).toHaveValue(productName, { timeout: 10000 })
 }
 
-// Helper: Delete product
-async function deleteProduct(page: Page, productId: string) {
-  await page.goto(`/products/${productId}`)
-  const deleteButton = page.locator('button:has-text("Delete")')
-  if (await deleteButton.isVisible()) {
-    await deleteButton.click()
-    await page.click('button:has-text("Delete"):not(:has-text("Cancel"))')
-    await page.waitForLoadState('networkidle')
-  }
+// Helper: Save the edit form and wait for the detail page
+async function saveChanges(page: Page) {
+  await page.getByRole('button', { name: 'Save Changes' }).click()
+  await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 15000 })
 }
+
+const shopVisibleSwitch = (page: Page) => page.getByRole('switch', { name: 'Show in Shop' })
+const featuredSwitch = (page: Page) => page.getByRole('switch', { name: 'Featured Item' })
 
 test.describe('Shop Visibility Toggle', () => {
   let testProduct: ReturnType<typeof generateTestProduct>
@@ -68,83 +61,52 @@ test.describe('Shop Visibility Toggle', () => {
     productId = await createTestProduct(page, testProduct)
   })
 
-  test.afterEach(async ({ page }) => {
-    try {
-      await deleteProduct(page, productId)
-    } catch {
-      // Ignore cleanup errors
-    }
-  })
-
   test('should toggle shop visibility ON', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
-    // Find and toggle shop_visible switch
-    const shopVisibleSwitch = page.locator('button[role="switch"][name="shop_visible"]')
-
-    // Get initial state
-    const initialState = await shopVisibleSwitch.getAttribute('data-state')
-
-    // If not checked, click to enable
-    if (initialState !== 'checked') {
-      await shopVisibleSwitch.click()
-    }
-
-    // Save changes
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    // A new product is not in the shop
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'unchecked')
+    await shopVisibleSwitch(page).click()
+    await saveChanges(page)
 
     // Go back to edit and verify
-    await navigateToProductEdit(page, productId)
-    const savedState = await shopVisibleSwitch.getAttribute('data-state')
-    expect(savedState).toBe('checked')
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'checked')
   })
 
   test('should toggle shop visibility OFF', async ({ page }) => {
     // First enable shop visibility
-    await navigateToProductEdit(page, productId)
-    const shopVisibleSwitch = page.locator('button[role="switch"][name="shop_visible"]')
-
-    // Enable if not already
-    const initialState = await shopVisibleSwitch.getAttribute('data-state')
-    if (initialState !== 'checked') {
-      await shopVisibleSwitch.click()
-    }
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await shopVisibleSwitch(page).click()
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'checked')
+    await saveChanges(page)
 
     // Now disable it
-    await navigateToProductEdit(page, productId)
-    await shopVisibleSwitch.click() // Toggle off
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'checked')
+    await shopVisibleSwitch(page).click()
+    await saveChanges(page)
 
     // Verify it's off
-    await navigateToProductEdit(page, productId)
-    const savedState = await shopVisibleSwitch.getAttribute('data-state')
-    expect(savedState).toBe('unchecked')
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'unchecked')
   })
 
   test('should set shop description when visible', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
     // Enable shop visibility
-    const shopVisibleSwitch = page.locator('button[role="switch"][name="shop_visible"]')
-    const initialState = await shopVisibleSwitch.getAttribute('data-state')
-    if (initialState !== 'checked') {
-      await shopVisibleSwitch.click()
-    }
+    await shopVisibleSwitch(page).click()
 
     // Fill shop description
     const shopDescriptionInput = page.locator('textarea[name="shop_description"]')
     await shopDescriptionInput.fill(testProduct.shopDescription)
 
-    // Save
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await saveChanges(page)
 
     // Verify
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'checked')
     await expect(shopDescriptionInput).toHaveValue(testProduct.shopDescription)
   })
 })
@@ -160,110 +122,70 @@ test.describe('Featured Product Toggle', () => {
     productId = await createTestProduct(page, testProduct)
   })
 
-  test.afterEach(async ({ page }) => {
-    try {
-      await deleteProduct(page, productId)
-    } catch {
-      // Ignore cleanup errors
-    }
-  })
-
   test('should toggle featured status ON', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
     // Enable featured
-    const featuredSwitch = page.locator('button[role="switch"][name="is_featured"]')
-    const initialState = await featuredSwitch.getAttribute('data-state')
-
-    if (initialState !== 'checked') {
-      await featuredSwitch.click()
-    }
-
-    // Save
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await expect(featuredSwitch(page)).toHaveAttribute('data-state', 'unchecked')
+    await featuredSwitch(page).click()
+    await saveChanges(page)
 
     // Verify
-    await navigateToProductEdit(page, productId)
-    const savedState = await featuredSwitch.getAttribute('data-state')
-    expect(savedState).toBe('checked')
+    await navigateToProductEdit(page, productId, testProduct.name)
+    await expect(featuredSwitch(page)).toHaveAttribute('data-state', 'checked')
   })
 
   test('should set feature title when featured', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
-    // Enable featured
-    const featuredSwitch = page.locator('button[role="switch"][name="is_featured"]')
-    const initialState = await featuredSwitch.getAttribute('data-state')
-    if (initialState !== 'checked') {
-      await featuredSwitch.click()
-    }
-
-    // Fill feature title
+    // The feature fields only appear once the product is featured
     const featureTitleInput = page.locator('input[name="feature_title"]')
-    await featureTitleInput.fill(testProduct.featureTitle)
+    await expect(featureTitleInput).toHaveCount(0)
+    await featuredSwitch(page).click()
 
-    // Save
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await featureTitleInput.fill(testProduct.featureTitle)
+    await saveChanges(page)
 
     // Verify
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
     await expect(featureTitleInput).toHaveValue(testProduct.featureTitle)
   })
 
   test('should set backstory when featured', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
     // Enable featured
-    const featuredSwitch = page.locator('button[role="switch"][name="is_featured"]')
-    const initialState = await featuredSwitch.getAttribute('data-state')
-    if (initialState !== 'checked') {
-      await featuredSwitch.click()
-    }
+    await featuredSwitch(page).click()
 
     // Fill backstory
     const backstoryInput = page.locator('textarea[name="backstory"]')
     await backstoryInput.fill(testProduct.backstory)
-
-    // Save
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await saveChanges(page)
 
     // Verify
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
     await expect(backstoryInput).toHaveValue(testProduct.backstory)
   })
 
   test('should enable both shop visibility and featured status', async ({ page }) => {
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
-    // Enable shop visibility
-    const shopVisibleSwitch = page.locator('button[role="switch"][name="shop_visible"]')
-    if ((await shopVisibleSwitch.getAttribute('data-state')) !== 'checked') {
-      await shopVisibleSwitch.click()
-    }
-
-    // Enable featured
-    const featuredSwitch = page.locator('button[role="switch"][name="is_featured"]')
-    if ((await featuredSwitch.getAttribute('data-state')) !== 'checked') {
-      await featuredSwitch.click()
-    }
+    // Enable shop visibility and featured
+    await shopVisibleSwitch(page).click()
+    await featuredSwitch(page).click()
 
     // Fill all fields
     await page.locator('textarea[name="shop_description"]').fill(testProduct.shopDescription)
     await page.locator('input[name="feature_title"]').fill(testProduct.featureTitle)
     await page.locator('textarea[name="backstory"]').fill(testProduct.backstory)
 
-    // Save
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await saveChanges(page)
 
     // Verify all fields saved
-    await navigateToProductEdit(page, productId)
+    await navigateToProductEdit(page, productId, testProduct.name)
 
-    expect(await shopVisibleSwitch.getAttribute('data-state')).toBe('checked')
-    expect(await featuredSwitch.getAttribute('data-state')).toBe('checked')
+    await expect(shopVisibleSwitch(page)).toHaveAttribute('data-state', 'checked')
+    await expect(featuredSwitch(page)).toHaveAttribute('data-state', 'checked')
     await expect(page.locator('textarea[name="shop_description"]')).toHaveValue(testProduct.shopDescription)
     await expect(page.locator('input[name="feature_title"]')).toHaveValue(testProduct.featureTitle)
     await expect(page.locator('textarea[name="backstory"]')).toHaveValue(testProduct.backstory)

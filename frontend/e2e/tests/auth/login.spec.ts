@@ -9,36 +9,8 @@
  * - Page navigation and UI elements
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { HEALTH_URL } from '../../config'
-
-async function isBackendAvailable(): Promise<boolean> {
-  try {
-    const response = await fetch(HEALTH_URL)
-    return response.ok
-  } catch {
-    return false
-  }
-}
-
-// Helper to create a test user and return credentials
-async function createTestUser(page: Page): Promise<{ email: string; password: string }> {
-  const email = `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`
-  const password = 'TestPassword123!'
-
-  await page.goto('/signup')
-  await page.fill('#email', email)
-  await page.fill('#password', password)
-  await page.fill('#confirmPassword', password)
-  await page.click('button[type="submit"]')
-  await page.waitForURL('/dashboard', { timeout: 15000 })
-
-  // Logout to test login flow
-  await page.goto('/logout')
-  await page.waitForURL('/login', { timeout: 10000 })
-
-  return { email, password }
-}
+import { test, expect } from '@playwright/test'
+import { createTestUser, isBackendAvailable } from '../../helpers'
 
 test.describe('Login Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -101,6 +73,12 @@ test.describe('Login Page', () => {
     // Fill in credentials
     await page.fill('#email', testUser.email)
     await page.fill('#password', testUser.password)
+
+    // Hold the login request so the loading state is observable
+    await page.route('**/auth/login', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      await route.continue()
+    })
 
     // Click submit and immediately check for loading state
     const submitButton = page.locator('button[type="submit"]')
