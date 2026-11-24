@@ -23,7 +23,6 @@ from app.auth.dependencies import (
     TenantDB,
     role_in_tenant,
 )
-from app.models.user import User
 from app.models.model import Model
 from app.models.model_component import ModelComponent
 from app.models.model_material import ModelMaterial
@@ -55,6 +54,12 @@ from app.services.item_dimensions import dimensions_out
 from app.services.production_run import realised_unit_costs
 from app.services.costing import CostingService, grams_per_item, minutes_per_item
 from app.services.pricing_policy import resolve_cost_policy
+from app.services.idea_service import source_idea_fields
+from app.services.model_creation import (
+    POLICY_OVERRIDE_FIELDS,  # noqa: F401 -- re-exported for existing importers
+    authorise_model_write,
+    create_model as create_model_record,
+)
 from app.services.provenance import (
     ProvenanceNotEditable,
     changed_fields,
@@ -99,46 +104,13 @@ async def model_with_cost(model: Model, tenant: Tenant, db: AsyncSession) -> dic
         "production_cost_count": realised.units if realised else 0,
         "production_cost_updated_at": realised.last_completed_at if realised else None,
         "dimensions": dimensions_out(model),
+        **await source_idea_fields(db, tenant.id, model.source_idea_id),
     }
 
 
-#: Per-item overrides of a tenant rate. `labor_rate_override` replaces the
-#: tenant's labour rate for this item and `overhead_percentage` its overhead
-#: percentage, so both are monetary policy (FR-007a) -- the owner or admin only,
-#: on every path that writes them (task T217).
-POLICY_OVERRIDE_FIELDS: frozenset[str] = frozenset({"labor_rate_override", "overhead_percentage"})
-
-
-async def _authorise_model_write(
-    db: AsyncSession,
-    tenant: Tenant,
-    user: User,
-    model: Optional[Model],
-    changes: dict,
-) -> tuple[list[str], Optional[str]]:
-    """Check a write to a model's cost inputs, before anything is applied.
-
-    Returns the registered inputs that move, and the caller's role, so the
-    route can record each figure's origin once the write is made (FR-001,
-    task T229). Refuses with a ``403`` a non-administrator moving a per-item
-    rate or percentage (FR-007a, task T217), and with a ``409`` anyone typing
-    over an observed figure (FR-004).
-    """
-    role = await role_in_tenant(db, user.id, tenant.id)
-    fields = await refuse_observed_or_409(
-        db, tenant, entity_type="model", entity=model, changes=changes
-    )
-    overrides = sorted(set(fields) & POLICY_OVERRIDE_FIELDS)
-    if overrides and role not in MONETARY_ROLES:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Setting an item's {' and '.join(overrides)} overrides the tenant's "
-                f"rate and requires the owner or admin role"
-            ),
-        )
-    return fields, role
+# The write check and creation live in the model creation service, shared with
+# idea conversion (spec 007, research R3); the names stay importable here.
+_authorise_model_write = authorise_model_write
 
 
 @router.post("", response_model=ModelDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -156,36 +128,7 @@ async def create_model(
     Model will be associated with current tenant.
     SKU must be unique per tenant.
     """
-    # Check if SKU already exists for this tenant
-    existing = await db.execute(
-        select(Model).where(
-            Model.tenant_id == tenant.id,
-            Model.sku == model_data.sku,
-        )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Model with SKU '{model_data.sku}' already exists",
-        )
-
-    fields, role = await _authorise_model_write(
-        db, tenant, user, None, model_data.model_dump(exclude_unset=True)
-    )
-
-    # Create model instance
-    model = Model(
-        tenant_id=tenant.id,
-        **model_data.model_dump(),
-    )
-
-    db.add(model)
-    await db.flush()
-    # The figures the body named are this person's measurement or, for a
-    # per-item rate, their decision -- not assumptions (FR-001, task T229).
-    await record_operator_origins(
-        db, tenant, entity_type="model", entity_id=model.id, fields=fields, user=user, role=role
-    )
+    model = await create_model_record(db, tenant, user, model_data)
     await db.commit()
     await db.refresh(model)
 

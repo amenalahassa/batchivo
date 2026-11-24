@@ -338,7 +338,7 @@ Constraints:
 
 ## Ideas: capture, brainstorm and iterate on product ideas, then turn one into a model or product
 
-**Status:** not specified (feature 007, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §4)
+**Status:** specified, designed and built (feature 007, specs/007-ideas)
 
 **Why:** product ideas today live outside Batchivo (notes, chats, the weekly
 pain-point report). Their images, links, measurements and decisions are lost by

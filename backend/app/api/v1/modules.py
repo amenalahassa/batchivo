@@ -98,6 +98,10 @@ MODULE_NAVIGATION: dict[str, list[dict]] = {
     "orders": [
         {"path": "/orders", "label": "Orders", "icon": "shopping-bag", "exact": False},
     ],
+    # Product ideas, their brainstorming timeline and conversion (spec 007).
+    "ideas": [
+        {"path": "/ideas", "label": "Ideas", "icon": "lightbulb", "exact": False},
+    ],
 }
 
 # Module display order
@@ -112,6 +116,7 @@ MODULE_ORDER: dict[str, int] = {
     "consumables": 8,
     "sales_channels": 9,
     "orders": 10,
+    "ideas": 11,
 }
 
 

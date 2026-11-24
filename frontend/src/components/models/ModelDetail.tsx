@@ -15,6 +15,7 @@ import { fileNamesOf, latestMeasurementOffer } from '@/lib/packaging'
 import { DimensionsEditor } from '@/components/products/DimensionsEditor'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { FromIdeaLink } from '@/components/ideas/FromIdeaLink'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   AlertDialog,
@@ -158,6 +159,11 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
             <span className="font-mono">{model.sku}</span>
           </div>
           <h1 className="text-3xl font-bold tracking-tight">{model.name}</h1>
+          <FromIdeaLink
+            ideaId={model.source_idea_id}
+            title={model.source_idea_title}
+            archived={model.source_idea_archived}
+          />
           <div className="flex items-center gap-2 mt-2">
             <Badge variant={model.is_active ? 'default' : 'secondary'}>
               {model.is_active ? 'Active' : 'Inactive'}

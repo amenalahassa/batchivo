@@ -30,6 +30,9 @@ PRICING_MODULES: frozenset[str] = frozenset(
         "fee_rules",
         "filament_purchases",
         "fx_rates",
+        # Spec 007: converting an idea creates a model and a product through their
+        # creation services, which write cost inputs with their provenance.
+        "ideas",
         "models",
         # Making a version active writes print time, parts per plate, weight and
         # dimensions, each through the provenance registry (spec 004, FR-011).

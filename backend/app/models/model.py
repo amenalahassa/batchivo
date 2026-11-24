@@ -88,6 +88,16 @@ class Model(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
         comment="Model image URL",
     )
 
+    source_idea_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        # use_alter: ideas points back here (converted_model_id / converted_product_id).
+        ForeignKey(
+            "ideas.id", ondelete="SET NULL", use_alter=True, name="fk_models_source_idea_id"
+        ),
+        nullable=True,
+        index=True,
+        comment="Idea this record was converted from (feature 007)",
+    )
+
     # Labor Costing
     #
     # DEPRECATED by the Tier 1 labor split below. The migration copies this

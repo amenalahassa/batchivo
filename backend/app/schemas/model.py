@@ -328,6 +328,11 @@ class ModelResponse(ModelBase):
     dimensions: Optional[DimensionsOut] = Field(
         None, description="Length × width × height in mm, with source and date (FR-001/002)"
     )
+    #: The idea this record was converted from (spec 007); null for every
+    #: record not created from an idea.
+    source_idea_id: Optional[UUID] = Field(None, description="Idea it was converted from")
+    source_idea_title: Optional[str] = Field(None, description="That idea's title")
+    source_idea_archived: Optional[bool] = Field(None, description="Whether that idea is archived")
 
     model_config = ConfigDict(from_attributes=True)
 

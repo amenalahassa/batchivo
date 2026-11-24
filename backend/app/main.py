@@ -212,6 +212,7 @@ from app.api.v1 import (
     exports,
     fee_rules,
     fx_rates,
+    ideas,
     provenance,
     scenarios,
     forecasting,
@@ -400,6 +401,8 @@ app.include_router(
 app.include_router(
     designers.router, prefix=f"{settings.api_v1_prefix}/designers", tags=["designers"]
 )
+# Product ideas, their timeline and conversion (spec 007)
+app.include_router(ideas.router, prefix=f"{settings.api_v1_prefix}/ideas", tags=["ideas"])
 app.include_router(
     settings_api.router, prefix=f"{settings.api_v1_prefix}/settings", tags=["settings"]
 )

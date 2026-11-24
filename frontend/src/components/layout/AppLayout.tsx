@@ -39,6 +39,7 @@ import {
   TrendingUp,
   type LucideIcon,
   ListOrdered,
+  Lightbulb,
 } from 'lucide-react'
 import { Link, useRouter } from '@tanstack/react-router'
 import { type ReactNode } from 'react'
@@ -76,6 +77,7 @@ const ICON_COMPONENTS: Record<string, LucideIcon> = {
   'activity': Activity,
   'trending-up': TrendingUp, // Catalogue-wide price-shock scenarios
   'list-ordered': ListOrdered, // The queue by profit per machine-hour
+  'lightbulb': Lightbulb,  // Product ideas (spec 007)
 }
 
 // Get icon component by name, with fallback

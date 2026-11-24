@@ -43,6 +43,7 @@ import {
 import { useCurrency } from '@/hooks/useCurrency'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { FromIdeaLink } from '@/components/ideas/FromIdeaLink'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   AlertDialog,
@@ -204,6 +205,11 @@ export function ProductDetail({ productId }: ProductDetailProps) {
             <span className="font-mono">{product.sku}</span>
           </div>
           <h1 className="text-3xl font-bold tracking-tight">{product.name}</h1>
+          <FromIdeaLink
+            ideaId={product.source_idea_id}
+            title={product.source_idea_title}
+            archived={product.source_idea_archived}
+          />
           <div className="flex items-center gap-2 mt-2">
             <Badge
               variant="outline"
