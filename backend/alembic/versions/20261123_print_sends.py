@@ -1,7 +1,7 @@
 """Print sends to Bambu printers and the Developer Mode flag.
 
 Revision ID: print_sends_v1
-Revises: catalogue_columns_v1
+Revises: ideas_v1
 Create Date: 2026-11-23
 
 Spec 011 (data-model.md).
@@ -21,7 +21,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "print_sends_v1"
-down_revision = "catalogue_columns_v1"
+down_revision = "ideas_v1"
 branch_labels = None
 depends_on = None
 

@@ -103,10 +103,10 @@ description: "Tasks for spec 011 — send a print to a Bambu Lab printer, with c
 
 ## Phase 7: Polish & cross-cutting
 
-- [ ] T036 [P] e2e `frontend/e2e/tests/printers/print-send.spec.ts` (user from `registerAndLogin`, local backend only): create printer + Bambu LAN connection with Developer Mode off → no "Send print"; turn it on → "Send print" visible; upload the sliced fixture, prepare → summary with plate time and slot lines; confirm → printer unreachable message (no printer on the network), no job created
+- [X] T036 [P] e2e `frontend/e2e/tests/printers/print-send.spec.ts` (user from `registerAndLogin`, local backend only): create printer + Bambu LAN connection with Developer Mode off → no "Send print"; turn it on → "Send print" visible; upload the sliced fixture, prepare → summary with plate time and slot lines; confirm → printer unreachable message (no printer on the network), no job created
 - [X] T037 [P] Operator doc: Developer Mode trade-off and the send flow in `docs-site/docs/guides/send-print-to-bambu.md`
 - [X] T038 Update `specs/backlog.md` (011 block only, Status line) and record approvals/deviations in `specs/011-bambu-print-send/plan.md`
-- [ ] T039 Run gates: `cd backend; poetry run pytest` (after orchestrator go-ahead for the test DB), `poetry run ruff check`, `poetry run ruff format --check`; `cd frontend; npm run test:run; npm run lint; npm run typecheck`; targeted e2e T036
+- [X] T039 Run gates: `cd backend; poetry run pytest` (after orchestrator go-ahead for the test DB), `poetry run ruff check`, `poetry run ruff format --check`; `cd frontend; npm run test:run; npm run lint; npm run typecheck`; targeted e2e T036
 
 ---
 

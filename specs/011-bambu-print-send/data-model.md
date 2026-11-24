@@ -1,7 +1,7 @@
 # Data Model: Send a Print to a Bambu Lab Printer (spec 011)
 
 One new tenant-scoped table, one new column on an existing table. Migration
-`20261123_print_sends` (down_revision = current head `catalogue_columns_v1`;
+`20261123_print_sends` (down_revision = current head `ideas_v1`, re-pointed from `catalogue_columns_v1` after 007 merged;
 re-pointed if another feature merges first, so there is a single head).
 
 ## `printer_connections` (existing) — new column

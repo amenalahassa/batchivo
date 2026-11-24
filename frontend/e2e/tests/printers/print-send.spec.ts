@@ -37,9 +37,14 @@ function slicedProject(): Buffer {
 }
 
 async function authHeaders(page: Page): Promise<Record<string, string>> {
-  const value = await page.evaluate(() => localStorage.getItem('access_token'))
-  if (!value) throw new Error('not logged in')
-  return { Authorization: `Bearer ${value}` }
+  // The session's JWTs, as the app stores them after login or email verification.
+  const stored = await page.evaluate(
+    () =>
+      localStorage.getItem('batchivo_auth_tokens') ?? sessionStorage.getItem('batchivo_auth_tokens')
+  )
+  if (!stored) throw new Error('not logged in')
+  const { accessToken } = JSON.parse(stored) as { accessToken: string }
+  return { Authorization: `Bearer ${accessToken}` }
 }
 
 async function createBambuPrinter(page: Page): Promise<{ id: string; name: string }> {
@@ -80,7 +85,10 @@ test.describe('Send a print to a Bambu printer', () => {
     const { name } = printer
     await page.goto('/printers')
 
-    const connectionButton = page.getByLabel(`Connection for ${name}`).first()
+    const connectionButton = page
+      .getByLabel(`Connection for ${name}`)
+      .filter({ visible: true })
+      .first()
     await expect(connectionButton).toBeVisible({ timeout: 15000 })
     await expect(page.getByLabel(`Send print to ${name}`)).toHaveCount(0)
 
@@ -95,7 +103,7 @@ test.describe('Send a print to a Bambu printer', () => {
     await expect(connectionDialog).toBeHidden()
 
     // US1: upload a sliced file, prepare, read the summary.
-    const send = page.getByLabel(`Send print to ${name}`).first()
+    const send = page.getByLabel(`Send print to ${name}`).filter({ visible: true }).first()
     await expect(send).toBeVisible()
     await send.click()
     await expect(page.getByRole('heading', { name: `Send print — ${name}` })).toBeVisible()

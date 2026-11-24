@@ -576,7 +576,7 @@ a mocked API.
 
 ## Send a print to a Bambu Lab printer, with confirmation
 
-**Status:** built and converged on branch `claude/011-bambu-print-send-07c5b3` (spec in `specs/011-bambu-print-send/`); targeted e2e pending until `registerAndLogin` is fixed on main. Independent.
+**Status:** built, converged and e2e-checked on branch `claude/011-bambu-print-send-07c5b3` (spec in `specs/011-bambu-print-send/`), rebased on 007. Independent.
 
 ### Prompt
 
