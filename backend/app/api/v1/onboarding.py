@@ -3,12 +3,13 @@
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import products as products_api
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB
+from app.config import Settings, get_settings
 
 from app.core.rate_limit import limiter
 from app.database import get_db
@@ -16,6 +17,7 @@ from app.models.sales_channel import SalesChannel
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.onboarding import (
+    E2EVerificationTokenResponse,
     OnboardingLogoResponse,
     OnboardingStatusResponse,
     OnboardingStep1Request,
@@ -165,6 +167,46 @@ async def resend_verification(
     return ResendVerificationResponse(
         message="If an unverified account exists for this email, a verification link has been sent."
     )
+
+
+# =============================================================================
+# E2E test hook (local Playwright runs only)
+# =============================================================================
+
+
+def require_e2e_test_hooks(settings: Settings = Depends(get_settings)) -> None:
+    """
+    Gate for test-only endpoints.
+
+    Answers 404 -- as if the route did not exist -- unless E2E_TEST_HOOKS_ENABLED is set,
+    and always in production, even when the flag is set by mistake.
+    """
+    if not settings.e2e_test_hooks_enabled or settings.is_production:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+
+
+@router.get(
+    "/test/verification-token",
+    response_model=E2EVerificationTokenResponse,
+    include_in_schema=False,  # never listed in the public API docs
+    dependencies=[Depends(require_e2e_test_hooks)],
+)
+async def get_e2e_verification_token(
+    email: str = Query(..., min_length=3, max_length=255),
+    db: AsyncSession = Depends(get_db),
+) -> E2EVerificationTokenResponse:
+    """
+    Return the pending email-verification token for a registration (e2e only).
+
+    Lets the Playwright helper complete the real /verify-email flow without an
+    email provider. Pre-registration tokens have no tenant yet, so this is not
+    tenant-scoped; it is disabled by default and refused in production.
+    """
+    service = get_onboarding_service(db)
+    token = await service.get_pending_verification_token(email)
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return E2EVerificationTokenResponse(token=token)
 
 
 # =============================================================================

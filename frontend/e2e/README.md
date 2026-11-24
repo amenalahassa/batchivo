@@ -11,8 +11,32 @@ E2E tests verify complete user workflows by automating real browser interactions
 ### Prerequisites
 
 - Node.js 18+
-- Running backend API (port 8000)
+- Running backend API (port 8000), started with `E2E_TEST_HOOKS_ENABLED=true`
 - Test user account in the database
+
+### Throwaway users (`registerAndLogin`)
+
+Signup requires a business name and email verification. `registerAndLogin` walks
+the real flow: it fills `/signup`, reads the pending verification token from the
+backend's e2e-only hook (`GET /api/v1/onboarding/test/verification-token`), opens
+`/verify-email?token=…`, picks 3D printing as the business type (setup step 2,
+which enables the 3D-print modules) and lands on `/dashboard`.
+
+The hook answers 404 unless the **local** backend runs with the flag (`--reload`
+is needed on Windows for the async database driver):
+
+```powershell
+$env:E2E_TEST_HOOKS_ENABLED = 'true'; cd backend; poetry run uvicorn app.main:app --reload --port 8000
+```
+
+The same flag also switches off the API rate limiter for that process: a run
+registers one throwaway user per test from one IP, far over the signup limit of
+5 per minute.
+
+The flag is off by default, refused whenever `ENVIRONMENT=production` (hook
+answers 404, rate limits stay on), the hook is hidden from the API docs, and the
+flag must never be set in a deployment manifest or instance config
+(`backend/tests/api/test_onboarding_e2e_hooks.py` checks all of this).
 
 ### Installation
 
@@ -175,6 +199,7 @@ proposals), so recreate and reseed the database before each full run.
 
 - Verify credentials in `.env.e2e`
 - Check test user exists in database
+- "No verification token from the e2e hook": restart the local backend with `E2E_TEST_HOOKS_ENABLED=true`
 - Check login endpoint is working
 
 ### Selectors Not Found

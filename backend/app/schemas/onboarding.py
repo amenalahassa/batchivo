@@ -79,6 +79,12 @@ class ResendVerificationRequest(BaseModel):
     email: EmailStr = Field(..., description="Email address to resend verification to")
 
 
+class E2EVerificationTokenResponse(BaseModel):
+    """Pending verification token, returned only by the e2e test hook."""
+
+    token: str = Field(..., description="Pending email-verification token")
+
+
 class ResendVerificationResponse(BaseModel):
     """Schema for resend verification response."""
 

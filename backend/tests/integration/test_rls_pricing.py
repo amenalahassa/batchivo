@@ -1007,8 +1007,16 @@ class TestTheDerivationCoversTheWholeApp:
         A wrong prefix would make every assertion above pass against a path
         nobody serves, which is exactly the quiet failure this replaces.
         """
+        # A route hidden from the docs (include_in_schema=False, e.g. the e2e
+        # test hook) is served but never published; it stays in the population
+        # so the scoping checks still cover it, and is only exempt from this one.
         published = set(app.openapi()["paths"])
-        missing = sorted({path for _method, path in _population()} - published)
+        derived = {
+            path
+            for (_method, path), (route, _module) in _population().items()
+            if route.include_in_schema
+        }
+        missing = sorted(derived - published)
         assert missing == [], (
             f"these paths were derived from app/main.py but the app does not "
             f"publish them: {missing[:10]}"

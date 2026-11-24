@@ -322,6 +322,13 @@ class OnboardingService:
         logger.info(f"Verification email resent to {email}")
         return True
 
+    async def get_pending_verification_token(self, email: str) -> Optional[str]:
+        """Return the pending (unused, unexpired) verification token for an email, if any."""
+        token = await self._get_pending_token(email)
+        if token is None or not token.is_valid:
+            return None
+        return token.token
+
     async def _get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email address."""
         result = await self.db.execute(select(User).where(User.email == email.lower()))
