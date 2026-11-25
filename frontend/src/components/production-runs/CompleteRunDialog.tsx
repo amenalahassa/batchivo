@@ -32,6 +32,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
+import { fromDateTimeLocalValue, toDateTimeLocalValue } from '@/lib/datetimeLocal'
 
 interface CompleteRunDialogProps {
   run: ProductionRunDetail
@@ -144,10 +145,8 @@ export function CompleteRunDialog({
 
       // Initialize started_at - format for datetime-local input
       if (run.started_at) {
-        const date = new Date(run.started_at)
-        // Format as YYYY-MM-DDTHH:MM for datetime-local input
-        const formatted = date.toISOString().slice(0, 16)
-        setStartedAt(formatted)
+        // The input shows local wall-clock time and is read back as local time
+        setStartedAt(toDateTimeLocalValue(new Date(run.started_at)))
       }
 
       setError(null)
@@ -262,7 +261,7 @@ export function CompleteRunDialog({
             runUpdates.duration_hours = durationHours
           }
           if (startedAt) {
-            runUpdates.started_at = new Date(startedAt).toISOString()
+            runUpdates.started_at = fromDateTimeLocalValue(startedAt)
           }
           if (Object.keys(runUpdates).length > 0) {
             await updateProductionRun(run.id, runUpdates)

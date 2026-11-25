@@ -185,9 +185,9 @@ test.describe('Production Run Workflow with Inventory Deduction', () => {
     const modelId = await createTestModel(api, spoolId, TEST_MODEL.materialWeightPerItem)
     expect(modelId).toBeTruthy()
 
-    // Step 4: Create and complete production run. The print time is entered so
-    // the completion dialog sends a duration; without one the completion trips
-    // the timezone bug covered by the fixme test below.
+    // Step 4: Create and complete production run, with a print time entered so
+    // the completion dialog sends a duration (the run without one is covered
+    // by the west-of-UTC test below).
     const runId = await createAndCompleteProductionRun(
       page,
       TEST_MODEL.sku,
@@ -245,14 +245,9 @@ test.describe('Production Run completion west of UTC', () => {
     await registerAndLogin(page)
   })
 
-  // App bug: CompleteRunDialog.tsx:149 fills the datetime-local "Started" field
-  // with toISOString() (UTC) and :265 reads it back as local time, so west of
-  // UTC started_at moves hours into the future. With no duration entered the
-  // backend (services/production_run.py:674-685) derives a negative
-  // duration_hours, the response fails validation (ge=0) and the endpoint
-  // answers 500 after committing: the dialog shows "Network Error" although
-  // the run is completed.
-  test.fixme('completes a run that has no estimated print time', async ({ page }) => {
+  // Regression: .specify/bugs/complete-run-timezone-500 (the "Started" field
+  // mixed UTC and local time, which gave a negative duration and a 500)
+  test('completes a run that has no estimated print time', async ({ page }) => {
     const api = await apiAs(page)
     const spoolId = await createTestSpool(api, TEST_SPOOL)
     await createTestModel(api, spoolId, TEST_MODEL.materialWeightPerItem)

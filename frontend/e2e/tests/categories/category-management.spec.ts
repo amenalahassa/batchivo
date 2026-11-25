@@ -139,9 +139,8 @@ test.describe('Category Management', () => {
     expect(saved.is_active).toBe(false)
   })
 
-  test.fixme('should list inactive categories under Show All', async ({ page }) => {
-    // App bug: the page sends `is_active`, the API reads `include_inactive`, so
-    // "Show All" never lists inactive categories (.specify/bugs/e2e-stale-specs).
+  test('should list inactive categories under Show All', async ({ page }) => {
+    // Regression: .specify/bugs/category-show-all-param
     await createCategory(page, testCategory)
     await categoryRow(page, testCategory.name).getByRole('switch').click()
     await page.getByRole('button', { name: /^Show All/ }).click()
@@ -224,9 +223,8 @@ test.describe('Category Reordering', () => {
     await expect(rows.nth(1)).toContainText(first.name)
   })
 
-  test.fixme('should reorder categories created from the dialog', async ({ page }) => {
-    // App bug: new categories all get display_order 0, and a move swaps the two
-    // orders, so it changes nothing (.specify/bugs/e2e-stale-specs).
+  test('should reorder categories created from the dialog', async ({ page }) => {
+    // Regression: .specify/bugs/category-reorder-noop
     const first = generateTestCategory()
     const second = generateTestCategory()
     await createCategory(page, first)

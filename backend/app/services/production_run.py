@@ -29,6 +29,23 @@ from app.schemas.production_run import (
 
 logger = logging.getLogger(__name__)
 
+
+def elapsed_hours(started_at: datetime, completed_at: datetime) -> Decimal:
+    """Hours between start and end, to two places, never negative.
+
+    A start entered in the browser can land after the end (a local time read as
+    UTC, a clock skew); a negative duration then failed the response schema
+    (``ge=0``) after the run had been committed. Naive datetimes (SQLite) are
+    taken as UTC.
+    """
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    if completed_at.tzinfo is None:
+        completed_at = completed_at.replace(tzinfo=timezone.utc)
+    seconds = max((completed_at - started_at).total_seconds(), 0.0)
+    return Decimal(str(seconds / 3600)).quantize(Decimal("0.01"))
+
+
 # A run's money -- the per-gram figure a material is frozen at, the realised
 # unit cost and the expected-against-actual summary -- lives in
 # `app.services.run_costs`, which is type-checked as a money path (T265).
@@ -672,17 +689,9 @@ class ProductionRunService:
 
                 # Calculate duration if not set
                 if not production_run.duration_hours and production_run.completed_at:
-                    # Ensure both timestamps are timezone-aware for comparison
-                    completed = production_run.completed_at
-                    started = production_run.started_at
-                    if started.tzinfo is None:
-                        started = started.replace(tzinfo=timezone.utc)
-                    if completed.tzinfo is None:
-                        completed = completed.replace(tzinfo=timezone.utc)
-                    duration = completed - started
-                    production_run.duration_hours = Decimal(
-                        str(duration.total_seconds() / 3600)
-                    ).quantize(Decimal("0.01"))
+                    production_run.duration_hours = elapsed_hours(
+                        production_run.started_at, production_run.completed_at
+                    )
 
                 await self.db.flush()  # Flush changes before commit
                 await self.db.commit()
@@ -1239,10 +1248,9 @@ class ProductionRunService:
                 production_run.completed_at = datetime.now(timezone.utc)
 
                 # Calculate duration
-                duration = production_run.completed_at - production_run.started_at
-                production_run.duration_hours = Decimal(
-                    str(duration.total_seconds() / 3600)
-                ).quantize(Decimal("0.01"))
+                production_run.duration_hours = elapsed_hours(
+                    production_run.started_at, production_run.completed_at
+                )
 
                 await self.db.flush()
                 await self.db.commit()
@@ -1394,10 +1402,9 @@ class ProductionRunService:
                     ) + f"\n\nFailure notes: {notes}"
 
                 # Calculate duration
-                duration = production_run.completed_at - production_run.started_at
-                production_run.duration_hours = Decimal(
-                    str(duration.total_seconds() / 3600)
-                ).quantize(Decimal("0.01"))
+                production_run.duration_hours = elapsed_hours(
+                    production_run.started_at, production_run.completed_at
+                )
 
                 await self.db.flush()
                 await self.db.commit()

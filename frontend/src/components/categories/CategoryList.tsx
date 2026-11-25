@@ -23,6 +23,8 @@ import {
   createCategory,
   updateCategory,
   deleteCategory,
+  displayOrderUpdatesForMove,
+  reorderCategories,
   type Category,
   type CategoryCreateRequest,
   type CategoryUpdateRequest,
@@ -90,7 +92,7 @@ export function CategoryList() {
     queryFn: () =>
       listCategories({
         search: search || undefined,
-        is_active: showInactive ? undefined : true,
+        include_inactive: showInactive || undefined,
         limit: 100,
       }),
   })
@@ -132,25 +134,18 @@ export function CategoryList() {
     })
   }
 
+  // Reorder mutation: renumbers the shown list, so tied orders still move
+  const reorderMutation = useMutation({
+    mutationFn: reorderCategories,
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['categories'] })
+    },
+  })
+
   // Move category up/down in display order
   const handleMove = (category: Category, direction: 'up' | 'down') => {
-    const categories = sortedCategories
-    const currentIndex = categories.findIndex((c) => c.id === category.id)
-    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
-
-    if (targetIndex < 0 || targetIndex >= categories.length) return
-
-    const targetCategory = categories[targetIndex]
-
-    // Swap display orders
-    updateMutation.mutate({
-      id: category.id,
-      data: { display_order: targetCategory.display_order },
-    })
-    updateMutation.mutate({
-      id: targetCategory.id,
-      data: { display_order: category.display_order },
-    })
+    const updates = displayOrderUpdatesForMove(sortedCategories, category.id, direction)
+    if (updates.length > 0) reorderMutation.mutate(updates)
   }
 
   // Generate slug from name

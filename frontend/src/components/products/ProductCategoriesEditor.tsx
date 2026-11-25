@@ -43,7 +43,7 @@ export function ProductCategoriesEditor({ productId, categories }: ProductCatego
   // Fetch all available categories
   const { data: allCategories, isLoading: isLoadingCategories } = useQuery({
     queryKey: ['categories'],
-    queryFn: () => listCategories({ is_active: true, limit: 100 }),
+    queryFn: () => listCategories({ limit: 100 }),
   })
 
   // Add category mutation

@@ -32,8 +32,8 @@ export function WizardCategorySelection({
 
   // Fetch categories
   const { data: categoriesData, isLoading } = useQuery({
-    queryKey: ['categories', { is_active: true, limit: 100 }],
-    queryFn: () => listCategories({ is_active: true, limit: 100 }),
+    queryKey: ['categories', { limit: 100 }],
+    queryFn: () => listCategories({ limit: 100 }),
   })
 
   const categories = categoriesData?.categories || []

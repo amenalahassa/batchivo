@@ -9,7 +9,7 @@ Provides CRUD operations for production runs, including:
 - Managing production run items and materials
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -46,6 +46,7 @@ from app.schemas.production_run_plate import (
     MarkPlateCompleteRequest,
 )
 from app.services.production_run import (
+    elapsed_hours,
     MaterialCostUnderivable,
     ProductionRunService,
     run_material_cost_per_gram,
@@ -357,12 +358,9 @@ async def update_production_run(
 
     # Auto-calculate duration if completed_at is set
     if updates.completed_at and production_run.started_at:
-        # Ensure started_at is timezone-aware (SQLite returns naive datetimes)
-        started_at = production_run.started_at
-        if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=timezone.utc)
-        duration = updates.completed_at - started_at
-        production_run.duration_hours = Decimal(str(duration.total_seconds() / 3600))
+        production_run.duration_hours = elapsed_hours(
+            production_run.started_at, updates.completed_at
+        )
 
     await db.commit()
 

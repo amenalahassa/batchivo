@@ -149,11 +149,9 @@ test.describe('Product CRUD Operations', () => {
     await expect(rows.filter({ hasText: otherName })).toHaveCount(0)
   })
 
-  // App bug: GET /api/v1/products/{id} only finds active products
-  // (backend/app/api/v1/products.py:650, `Product.is_active.is_(True)`), so after
-  // saving a product as inactive the form's redirect lands on "Error loading
-  // product" (404) instead of the detail page with its "Inactive" badge.
-  test.fixme('should toggle product active status', async ({ page }) => {
+  // Regression: .specify/bugs/product-inactive-detail-404 (an inactive
+  // product's detail page used to answer 404)
+  test('should toggle product active status', async ({ page }) => {
     await createProductViaForm(page, testProduct.sku, testProduct.name)
     await expect(page.getByText('Active', { exact: true })).toBeVisible()
 

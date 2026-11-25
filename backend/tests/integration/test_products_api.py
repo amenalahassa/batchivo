@@ -86,9 +86,46 @@ class TestProductsEndpoints:
         response = await client.delete(f"/api/v1/products/{test_product.id}", headers=auth_headers)
         assert response.status_code in [200, 204]
 
-        # Verify product is deleted
+        # A soft delete deactivates: the product still opens, marked inactive,
+        # so it can be reactivated or purged (.specify/bugs/product-inactive-detail-404)
+        response = await client.get(f"/api/v1/products/{test_product.id}", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["is_active"] is False
+
+        # Purged: gone for good
+        response = await client.delete(
+            f"/api/v1/products/{test_product.id}?purge=true", headers=auth_headers
+        )
+        assert response.status_code in [200, 204]
         response = await client.get(f"/api/v1/products/{test_product.id}", headers=auth_headers)
         assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_inactive_product_detail(
+        self, client: AsyncClient, auth_headers: dict, test_product: Product
+    ):
+        """Regression (product-inactive-detail-404): saving a product inactive keeps its page."""
+        response = await client.put(
+            f"/api/v1/products/{test_product.id}",
+            headers=auth_headers,
+            json={"is_active": False},
+        )
+        assert response.status_code == 200
+
+        response = await client.get(f"/api/v1/products/{test_product.id}", headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == str(test_product.id)
+        assert data["is_active"] is False
+
+        # Reactivating from the edit page works
+        response = await client.put(
+            f"/api/v1/products/{test_product.id}",
+            headers=auth_headers,
+            json={"is_active": True},
+        )
+        assert response.status_code == 200
+        assert response.json()["is_active"] is True
 
     @pytest.mark.asyncio
     async def test_product_not_found(self, client: AsyncClient, auth_headers: dict):

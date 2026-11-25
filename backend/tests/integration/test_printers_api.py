@@ -131,6 +131,36 @@ class TestPrintersEndpoints:
         assert data["name"] == "Updated Printer Name"
         assert data["notes"] == "Updated notes"
 
+    async def test_serial_number_is_saved_and_updated(self, async_client: AsyncClient):
+        """Regression (printer-serial-dropped): the serial number is no longer dropped."""
+        response = await async_client.post(
+            "/api/v1/printers", json={"name": "Serial Printer", "serial_number": "SN-12345"}
+        )
+        assert response.status_code == 201
+        printer_id = response.json()["id"]
+        assert response.json()["serial_number"] == "SN-12345"
+
+        fetched = await async_client.get(f"/api/v1/printers/{printer_id}")
+        assert fetched.json()["serial_number"] == "SN-12345"
+
+        updated = await async_client.put(
+            f"/api/v1/printers/{printer_id}", json={"serial_number": "SN-67890"}
+        )
+        assert updated.status_code == 200
+        assert updated.json()["serial_number"] == "SN-67890"
+
+        cleared = await async_client.put(
+            f"/api/v1/printers/{printer_id}", json={"serial_number": None}
+        )
+        assert cleared.json()["serial_number"] is None
+
+    async def test_serial_number_too_long_is_rejected(self, async_client: AsyncClient):
+        """A serial number longer than the column is a 422, not a database error."""
+        response = await async_client.post(
+            "/api/v1/printers", json={"name": "Serial Printer", "serial_number": "X" * 101}
+        )
+        assert response.status_code == 422
+
     async def test_update_printer_not_found(self, async_client: AsyncClient):
         """Test updating a non-existent printer."""
         fake_id = uuid4()

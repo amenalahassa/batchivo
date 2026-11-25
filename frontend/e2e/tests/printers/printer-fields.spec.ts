@@ -121,10 +121,8 @@ test.describe('Printer Field Validation - Optional Text Fields', () => {
     expect((await savedPrinter(page, testData.name)).model).toBe('bambu_x1c')
   })
 
-  // App bug: the form has a Serial Number field, but the printer model and API
-  // schemas have no serial_number, so the value is silently dropped
-  // (.specify/bugs/e2e-stale-specs).
-  test.fixme('should save serial_number correctly', async ({ page }) => {
+  // Regression: .specify/bugs/printer-serial-dropped
+  test('should save serial_number correctly', async ({ page }) => {
     const testData = generateCompletePrinterData()
 
     await openAddPrinterDialog(page)

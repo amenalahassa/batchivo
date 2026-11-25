@@ -69,6 +69,12 @@ class Printer(Base, UUIDMixin, TimestampMixin):
         comment="Model name",
     )
 
+    serial_number: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="Manufacturer serial number of the machine",
+    )
+
     # Bed Size
     bed_size_x_mm: Mapped[Optional[int]] = mapped_column(
         Integer,
