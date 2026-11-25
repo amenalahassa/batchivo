@@ -11,8 +11,9 @@
  * - Boolean: is_active
  */
 
-import { test, expect, Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, openDashboard } from '../../helpers'
 
 function generateCompletePrinterData() {
   const timestamp = Date.now()
@@ -70,7 +71,6 @@ async function submitAndVerifyPrinter(page: Page, verifyText: string): Promise<v
 test.describe('Printer Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/printers')
   })
 
@@ -95,7 +95,6 @@ test.describe('Printer Field Validation - Required Fields', () => {
 test.describe('Printer Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/printers')
   })
 
@@ -147,7 +146,6 @@ test.describe('Printer Field Validation - Optional Text Fields', () => {
 test.describe('Printer Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/printers')
   })
 
@@ -190,7 +188,6 @@ test.describe('Printer Field Validation - Numeric Fields', () => {
 test.describe('Printer Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/printers')
   })
 
@@ -223,7 +220,6 @@ test.describe('Printer Field Validation - Boolean Fields', () => {
 test.describe('Printer Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/printers')
   })
 
@@ -284,7 +280,7 @@ test.describe('Printer Field Validation - Complete Form', () => {
 test.describe('Printer Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to printers page', async ({ page }) => {

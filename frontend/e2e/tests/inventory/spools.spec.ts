@@ -15,8 +15,9 @@
  * - Backend API running with E2E_TEST_HOOKS_ENABLED (see e2e/README.md)
  */
 
-import { test, expect, Page, Locator } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+import { type Page, type Locator } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, openDashboard, uniqueSuffix } from '../../helpers'
 
 // Each test signs up a fresh tenant first; leave room for a busy shared backend.
 test.describe.configure({ timeout: 90_000 })
@@ -90,7 +91,6 @@ function libraryRow(page: Page, brand: string): Locator {
 test.describe('Inventory Page - Display', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/inventory')
   })
 
@@ -118,7 +118,6 @@ test.describe('Inventory Page - Display', () => {
 test.describe('Inventory - Add Spool', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
@@ -170,7 +169,7 @@ test.describe('Inventory - Add Spool', () => {
 test.describe('Inventory - Search and Filter', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should filter spools by search term', async ({ page }) => {
@@ -212,7 +211,7 @@ test.describe('Inventory - Search and Filter', () => {
 test.describe('Inventory - Update Weight', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should update spool weight', async ({ page }) => {
@@ -246,7 +245,7 @@ test.describe('Inventory - Update Weight', () => {
 test.describe('Inventory - Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to inventory from dashboard', async ({ page }) => {

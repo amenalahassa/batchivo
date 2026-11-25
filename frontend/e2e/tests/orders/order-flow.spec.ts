@@ -7,8 +7,9 @@
  * - admin can mark the shipped order delivered
  */
 
-import { test, expect, type Page, type Route } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page, type Route } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { isBackendAvailable } from '../../helpers'
 
 type E2EOrder = {
   id: string
@@ -171,7 +172,6 @@ test.describe('Order Processing Workflow', () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     // A real session: the app checks it on every call, so a fake token in
     // storage is signed out. Only the order data itself is mocked.
-    await registerAndLogin(page)
 
     await mockAuthenticatedOrderApi(page, order)
   })

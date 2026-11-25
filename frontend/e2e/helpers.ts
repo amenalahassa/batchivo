@@ -5,8 +5,9 @@
  * with retry logic for rate limiting.
  */
 
-import { Page } from '@playwright/test'
+import { BrowserContext, Page } from '@playwright/test'
 import { API_URL, HEALTH_URL } from './config'
+import { retryOnConnectionReset } from './connectionRetry'
 
 /**
  * Check if the backend API is available
@@ -163,9 +164,29 @@ export async function clickAndNavigate(
  * Read the signed-in user's access token from browser storage.
  */
 export async function getAccessToken(page: Page): Promise<string> {
-  const token = await readAccessToken(page)
-  if (!token) throw new Error('No stored session: call registerAndLogin first')
+  // A page that has not opened the app yet (about:blank) has no storage to read:
+  // fall back to the account the fixtures signed the context in with.
+  const token =
+    (await readAccessToken(page).catch(() => null)) ??
+    accountsByContext.get(page.context())?.accessToken
+  if (!token) throw new Error('No stored session: use the test from fixtures.ts or call registerAndLogin first')
   return token
+}
+
+/** An owner account made for a test (see fixtures.ts). */
+export interface E2EAccount {
+  email: string
+  password: string
+  accessToken: string
+  refreshToken: string
+  tokenType: string
+}
+
+const accountsByContext = new WeakMap<BrowserContext, E2EAccount>()
+
+/** Record which account a browser context starts signed in as (fixtures.ts). */
+export function rememberAccount(context: BrowserContext, account: E2EAccount): void {
+  accountsByContext.set(context, account)
 }
 
 async function readAccessToken(page: Page): Promise<string | null> {
@@ -194,7 +215,10 @@ async function pollAccessToken(page: Page, timeout: number): Promise<string> {
 export async function apiAs(page: Page) {
   const headers = { Authorization: `Bearer ${await getAccessToken(page)}` }
   async function call<T>(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, data?: unknown): Promise<T> {
-    const response = await page.request[method](`${API_URL}${path}`, { headers, data })
+    // A reset keep-alive socket is retried once (connectionRetry.ts); nothing else is.
+    const response = await retryOnConnectionReset(() =>
+      page.request[method](`${API_URL}${path}`, { headers, data })
+    )
     if (!response.ok()) {
       throw new Error(`${method.toUpperCase()} ${path} answered HTTP ${response.status()}: ${await response.text()}`)
     }
@@ -215,4 +239,13 @@ export async function apiAs(page: Page) {
 /** A unique suffix for test data names. */
 export function uniqueSuffix(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`
+}
+
+/**
+ * Open the dashboard, where a signed-in test used to start (registerAndLogin
+ * ended there).
+ */
+export async function openDashboard(page: Page): Promise<void> {
+  await page.goto('/dashboard')
+  await page.waitForURL('/dashboard', { timeout: 15000 })
 }

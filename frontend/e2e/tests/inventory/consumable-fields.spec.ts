@@ -12,8 +12,9 @@
  * - Select: category, unit_of_measure
  */
 
-import { test, expect, Page, Locator } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+import { type Page, type Locator } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, openDashboard, uniqueSuffix } from '../../helpers'
 
 // Each test signs up a fresh tenant first; leave room for a busy shared backend.
 test.describe.configure({ timeout: 90_000 })
@@ -104,7 +105,6 @@ async function getConsumable(page: Page, sku: string): Promise<Consumable> {
 test.describe('Consumable Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -167,7 +167,6 @@ test.describe('Consumable Field Validation - Required Fields', () => {
 test.describe('Consumable Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -224,7 +223,6 @@ test.describe('Consumable Field Validation - Optional Text Fields', () => {
 test.describe('Consumable Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -292,7 +290,6 @@ test.describe('Consumable Field Validation - Numeric Fields', () => {
 test.describe('Consumable Field Validation - Select Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -333,7 +330,6 @@ test.describe('Consumable Field Validation - Select Fields', () => {
 test.describe('Consumable Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -370,7 +366,6 @@ test.describe('Consumable Field Validation - Boolean Fields', () => {
 test.describe('Consumable Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/consumables')
   })
 
@@ -437,7 +432,7 @@ test.describe('Consumable Field Validation - Complete Form', () => {
 test.describe('Consumable Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to consumables page from dashboard', async ({ page }) => {

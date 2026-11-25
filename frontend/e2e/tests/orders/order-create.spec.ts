@@ -4,8 +4,9 @@
  * Covers staff creating a manual admin order with a recorded payment result.
  */
 
-import { test, expect, type Page, type Route } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page, type Route } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { isBackendAvailable } from '../../helpers'
 
 const productId = '33333333-3333-4333-8333-333333333333'
 const channelId = '55555555-5555-4555-8555-555555555555'
@@ -191,7 +192,6 @@ test.describe('Admin Order Creation', () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     // A real session: the app checks it on every call, so a fake token in
     // storage is signed out. Only the order data itself is mocked.
-    await registerAndLogin(page)
 
     await mockAuthenticatedCreateOrderApi(page)
   })

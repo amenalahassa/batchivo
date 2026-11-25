@@ -18,8 +18,9 @@
  * specs.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from './helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from './fixtures'
+import { apiAs, isBackendAvailable } from './helpers'
 
 // Test data
 const TEST_RUN = {
@@ -100,9 +101,8 @@ test.describe('Production Run Edit Flow with Status-Based Restrictions', () => {
   // when the shared stack is busy.
   test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should allow full editing of in_progress run and restrict editing after completion', async ({ page }) => {

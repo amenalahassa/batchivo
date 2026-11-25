@@ -6,14 +6,13 @@
  * see it refused afterwards.
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect } from '../../fixtures'
 import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+import { isBackendAvailable, uniqueSuffix } from '../../helpers'
 
 test.describe('API tokens', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/settings')
     await page.waitForLoadState('networkidle')
   })

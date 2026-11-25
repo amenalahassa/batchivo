@@ -12,8 +12,9 @@
  * - Boolean: is_active
  */
 
-import { test, expect, Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, openDashboard } from '../../helpers'
 
 const MODEL_DETAIL_URL = /\/models\/[0-9a-f-]{36}$/
 
@@ -75,7 +76,6 @@ async function fetchModel(page: Page, modelId: string) {
 test.describe('Model Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/models/new')
   })
 
@@ -117,7 +117,6 @@ test.describe('Model Field Validation - Required Fields', () => {
 test.describe('Model Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/models/new')
   })
 
@@ -200,7 +199,6 @@ test.describe('Model Field Validation - Optional Text Fields', () => {
 test.describe('Model Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/models/new')
   })
 
@@ -264,7 +262,6 @@ test.describe('Model Field Validation - Numeric Fields', () => {
 test.describe('Model Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/models/new')
   })
 
@@ -288,7 +285,7 @@ test.describe('Model Field Validation - Boolean Fields', () => {
 test.describe('Model Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should create model with all fields populated', async ({ page }) => {
@@ -348,7 +345,7 @@ test.describe('Model Field Validation - Complete Form', () => {
 test.describe('Model Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to models page', async ({ page }) => {

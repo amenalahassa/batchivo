@@ -9,13 +9,16 @@
  * - Payment settings visibility
  */
 
-import { test, expect } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { test, expect } from '../../fixtures'
+import { isBackendAvailable, openDashboard } from '../../helpers'
+
+// The tests only read the tenant (or sign out client-side): one tenant per
+// worker for this file is enough.
+test.use({ account: 'shared' })
 
 test.describe('Settings Page', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/settings')
     await page.waitForLoadState('networkidle')
   })
@@ -90,7 +93,6 @@ test.describe('Settings Page', () => {
 test.describe('General Settings', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/settings')
     await page.waitForLoadState('networkidle')
   })
@@ -114,7 +116,6 @@ test.describe('General Settings', () => {
 test.describe('Team Settings', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/settings')
     await page.waitForLoadState('networkidle')
     
@@ -153,7 +154,6 @@ test.describe('Team Settings', () => {
 test.describe('Payment Settings', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/settings')
     await page.waitForLoadState('networkidle')
     
@@ -187,7 +187,7 @@ test.describe('Payment Settings', () => {
 test.describe('Settings Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to settings from dashboard', async ({ page }) => {

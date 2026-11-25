@@ -14,8 +14,9 @@
  * hidden), so rows are found by role.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, uniqueSuffix } from '../../helpers'
 
 // Generate unique test data
 const generateTestCategory = () => {
@@ -64,10 +65,9 @@ async function search(page: Page, text: string) {
 test.describe('Category Management', () => {
   let testCategory: TestCategory
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     testCategory = generateTestCategory()
-    await registerAndLogin(page)
   })
 
   test('should display categories page', async ({ page }) => {
@@ -190,9 +190,8 @@ test.describe('Category Management', () => {
 })
 
 test.describe('Category Reordering', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   const up = (page: Page, name: string) =>

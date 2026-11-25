@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { apiAs, registerAndLogin, uniqueSuffix } from './helpers'
+import { test, expect } from './fixtures'
+import { apiAs, uniqueSuffix } from './helpers'
 
 /**
  * Product-category management from the product detail page.
@@ -13,8 +13,6 @@ test.describe('Product Categories', () => {
   let categoryName = ''
 
   test.beforeEach(async ({ page }) => {
-    await registerAndLogin(page)
-
     const api = await apiAs(page)
     const suffix = uniqueSuffix()
     productName = `E2E Category Product ${suffix}`

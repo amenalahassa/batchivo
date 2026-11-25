@@ -8,10 +8,11 @@
  * shows the summary (US1) with Start print held back while the printer cannot
  * be reached (US2) — and no print job is created.
  */
-import { test, expect, Page } from '@playwright/test'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
 import { strToU8, zipSync } from 'fflate'
 import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { isBackendAvailable, openDashboard } from '../../helpers'
 
 const SLICE_INFO = `<?xml version="1.0" encoding="UTF-8"?>
 <config>
@@ -76,7 +77,7 @@ async function createBambuPrinter(page: Page): Promise<{ id: string; name: strin
 test.describe('Send a print to a Bambu printer', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('Developer Mode gates Send print; prepare shows the summary', async ({ page }) => {
