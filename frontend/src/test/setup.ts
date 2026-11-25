@@ -1,4 +1,63 @@
-import { afterEach, vi } from 'vitest'
+import { afterAll, afterEach, vi } from 'vitest'
+
+/**
+ * Files share their worker, so each one starts from a clean slate here.
+ *
+ * `vitest.config.ts` runs with `isolate: false`: a worker builds its jsdom and
+ * loads React, Radix and the rest of `node_modules` once, then runs file after
+ * file in it, instead of paying for all of that again for every one of the
+ * ~110 DOM files. That was most of the suite's wall time (bug `vitest-slow`).
+ *
+ * What a fresh worker used to give for free is restored explicitly:
+ *
+ * - **Modules.** The application modules a previous file imported were bound
+ *   to *its* `vi.mock` factories. `vi.resetModules()` drops them, so this
+ *   file's imports evaluate again against its own mocks. Mock registrations
+ *   are already per file in Vitest; only the evaluated modules were shared.
+ *   `node_modules` are loaded natively and stay cached, which is the saving.
+ * - **Globals.** A file that replaces `window.localStorage`, `location`,
+ *   `fetch` and so on (`lib/auth.test.ts`, `lib/utils.test.ts` do) gets them
+ *   back as they were when it started, and fake timers or stubbed globals do
+ *   not outlive it.
+ */
+vi.resetModules()
+
+const SHARED_GLOBALS = [
+  'location',
+  'localStorage',
+  'sessionStorage',
+  'fetch',
+  'crypto',
+  'matchMedia',
+  'IntersectionObserver',
+  'ResizeObserver',
+  'scrollTo',
+] as const
+
+const savedGlobals = SHARED_GLOBALS.map(
+  (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const,
+)
+
+afterAll(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  for (const [name, descriptor] of savedGlobals) {
+    try {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
+      else delete (globalThis as Record<string, unknown>)[name]
+    } catch {
+      // A property the platform made non-configurable cannot have been
+      // replaced by a test either, so there is nothing to restore.
+    }
+  }
+  if (typeof document !== 'undefined') {
+    // Radix locks scrolling and pointer events on <body> while a dialog is
+    // open; a dialog left open at the end of a file must not carry that over.
+    document.body.removeAttribute('style')
+    document.body.removeAttribute('data-scroll-locked')
+    document.body.innerHTML = ''
+  }
+})
 
 /**
  * Whether this file is running with a DOM.

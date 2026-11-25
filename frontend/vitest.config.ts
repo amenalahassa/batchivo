@@ -53,6 +53,18 @@ export default defineConfig({
      */
     maxWorkers: '50%',
     minWorkers: 1,
+    /*
+     * One jsdom per worker, not one per file (bug `vitest-slow`).
+     *
+     * Isolated, every DOM file built its own jsdom (~1.5s warm, far more under
+     * load) and loaded React, Radix, lucide and react-markdown again before its
+     * first test; across ~110 files that, not the tests, was the run. Shared,
+     * a worker pays for it once. `src/test/setup.ts` gives each file back what
+     * a fresh worker used to: it re-evaluates the application modules against
+     * the file's own `vi.mock` factories and restores the globals, timers and
+     * <body> a previous file may have changed.
+     */
+    isolate: false,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
