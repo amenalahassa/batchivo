@@ -20,6 +20,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from moto import mock_aws
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from decimal import Decimal
@@ -33,6 +34,7 @@ from app.models.product import Product
 from app.models.spool import Spool
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
+from tests.passwords import hashed_test_password
 
 
 # Configure anyio to only use asyncio backend (not trio)
@@ -98,14 +100,17 @@ async def _drop_all_tables(conn, is_sqlite: bool):
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def db_engine():
+async def _schema_engine():
     """Create the test database engine and build the schema once per session.
 
     The schema build is the expensive part: dropping and recreating all 65
     model tables takes the better part of a minute on PostgreSQL, and doing
     it per test made the API suite take most of a day -- a commit gate that
-    slow is a gate nobody runs. Per-test isolation is the `clean_tables`
-    fixture below, which empties the tables between tests instead.
+    slow is a gate nobody runs. Per-test isolation is the function-scoped
+    `db_engine` fixture below, which empties the tables between tests instead.
+
+    Nothing requests this directly except `db_engine`: a worker that only
+    draws database-free tests never builds the schema at all.
     """
     # SQLite needs check_same_thread=False; PostgreSQL timeout key differs by driver
     if _IS_SQLITE:
@@ -181,47 +186,115 @@ async def db_engine():
     await engine.dispose()
 
 
+def _children_first_table_names() -> list[str]:
+    """Every model table, referencing tables before the tables they reference."""
+    return [table.name for table in reversed(Base.metadata.sorted_tables)]
+
+
+async def _empty_postgres_tables(engine, table_names: list[str]) -> None:
+    """Empty, on PostgreSQL, only the tables a previous test wrote to.
+
+    A `TRUNCATE ... CASCADE` of all 75 tables costs about 280 ms whatever they
+    hold -- every table gets a new file -- and it ran before every test, so it
+    was most of what a test cost. One probe finds the non-empty tables (about
+    4 ms), and a DELETE of the few rows a test leaves behind is a few more.
+
+    DELETE also takes only row locks, where TRUNCATE needs an exclusive lock on
+    every table: an idle transaction a previous test left open can no longer
+    hang the next test's cleanup until the timeout.
+
+    Should a DELETE trip a constraint the children-first order cannot satisfy
+    (a reference cycle), the old full TRUNCATE runs instead, so the outcome is
+    always the same: every table empty and every sequence restarted.
+    """
+    probe = " UNION ALL ".join(
+        f'SELECT {index} WHERE EXISTS (SELECT 1 FROM "{name}")'
+        for index, name in enumerate(table_names)
+    )
+    async with engine.begin() as conn:
+        filled = [table_names[row[0]] for row in (await conn.execute(text(probe))).fetchall()]
+        sequences = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname)"
+                        " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                        " WHERE c.relkind = 'S' AND n.nspname = 'public'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if filled:
+            order = {name: position for position, name in enumerate(table_names)}
+            try:
+                async with conn.begin_nested():
+                    for name in sorted(filled, key=order.__getitem__):
+                        await conn.execute(text(f'DELETE FROM "{name}"'))
+            except DBAPIError:
+                joined = ", ".join(f'"{name}"' for name in table_names)
+                await conn.execute(text(f"TRUNCATE TABLE {joined} CASCADE"))
+        # What `RESTART IDENTITY` did: a sequence can advance without leaving a
+        # row (a rolled-back insert), so every one is restarted, not only the
+        # filled tables' ones.
+        for sequence in sequences:
+            await conn.execute(text(f"ALTER SEQUENCE {sequence} RESTART"))
+
+
 async def _truncate_all_tables(engine, is_sqlite: bool):
     """Empty every table, leaving the schema in place.
 
     This is what replaces the per-test drop/create: emptying the tables costs
-    a single statement where rebuilding the schema cost about a minute, and a
-    test that starts against empty tables cannot see what a previous one left.
+    a fraction of a second where rebuilding the schema cost about a minute,
+    and a test that starts against empty tables cannot see what a previous
+    one left.
     """
-    table_names = [table.name for table in reversed(Base.metadata.sorted_tables)]
+    table_names = _children_first_table_names()
     if not table_names:
         return
 
-    if is_sqlite:
-        # SQLite has no TRUNCATE, and a plain DELETE trips the foreign keys the
-        # engine fixture deliberately switches on -- a self-referencing table
-        # cannot be emptied row by row with them enforced. SQLite silently
-        # IGNORES `PRAGMA foreign_keys` inside a transaction, so this must run
-        # on an autocommitting connection: issued inside `begin()`, the closing
-        # `ON` is dropped and the whole session continues with foreign keys off,
-        # which quietly turns every constraint test into a pass.
-        async with engine.connect() as conn:
-            await conn.execution_options(isolation_level="AUTOCOMMIT")
-            await conn.execute(text("PRAGMA foreign_keys=OFF"))
-            try:
-                for name in table_names:
-                    await conn.execute(text(f'DELETE FROM "{name}"'))
-            finally:
-                await conn.execute(text("PRAGMA foreign_keys=ON"))
-    else:
-        joined = ", ".join(f'"{name}"' for name in table_names)
-        async with engine.begin() as conn:
-            await conn.execute(text(f"TRUNCATE TABLE {joined} RESTART IDENTITY CASCADE"))
+    if not is_sqlite:
+        await _empty_postgres_tables(engine, table_names)
+        return
+
+    # SQLite has no TRUNCATE, and a plain DELETE trips the foreign keys the
+    # engine fixture deliberately switches on -- a self-referencing table
+    # cannot be emptied row by row with them enforced. SQLite silently
+    # IGNORES `PRAGMA foreign_keys` inside a transaction, so this must run
+    # on an autocommitting connection: issued inside `begin()`, the closing
+    # `ON` is dropped and the whole session continues with foreign keys off,
+    # which quietly turns every constraint test into a pass.
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
+        try:
+            for name in table_names:
+                await conn.execute(text(f'DELETE FROM "{name}"'))
+        finally:
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
-@pytest_asyncio.fixture(scope="function", autouse=True)
-async def clean_tables(db_engine):
-    """Empty the tables before each test, so the session-scoped schema is reusable.
+@pytest_asyncio.fixture(scope="function")
+async def db_engine(_schema_engine):
+    """The session's engine, with every table emptied before the test runs.
+
+    Every fixture that reaches the database goes through this one, so a test
+    that touches it starts against empty tables, and a test that does not --
+    a schema or pure-function test, most of `tests/unit` -- pays nothing.
+    Cleaning used to be an autouse fixture that ran before every test,
+    database or not.
 
     Cleaning before rather than after means a test that dies mid-way cannot
     poison the next one.
     """
-    await _truncate_all_tables(db_engine, _IS_SQLITE)
+    await _truncate_all_tables(_schema_engine, _IS_SQLITE)
+    yield _schema_engine
+
+
+@pytest.fixture(scope="function")
+def clean_tables(db_engine):
+    """Empty tables for the test; `db_engine` does the work (kept for its dependants)."""
     yield
 
 
@@ -393,7 +466,6 @@ async def test_tenant(db_session: AsyncSession) -> Tenant:
 @pytest_asyncio.fixture(scope="function")
 async def test_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a test user with proper password hashing."""
-    from app.auth.password import get_password_hash
     from app.models.user import UserTenant, UserRole
 
     # Use unique email per test to avoid PostgreSQL duplicate key issues
@@ -402,7 +474,7 @@ async def test_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
         id=uuid4(),
         email=f"test-{unique_id}@example.com",
         full_name="Test User",
-        hashed_password=get_password_hash("testpassword123"),
+        hashed_password=hashed_test_password("testpassword123"),
         is_active=True,
     )
     db_session.add(user)
@@ -682,8 +754,6 @@ async def test_designer(db_session: AsyncSession, test_tenant: Tenant):
 @pytest_asyncio.fixture(scope="function")
 async def test_customer(db_session: AsyncSession, test_tenant: Tenant) -> Customer:
     """Create a test customer account."""
-    from app.auth.password import get_password_hash
-
     # Use unique email per test to avoid PostgreSQL duplicate key issues
     unique_id = str(uuid4())[:8]
     customer = Customer(
@@ -691,7 +761,7 @@ async def test_customer(db_session: AsyncSession, test_tenant: Tenant) -> Custom
         tenant_id=test_tenant.id,
         email=f"customer-{unique_id}@example.com",
         full_name="Test Customer",
-        hashed_password=get_password_hash("customerpass123"),
+        hashed_password=hashed_test_password("customerpass123"),
         is_active=True,
         email_verified=True,
     )
@@ -816,7 +886,6 @@ async def make_user_with_role(
     role: UserRole,
 ) -> User:
     """A user holding exactly ``role`` in ``tenant``."""
-    from app.auth.password import get_password_hash
     from app.models.user import UserTenant
 
     unique_id = str(uuid4())[:8]
@@ -824,7 +893,7 @@ async def make_user_with_role(
         id=uuid4(),
         email=f"{role.value}-pricing-{unique_id}@example.com",
         full_name=f"Pricing {role.value}",
-        hashed_password=get_password_hash("pricingpassword123"),
+        hashed_password=hashed_test_password("pricingpassword123"),
         is_active=True,
     )
     db_session.add(user)

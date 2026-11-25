@@ -21,13 +21,13 @@ class TestTenantMemberEndpoints:
         test_tenant: Tenant,
     ) -> User:
         """Create an owner user for the tenant."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         user = User(
             id=uuid4(),
             email="owner@example.com",
             full_name="Tenant Owner",
-            hashed_password=get_password_hash("ownerpassword123"),
+            hashed_password=hashed_test_password("ownerpassword123"),
             is_active=True,
         )
         db_session.add(user)
@@ -50,13 +50,13 @@ class TestTenantMemberEndpoints:
         test_tenant: Tenant,
     ) -> User:
         """Create an admin user for the tenant."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         user = User(
             id=uuid4(),
             email="admin@example.com",
             full_name="Tenant Admin",
-            hashed_password=get_password_hash("adminpassword123"),
+            hashed_password=hashed_test_password("adminpassword123"),
             is_active=True,
         )
         db_session.add(user)
@@ -79,13 +79,13 @@ class TestTenantMemberEndpoints:
         test_tenant: Tenant,
     ) -> User:
         """Create a regular member user for the tenant."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         user = User(
             id=uuid4(),
             email="member@example.com",
             full_name="Tenant Member",
-            hashed_password=get_password_hash("memberpassword123"),
+            hashed_password=hashed_test_password("memberpassword123"),
             is_active=True,
         )
         db_session.add(user)
@@ -107,13 +107,13 @@ class TestTenantMemberEndpoints:
         db_session: AsyncSession,
     ) -> User:
         """Create a user not affiliated with the test tenant."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         user = User(
             id=uuid4(),
             email="unaffiliated@example.com",
             full_name="Unaffiliated User",
-            hashed_password=get_password_hash("unaffiliatedpassword123"),
+            hashed_password=hashed_test_password("unaffiliatedpassword123"),
             is_active=True,
         )
         db_session.add(user)

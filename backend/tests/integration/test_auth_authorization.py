@@ -40,13 +40,13 @@ settings = get_settings()
 @pytest_asyncio.fixture(scope="function")
 async def viewer_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a user with viewer role (lowest permissions)."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="viewer@example.com",
         full_name="Viewer User",
-        hashed_password=get_password_hash("viewerpass123"),
+        hashed_password=hashed_test_password("viewerpass123"),
         is_active=True,
     )
     db_session.add(user)
@@ -66,13 +66,13 @@ async def viewer_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
 @pytest_asyncio.fixture(scope="function")
 async def member_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a user with member role."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="member@example.com",
         full_name="Member User",
-        hashed_password=get_password_hash("memberpass123"),
+        hashed_password=hashed_test_password("memberpass123"),
         is_active=True,
     )
     db_session.add(user)
@@ -92,13 +92,13 @@ async def member_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
 @pytest_asyncio.fixture(scope="function")
 async def owner_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a user with owner role (highest tenant permissions)."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="owner@example.com",
         full_name="Owner User",
-        hashed_password=get_password_hash("ownerpass123"),
+        hashed_password=hashed_test_password("ownerpass123"),
         is_active=True,
     )
     db_session.add(user)
@@ -118,13 +118,13 @@ async def owner_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
 @pytest_asyncio.fixture(scope="function")
 async def platform_admin_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a platform admin user."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="platform_admin@example.com",
         full_name="Platform Admin",
-        hashed_password=get_password_hash("adminpass123"),
+        hashed_password=hashed_test_password("adminpass123"),
         is_active=True,
         is_platform_admin=True,
     )
@@ -145,13 +145,13 @@ async def platform_admin_user(db_session: AsyncSession, test_tenant: Tenant) -> 
 @pytest_asyncio.fixture(scope="function")
 async def inactive_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create an inactive user."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="inactive@example.com",
         full_name="Inactive User",
-        hashed_password=get_password_hash("inactivepass123"),
+        hashed_password=hashed_test_password("inactivepass123"),
         is_active=False,
     )
     db_session.add(user)
@@ -187,13 +187,13 @@ async def other_tenant(db_session: AsyncSession) -> Tenant:
 @pytest_asyncio.fixture(scope="function")
 async def user_in_other_tenant(db_session: AsyncSession, other_tenant: Tenant) -> User:
     """Create a user belonging only to other_tenant."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="other_tenant_user@example.com",
         full_name="Other Tenant User",
-        hashed_password=get_password_hash("otherpass123"),
+        hashed_password=hashed_test_password("otherpass123"),
         is_active=True,
     )
     db_session.add(user)
