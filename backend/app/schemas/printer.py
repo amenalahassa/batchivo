@@ -18,6 +18,9 @@ class PrinterBase(BaseModel):
     )
     manufacturer: Optional[str] = Field(None, max_length=100, description="Manufacturer name")
     model: Optional[str] = Field(None, max_length=100, description="Model name")
+    serial_number: Optional[str] = Field(
+        None, max_length=100, description="Manufacturer serial number"
+    )
 
     # Bed size
     bed_size_x_mm: Optional[int] = Field(None, ge=1, description="Bed size X in millimeters")
@@ -62,6 +65,7 @@ class PrinterUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     manufacturer: Optional[str] = Field(None, max_length=100)
     model: Optional[str] = Field(None, max_length=100)
+    serial_number: Optional[str] = Field(None, max_length=100)
 
     bed_size_x_mm: Optional[int] = Field(None, ge=1)
     bed_size_y_mm: Optional[int] = Field(None, ge=1)

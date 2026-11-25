@@ -633,3 +633,44 @@ describe('ModelForm - an observed figure is read-only (T262)', () => {
     expect(body.prints_per_plate).toBe(4)
   })
 })
+
+/*
+ * Regression (.specify/bugs/model-form-custom-value-lost): a value typed after
+ * "+ Add new …" is not one of the Select's items, so the Select used to reset
+ * it to '' on blur and the POST went out without it.
+ */
+describe('ModelForm - values typed with "+ Add new"', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockListModels.mockResolvedValue({ models: [], total: 0, skip: 0, limit: 500 })
+    mockListDesigners.mockResolvedValue({ designers: [], total: 0 })
+    mockGetNextSKU.mockResolvedValue({ next_sku: 'MOD-001', highest_existing: 0 })
+    mockCreateModel.mockResolvedValue({ id: 'model-123' })
+  })
+
+  async function addNew(label: string, option: string, placeholder: string, value: string) {
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('combobox', { name: label }))
+    await user.click(await screen.findByRole('option', { name: option }))
+    await user.type(screen.getByPlaceholderText(placeholder), value)
+    await user.tab()
+  }
+
+  it.each([
+    ['Designer (Optional)', '+ Add new designer', 'Enter designer name', 'designer'],
+    ['Source (Optional)', '+ Add new source', 'Enter source name', 'source'],
+    ['Machine (Optional)', '+ Add new printer', 'Enter printer name', 'machine'],
+  ])('keeps a new %s after blur and saves it', async (label, option, placeholder, key) => {
+    renderModelForm()
+    await userEvent.type(await screen.findByLabelText('Name'), 'Typed Value Model')
+
+    await addNew(label, option, placeholder, 'Brand New Value')
+
+    // The Select shows the typed value instead of falling back to its placeholder
+    expect(screen.getByRole('combobox', { name: label })).toHaveTextContent('Brand New Value')
+
+    await userEvent.click(screen.getByRole('button', { name: /create model/i }))
+    await waitFor(() => expect(mockCreateModel).toHaveBeenCalledTimes(1))
+    expect(mockCreateModel.mock.calls[0][0][key]).toBe('Brand New Value')
+  })
+})

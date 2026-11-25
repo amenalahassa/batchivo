@@ -92,6 +92,23 @@ interface ModelFormProps {
   mode: 'create' | 'edit'
 }
 
+/**
+ * The Select's items, plus the field's current value when it is not one of
+ * them: a value typed after "+ Add new …" (or a designer no longer active).
+ * Without its item, Radix Select resets the value to '' and the save drops it.
+ */
+function withCurrentValue(
+  options: string[],
+  value: string | null | undefined,
+  typed: string
+): string[] {
+  // While "+ Add new" is open the item for the typed name is offered already,
+  // so it exists before the blur sets the field to it.
+  const current = value === '__custom__' ? typed.trim() : value
+  if (!current || options.includes(current)) return options
+  return [...options, current]
+}
+
 export function ModelForm({ model, mode }: ModelFormProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -523,7 +540,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueDesigners.map((designer) => (
+                      {withCurrentValue(uniqueDesigners, field.value, customDesigner).map((designer) => (
                         <SelectItem key={designer} value={designer}>
                           {designer}
                         </SelectItem>
@@ -574,7 +591,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueSources.map((source) => (
+                      {withCurrentValue(uniqueSources, field.value, customSource).map((source) => (
                         <SelectItem key={source} value={source}>
                           {source}
                         </SelectItem>
@@ -918,7 +935,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueMachines.map((machine) => (
+                      {withCurrentValue(uniqueMachines, field.value, customMachine).map((machine) => (
                         <SelectItem key={machine} value={machine}>
                           {machine}
                         </SelectItem>

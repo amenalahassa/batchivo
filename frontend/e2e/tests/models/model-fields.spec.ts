@@ -159,11 +159,9 @@ test.describe('Model Field Validation - Optional Text Fields', () => {
     expect((await fetchModel(page, modelId)).designer).toBe(testData.designer)
   })
 
-  // App bug: a designer typed via "+ Add new designer" is dropped on save. The
-  // input's onBlur sets the field to the typed name, which is not one of the
-  // Select's items, so the Select resets to '' and the POST omits `designer`
-  // (src/components/models/ModelForm.tsx:510-545; same pattern for source and machine).
-  test.fixme('should save a new designer typed in the form', async ({ page }) => {
+  // Regression: .specify/bugs/model-form-custom-value-lost (a typed designer
+  // used to be reset to '' on blur and left out of the POST)
+  test('should save a new designer typed in the form', async ({ page }) => {
     const testData = generateCompleteModelData()
 
     await waitForModelForm(page)

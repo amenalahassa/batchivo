@@ -143,12 +143,24 @@ async def create_category(
             detail=f"Category with slug '{slug}' already exists",
         )
 
+    # A category created without an explicit order goes after the existing ones.
+    # Giving every new category 0 left the up/down buttons nothing to swap.
+    if "display_order" in category_data.model_fields_set:
+        display_order = category_data.display_order
+    else:
+        max_order = (
+            await db.execute(
+                select(func.max(Category.display_order)).where(Category.tenant_id == tenant.id)
+            )
+        ).scalar_one_or_none()
+        display_order = 0 if max_order is None else max_order + 1
+
     category = Category(
         tenant_id=tenant.id,
         name=category_data.name,
         slug=slug,
         description=category_data.description,
-        display_order=category_data.display_order,
+        display_order=display_order,
         is_active=category_data.is_active,
     )
 

@@ -86,6 +86,32 @@ class TestCategoryCRUD:
         assert "id" in data
 
     @pytest.mark.asyncio
+    async def test_create_category_without_order_goes_last(
+        self, client: AsyncClient, auth_headers: dict, test_category: Category
+    ):
+        """Regression (category-reorder-noop): new categories no longer all get 0."""
+        orders = []
+        for name in ("Appended One", "Appended Two"):
+            response = await client.post(
+                "/api/v1/categories", headers=auth_headers, json={"name": name}
+            )
+            assert response.status_code == 201
+            orders.append(response.json()["display_order"])
+
+        assert orders == [test_category.display_order + 1, test_category.display_order + 2]
+
+    @pytest.mark.asyncio
+    async def test_create_first_category_without_order_is_zero(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The first category of a tenant starts at 0."""
+        response = await client.post(
+            "/api/v1/categories", headers=auth_headers, json={"name": "First Of Tenant"}
+        )
+        assert response.status_code == 201
+        assert response.json()["display_order"] == 0
+
+    @pytest.mark.asyncio
     async def test_create_category_auto_slug(self, client: AsyncClient, auth_headers: dict):
         """Test category creation auto-generates slug from name."""
         response = await client.post(

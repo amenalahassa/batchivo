@@ -556,13 +556,16 @@ async def get_product(
 ) -> ProductDetailResponse:
     """
     Get product detail with models, child products (bundles), pricing, and cost breakdown.
+
+    Inactive products are returned too: the detail and edit pages are where an
+    operator sees the "Inactive" badge and switches the product back on, and
+    where an inactive product can be purged.
     """
     query = (
         select(Product)
         .where(
             Product.id == product_id,
             Product.tenant_id == tenant.id,
-            Product.is_active.is_(True),
         )
         .options(*_get_product_load_options())
     )
