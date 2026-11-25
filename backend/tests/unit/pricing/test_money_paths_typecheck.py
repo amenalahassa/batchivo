@@ -52,10 +52,33 @@ def test_an_exempt_service_is_one_the_rule_still_flags() -> None:
     assert not stale, f"NOT_MONEY_PATHS names services the rule no longer flags: {stale}"
 
 
+#: mypy's incremental cache for this check alone, under the git-ignored
+#: `.mypy_cache`. Its own directory because mypy discards a module's cache
+#: entry when the options it was written under differ: sharing the default
+#: directory with a whole-app `mypy` run (different `follow_imports`) made each
+#: run throw away the other's work and re-analyse the ~1,200 modules the money
+#: paths import. A fresh entry is reused only when the module's source hash and
+#: its dependencies' interfaces are unchanged, so the cache never hides an error.
+CACHE_DIR = BACKEND / ".mypy_cache" / "money-paths"
+
+
 @pytest.mark.timeout(600)
-def test_the_money_paths_type_check() -> None:
+def test_the_money_paths_type_check(monkeypatch: pytest.MonkeyPatch) -> None:
     mypy_api = pytest.importorskip("mypy.api")
-    args = ["--follow-imports=silent", "--no-error-summary"]
+    # mypy resolves `-m app.services...` and finds its configuration from the
+    # working directory, so the check means the same thing wherever pytest runs.
+    monkeypatch.chdir(BACKEND)
+    args = [
+        "--config-file",
+        str(BACKEND / "pyproject.toml"),
+        "--cache-dir",
+        str(CACHE_DIR),
+        # One SQLite file instead of two JSON files per module: on Windows,
+        # opening ~2,400 small files is most of a warm run.
+        "--sqlite-cache",
+        "--follow-imports=silent",
+        "--no-error-summary",
+    ]
     for module in _money_modules():
         args += ["-m", module]
     stdout, stderr, status = mypy_api.run(args)

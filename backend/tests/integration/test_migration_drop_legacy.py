@@ -18,17 +18,17 @@ run in CI -- the opposite of what a data-migration check is for.
 """
 
 import os
-import uuid
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from tests.integration.migration_support import (
     alembic_against,
-    database_named,
-    sync_url,
+    scratch_database_at,
+    templates_needed,
 )
 
 REVISION = "pricing_drop_legacy_v1"
@@ -67,8 +67,11 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def scratch_database():
+templates_needed(PARENT)
+
+
+@contextmanager
+def _seeded_parent():
     """A scratch database at the drop migration's parent, with data in it.
 
     One tenant with the legacy key and a policy row that superseded it, and one
@@ -77,24 +80,7 @@ def scratch_database():
     against an empty database every statement under test is a no-op and proves
     nothing.
     """
-    base_url = _database_url()
-    scratch = f"drop_legacy_{uuid.uuid4().hex[:10]}"
-    admin_url = database_named(base_url, "postgres")
-    scratch_url = database_named(base_url, scratch)
-
-    admin = create_engine(sync_url(admin_url), isolation_level="AUTOCOMMIT")
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{scratch}"'))
-
-        engine = create_engine(sync_url(scratch_url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, PARENT)
-
+    with scratch_database_at(PARENT, "drop_legacy") as (engine, scratch_url):
         with engine.connect() as conn:
             conn.execute(
                 text(
@@ -166,21 +152,29 @@ def scratch_database():
                 )
 
         yield engine, scratch_url
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
-        admin.dispose()
+
+
+@contextmanager
+def _seeded_and_dropped():
+    """The seeded parent with the drop migration applied."""
+    with _seeded_parent() as (engine, scratch_url):
+        with alembic_against(scratch_url) as config:
+            command.upgrade(config, REVISION)
+        yield engine, scratch_url
 
 
 @pytest.fixture
-def dropped(scratch_database):
-    """The scratch database with the drop migration applied."""
-    engine, scratch_url = scratch_database
-    with alembic_against(scratch_url) as config:
-        command.upgrade(config, REVISION)
-    return engine, scratch_url
+def scratch_database():
+    """The seeded parent, for a test that changes it before upgrading."""
+    with _seeded_parent() as database:
+        yield database
+
+
+@pytest.fixture(scope="module")
+def dropped():
+    """The seeded database after the drop, shared by the tests that only read it."""
+    with _seeded_and_dropped() as database:
+        yield database
 
 
 def _columns(engine, table: str) -> set[str]:
@@ -323,13 +317,27 @@ class TestTheProvenanceRowsGoWithTheFields:
 # ---------------------------------------------------------------------------
 
 
-class TestTheDowngradeRestoresAUsableShape:
-    @pytest.fixture
-    def reverted(self, dropped):
-        engine, scratch_url = dropped
+@contextmanager
+def _reverted():
+    """The drop applied, then rolled back, on a database of its own."""
+    with _seeded_and_dropped() as (engine, scratch_url):
         with alembic_against(scratch_url) as config:
             command.downgrade(config, PARENT)
-        return engine, scratch_url
+        yield engine, scratch_url
+
+
+class TestTheDowngradeRestoresAUsableShape:
+    @pytest.fixture(scope="class")
+    def reverted(self):
+        """Shared by the tests that only read the reverted database."""
+        with _reverted() as database:
+            yield database
+
+    @pytest.fixture
+    def reverted_alone(self):
+        """For the test that migrates it again."""
+        with _reverted() as database:
+            yield database
 
     def test_the_columns_come_back(self, reverted) -> None:
         engine, _ = reverted
@@ -360,9 +368,9 @@ class TestTheDowngradeRestoresAUsableShape:
 
         assert _settings(engine)[KEPT_SETTINGS_KEY] == KEPT_SETTINGS_VALUE
 
-    def test_the_migration_can_be_reapplied(self, reverted) -> None:
+    def test_the_migration_can_be_reapplied(self, reverted_alone) -> None:
         """Down and up again, because a downgrade nobody can undo is a dead end."""
-        engine, scratch_url = reverted
+        engine, scratch_url = reverted_alone
         with alembic_against(scratch_url) as config:
             command.upgrade(config, REVISION)
 
