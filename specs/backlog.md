@@ -505,7 +505,7 @@ Constraints:
 
 ## Preflight foundations: design brief, typed notes, calibrations and print test results
 
-**Status:** not specified (feature 009, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §6). Needs 007 and 008.
+**Status:** specified, clarified, designed and built on branch `claude/009-preflight-f85d55` (spec in `specs/009-preflight-foundations/`, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §6); tests pending go-ahead, not yet converged. Needs 007 and 008.
 
 **Why:** the Preflight tool (design checks for functional printed parts, driven by
 the part's intended use) needs Batchivo to remember a part's intended use and

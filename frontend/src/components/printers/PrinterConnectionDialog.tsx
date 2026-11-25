@@ -122,8 +122,19 @@ export function PrinterConnectionDialog({
                 autoComplete="off"
                 value={accessCode}
                 placeholder={hasStoredCode ? 'Leave blank to keep the current code' : ''}
+                aria-invalid={connection?.access_code_state === 'unreadable'}
                 onChange={(e) => setAccessCode(e.target.value)}
               />
+              {connection?.access_code_state === 'unreadable' && (
+                <p role="alert" className="text-sm text-destructive">
+                  Access code can no longer be read — enter it again.
+                </p>
+              )}
+              {connection?.cloud_token_state === 'unreadable' && (
+                <p role="alert" className="text-sm text-destructive">
+                  Cloud token can no longer be read — sign in to Bambu cloud again.
+                </p>
+              )}
             </div>
 
             <div className="space-y-2 rounded-md border p-3">

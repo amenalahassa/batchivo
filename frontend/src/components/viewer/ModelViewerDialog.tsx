@@ -306,6 +306,9 @@ export default function ModelViewerDialog({
                 onResolve={actions.onResolve}
                 onCarryForward={actions.onCarryForward}
                 onReopen={(note) => updateNote.mutate({ noteId: note.id, status: 'open' })}
+                onDismiss={(note, reason) =>
+                  updateNote.mutate({ noteId: note.id, status: 'dismissed', dismissal_reason: reason })
+                }
               />
             </div>
           </div>

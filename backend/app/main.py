@@ -267,6 +267,7 @@ from app.api.v1 import (
     webhooks,
 )
 from app.api.v1 import genai, genai_e2e, genai_platform, genai_settings  # spec 008
+from app.api.v1 import calibrations, design_briefs, print_test_results  # spec 009
 
 app.include_router(auth.router, prefix=f"{settings.api_v1_prefix}/auth", tags=["auth"])
 app.include_router(
@@ -434,6 +435,14 @@ app.include_router(
 # Inert unless E2E test hooks are on (and never in production): a local fake provider.
 app.include_router(
     genai_e2e.router, prefix=f"{settings.api_v1_prefix}/genai/e2e-fake", include_in_schema=False
+)
+# Preflight foundations (spec 009): full paths in the routers (/ideas/{id}/design-brief,
+# /models/{id}/design-brief, /design-briefs, /printers/{id}/calibrations, /calibrations,
+# /print-test-results).
+app.include_router(design_briefs.router, prefix=settings.api_v1_prefix, tags=["design-briefs"])
+app.include_router(calibrations.router, prefix=settings.api_v1_prefix, tags=["calibrations"])
+app.include_router(
+    print_test_results.router, prefix=settings.api_v1_prefix, tags=["print-test-results"]
 )
 # Personal API tokens for scripts and AI agents (spec 010)
 app.include_router(

@@ -2,7 +2,14 @@
  * Notes pinned on model files (spec 004, contracts/api.md: Notes).
  */
 import { apiClient } from '@/lib/api'
-import type { FileNote, NoteCreate, NoteStatus, NoteUpdate } from '@/types/model-file-version'
+import type {
+  FileNote,
+  NoteCreate,
+  NoteSeverity,
+  NoteSource,
+  NoteStatus,
+  NoteUpdate,
+} from '@/types/model-file-version'
 
 export interface NoteListParams {
   file_id?: string
@@ -11,6 +18,9 @@ export interface NoteListParams {
   include_archived?: boolean
   /** Also return earlier versions' open notes, marked `ghost` (FR-029). */
   ghosts_for_file_id?: string
+  /** Spec 009: only notes from this source / of this severity (ghosts too). */
+  source?: NoteSource
+  severity?: NoteSeverity
 }
 
 export async function listFileNotes(modelId: string, params?: NoteListParams): Promise<FileNote[]> {

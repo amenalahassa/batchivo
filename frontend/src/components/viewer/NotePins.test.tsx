@@ -25,6 +25,15 @@ const note = (over: Partial<FileNote> = {}): FileNote => ({
   created_at: '2026-11-01T10:00:00Z',
   archived_at: null,
   ghost: false,
+  source: 'person',
+  rule_id: null,
+  severity: 'info',
+  measured_value: null,
+  expected_value: null,
+  value_unit: null,
+  dismissal_reason: null,
+  dismissed_at: null,
+  dismissed_by: null,
   ...over,
 })
 
@@ -73,5 +82,28 @@ describe('DraftNote', () => {
     await userEvent.type(screen.getByLabelText('Note text'), 'thin wall')
     await userEvent.click(screen.getByRole('button', { name: 'Pin note' }))
     expect(onSave).toHaveBeenCalledWith('thin wall')
+  })
+})
+
+describe('PinBadge with a Preflight finding', () => {
+  it('colours a failure and shows its rule and measure', async () => {
+    render(
+      <PinBadge
+        note={note({
+          source: 'preflight',
+          severity: 'failure',
+          rule_id: 'fit.slide.clearance',
+          measured_value: '0.1',
+          expected_value: '0.15',
+          value_unit: 'mm',
+        })}
+        canWrite={false}
+        {...actions()}
+      />
+    )
+    const pin = screen.getByRole('button', { name: 'Note 4' })
+    expect(pin.className).toContain('bg-red-600')
+    await userEvent.hover(pin)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('fit.slide.clearance · 0.1 mm (expected 0.15 mm)')
   })
 })

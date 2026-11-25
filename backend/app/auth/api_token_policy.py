@@ -34,6 +34,9 @@ _QUEUE = "app.api.v1.print_queue"
 _RUNS = "app.api.v1.production_runs"
 _TOKENS = "app.api.v1.api_tokens"
 _GENAI = "app.api.v1.genai"
+_BRIEFS = "app.api.v1.design_briefs"
+_CALIBRATIONS = "app.api.v1.calibrations"
+_TESTS = "app.api.v1.print_test_results"
 
 TOKEN_ROUTE_SCOPES: dict[tuple[str, str], TokenScope] = {
     # Ideas (007)
@@ -95,6 +98,26 @@ TOKEN_ROUTE_SCOPES: dict[tuple[str, str], TokenScope] = {
     ("POST", f"{_GENAI}.cancel_job"): "genai",
     ("POST", f"{_GENAI}.upload_input"): "genai",
     ("POST", f"{_GENAI}.adopt_asset"): "genai",
+    # Preflight foundations (spec 009): reads `read`, writes `write`. Deleting a
+    # design brief has no row: it stays for signed-in people only (FR-028).
+    ("GET", f"{_BRIEFS}.get_idea_brief"): "read",
+    ("POST", f"{_BRIEFS}.start_idea_brief"): "write",
+    ("GET", f"{_BRIEFS}.get_model_brief"): "read",
+    ("POST", f"{_BRIEFS}.start_model_brief"): "write",
+    ("GET", f"{_BRIEFS}.get_brief"): "read",
+    ("PATCH", f"{_BRIEFS}.update_brief"): "write",
+    ("GET", f"{_BRIEFS}.list_brief_revisions"): "read",
+    ("GET", f"{_CALIBRATIONS}.list_printer_calibrations"): "read",
+    ("POST", f"{_CALIBRATIONS}.record_calibration"): "write",
+    ("GET", f"{_CALIBRATIONS}.lookup_calibration"): "read",
+    ("GET", f"{_CALIBRATIONS}.export_atelier_calibrations"): "read",
+    ("GET", f"{_CALIBRATIONS}.get_calibration"): "read",
+    ("POST", f"{_TESTS}.create_test_result"): "write",
+    ("GET", f"{_TESTS}.list_test_results"): "read",
+    ("GET", f"{_TESTS}.get_test_result"): "read",
+    ("PATCH", f"{_TESTS}.update_test_result"): "write",
+    ("POST", f"{_TESTS}.upload_test_result_photo"): "write",
+    ("GET", f"{_TESTS}.get_test_result_photo"): "read",
 }
 
 

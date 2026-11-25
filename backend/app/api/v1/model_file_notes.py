@@ -8,13 +8,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.model_file_versions import _model_or_404, rule_error
 from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
-from app.models.model_file_note import ModelFileNote
+from app.models.model_file_note import NOTE_SEVERITIES, ModelFileNote
 from app.models.user import User
 from app.schemas.model_file_note import (
     CarryForwardRequest,
     NoteCreate,
     NoteResponse,
+    NoteSource,
+    NoteTypeFields,
     NoteUpdate,
+    normalise_severity,
 )
 from app.schemas.model_file_version import PersonRef
 from app.services.model_file_note_service import ModelFileNoteService, NoteNotFound
@@ -23,12 +26,17 @@ from app.services.model_file_version_service import VersionRuleError
 router = APIRouter()
 
 
+async def _person(db: AsyncSession, user_id: Optional[UUID]) -> Optional[PersonRef]:
+    if user_id is None:
+        return None
+    user = await db.get(User, user_id)
+    if user is None:
+        return None
+    return PersonRef(id=user.id, name=user.full_name or user.email)
+
+
 async def _response(db: AsyncSession, note: ModelFileNote, ghost: bool = False) -> NoteResponse:
-    author = None
-    if note.author_user_id is not None:
-        user = await db.get(User, note.author_user_id)
-        if user is not None:
-            author = PersonRef(id=user.id, name=user.full_name or user.email)
+    author = await _person(db, note.author_user_id)
     return NoteResponse(
         id=note.id,
         number=note.number,
@@ -46,7 +54,25 @@ async def _response(db: AsyncSession, note: ModelFileNote, ghost: bool = False) 
         created_at=note.created_at,
         archived_at=note.archived_at,
         ghost=ghost,
+        source=note.source,
+        rule_id=note.rule_id,
+        severity=note.severity,
+        measured_value=note.measured_value,
+        expected_value=note.expected_value,
+        value_unit=note.value_unit,
+        dismissal_reason=note.dismissal_reason,
+        dismissed_at=note.dismissed_at,
+        dismissed_by=await _person(db, note.dismissed_by_user_id),
     )
+
+
+def _type_fields(data: NoteTypeFields) -> dict:
+    """The type fields the caller actually sent (spec 009)."""
+    return {
+        field: getattr(data, field)
+        for field in NoteTypeFields.model_fields
+        if field in data.model_fields_set
+    }
 
 
 def _not_found(exc: NoteNotFound) -> HTTPException:
@@ -61,14 +87,24 @@ async def list_file_notes(
     db: TenantDB,
     file_id: Optional[UUID] = None,
     version_id: Optional[UUID] = None,
-    note_status: Optional[Literal["open", "resolved", "carried_forward"]] = Query(
+    note_status: Optional[Literal["open", "resolved", "carried_forward", "dismissed"]] = Query(
         None, alias="status"
     ),
     include_archived: bool = False,
     ghosts_for_file_id: Optional[UUID] = None,
+    source: Optional[NoteSource] = None,
+    severity: Optional[str] = Query(
+        None, description="info, warning or failure (Preflight's attention / échec accepted)"
+    ),
 ) -> list[NoteResponse]:
     """A model's notes; with ``ghosts_for_file_id``, plus earlier versions' open notes (FR-029)."""
     await _model_or_404(db, tenant, model_id)
+    severity_value = normalise_severity(severity)
+    if severity_value is not None and severity_value not in NOTE_SEVERITIES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="severity must be info, warning or failure",
+        )
     service = ModelFileNoteService(db, tenant, user)
     try:
         notes = await service.list_notes(
@@ -78,6 +114,8 @@ async def list_file_notes(
             status=note_status,
             include_archived=include_archived,
             ghosts_for_file_id=ghosts_for_file_id,
+            source=source,
+            severity=severity_value,
         )
     except NoteNotFound as exc:
         raise _not_found(exc) from exc
@@ -109,6 +147,7 @@ async def create_file_note(
             normal=data.normal,
             text=data.text,
             layer=data.layer,
+            note_type=_type_fields(data),
         )
     except NoteNotFound as exc:
         raise _not_found(exc) from exc
@@ -129,7 +168,7 @@ async def update_file_note(
     _member: RequireMember,
     db: TenantDB,
 ) -> NoteResponse:
-    """Edit, move, resolve or reopen a note."""
+    """Edit, move, resolve, dismiss (with a reason) or reopen a note."""
     await _model_or_404(db, tenant, model_id)
     service = ModelFileNoteService(db, tenant, user)
     try:
@@ -141,6 +180,8 @@ async def update_file_note(
             normal=data.normal,
             status=data.status,
             resolved_in_version_id=data.resolved_in_version_id,
+            dismissal_reason=data.dismissal_reason,
+            note_type=_type_fields(data),
         )
     except NoteNotFound as exc:
         raise _not_found(exc) from exc

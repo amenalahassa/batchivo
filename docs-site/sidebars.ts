@@ -29,6 +29,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'doc',
+      id: 'preflight',
+      label: 'Preflight: Briefs, Calibrations & Tests',
+    },
+    {
+      type: 'doc',
       id: 'mcp',
       label: 'MCP Server for AI Agents',
     },

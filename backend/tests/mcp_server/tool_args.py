@@ -12,6 +12,9 @@ PLACEHOLDER_ID = "33333333-3333-4333-8333-333333333333"
 #: Tools that need one of several optional arguments to reach the API at all.
 EXTRA_ARGUMENTS: dict[str, dict[str, Any]] = {
     "prepare_print": {"model_file_id": PLACEHOLDER_ID},
+    # Spec 009: exactly one owner id is needed to build the path.
+    "get_design_brief": {"brief_id": PLACEHOLDER_ID},
+    "start_design_brief": {"idea_id": PLACEHOLDER_ID},
 }
 
 

@@ -68,7 +68,22 @@ export interface ActivationPreview {
   notices: string[]
 }
 
-export type NoteStatus = 'open' | 'resolved' | 'carried_forward'
+export type NoteStatus = 'open' | 'resolved' | 'carried_forward' | 'dismissed'
+
+/** Who raised a note (spec 009): a person, Preflight's check, a printer or the slicer. */
+export type NoteSource = 'person' | 'preflight' | 'printer' | 'slicer'
+export type NoteSeverity = 'info' | 'warning' | 'failure'
+
+/** Spec 009 type fields; a note written without them reads as a person's "info" note. */
+export interface NoteTypeFields {
+  source?: NoteSource
+  rule_id?: string | null
+  severity?: NoteSeverity
+  /** A decimal string, kept exactly as sent (spec 009). */
+  measured_value?: string | null
+  expected_value?: string | null
+  value_unit?: string | null
+}
 
 export type Vector3 = [number, number, number]
 
@@ -90,19 +105,31 @@ export interface FileNote {
   archived_at: string | null
   /** An open note of an earlier version, shown faded on a newer file (FR-029). */
   ghost: boolean
+  source: NoteSource
+  rule_id: string | null
+  severity: NoteSeverity
+  measured_value: string | null
+  expected_value: string | null
+  value_unit: string | null
+  /** Why a dismissed note was set aside; kept when it is reopened (spec 009 Q2). */
+  dismissal_reason: string | null
+  dismissed_at: string | null
+  dismissed_by: PersonRef | null
 }
 
-export interface NoteCreate {
+export interface NoteCreate extends NoteTypeFields {
   position: Vector3
   normal: Vector3
   layer?: number | null
   text: string
 }
 
-export interface NoteUpdate {
+export interface NoteUpdate extends NoteTypeFields {
   text?: string
   position?: Vector3
   normal?: Vector3
-  status?: 'open' | 'resolved'
+  status?: 'open' | 'resolved' | 'dismissed'
   resolved_in_version_id?: string | null
+  /** Required with status "dismissed". */
+  dismissal_reason?: string
 }
