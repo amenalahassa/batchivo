@@ -23,7 +23,7 @@ from sqlalchemy import (
     Index,
 )
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 import uuid
 
@@ -113,12 +113,12 @@ class ProductionRun(Base):
     waste_reason = Column(Text, nullable=True)
 
     # Cost analysis (calculated on completion)
-    cost_per_gram_actual = Column(
+    cost_per_gram_actual: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 6),
         nullable=True,
         comment="Actual cost per gram = total_material_cost / successful_weight",
     )
-    successful_weight_grams = Column(
+    successful_weight_grams: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Total theoretical weight of successful items (for cost calculation)",
@@ -282,12 +282,12 @@ class ProductionRunItem(Base):
     estimated_total_cost = Column(Numeric(10, 2), nullable=True)
 
     # Actual cost analysis (calculated on run completion)
-    model_weight_grams = Column(
+    model_weight_grams: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Cached model weight from BOM (for cost calculation)",
     )
-    actual_cost_per_unit = Column(
+    actual_cost_per_unit: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Actual cost per unit = model_weight × cost_per_gram_actual",
@@ -423,6 +423,23 @@ class ProductionRunMaterial(Base):
     def total_cost(self) -> Decimal:
         """Calculate total cost of material used."""
         return self.actual_total_weight * self.cost_per_gram
+
+    @property
+    def estimated_total_cost(self) -> Decimal:
+        """What this material was expected to cost, exactly (task T183).
+
+        The sibling of `total_cost`, which is the actual. Both are one
+        multiplication over this row's own `Numeric` columns, and both belong
+        here rather than in whichever reader needs them: `analytics.py`
+        re-derived exactly this in a route handler, in `float`, and reported a
+        different figure from the one `ProductionRunDetail` showed for the same
+        run (Constitution III and IV).
+
+        Not to be confused with `ProductionRunItem.estimated_total_cost`, a
+        stored column holding the whole BOM estimate for a printed unit --
+        materials, components and labour. This is the filament alone.
+        """
+        return self.estimated_total_weight * self.cost_per_gram
 
     def __repr__(self):
         return f"<ProductionRunMaterial(id={self.id}, spool_id={self.spool_id}, estimated_total={self.estimated_total_weight}g)>"

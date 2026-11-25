@@ -62,7 +62,7 @@ async def mixed(db_session, test_tenant, ch):
 
 @pytest_asyncio.fixture
 async def lclient(db_session, test_tenant, ch):
-    from app.auth.dependencies import get_shop_sales_channel
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel
     from app.database import get_db
 
     async def override_db():
@@ -72,6 +72,9 @@ async def lclient(db_session, test_tenant, ch):
         return (test_tenant, ch)
 
     app.dependency_overrides[get_db] = override_db
+    # See the note in test_shop_cache_headers.py: the storefront's session
+    # comes from `get_shop_db`.
+    app.dependency_overrides[get_shop_db] = override_db
     app.dependency_overrides[get_shop_sales_channel] = override_ctx
     app.state.limiter.enabled = False
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

@@ -9,23 +9,20 @@ Provides CRUD operations for production runs, including:
 - Managing production run items and materials
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select, func, and_
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
 from app.models.production_run import ProductionRun, ProductionRunItem, ProductionRunMaterial
 from app.models.model import Model
-from app.models.model_material import ModelMaterial
 from app.models.spool import Spool
 from app.models.filament_type import FilamentType
-from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, TenantDB, RequireMember
 from app.schemas.production_run import (
     ProductionRunCreateRequest,
     ProductionRunUpdate,
@@ -48,16 +45,32 @@ from app.schemas.production_run_plate import (
     ProductionRunPlateListResponse,
     MarkPlateCompleteRequest,
 )
-from app.services.production_run import ProductionRunService
+from app.services.production_run import (
+    elapsed_hours,
+    MaterialCostUnderivable,
+    ProductionRunService,
+    run_material_cost_per_gram,
+)
 from app.services.production_run_plate_service import ProductionRunPlateService
 
 router = APIRouter(tags=["production-runs"])
 
 
+def _frozen_cost_per_gram(spool: Spool, given: Optional[Decimal]) -> Decimal:
+    """The per-gram figure a run material is frozen at, or 422 (T254, FR-019)."""
+    try:
+        return run_material_cost_per_gram(spool, given)
+    except MaterialCostUnderivable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+
 @router.post("", response_model=ProductionRunDetailResponse, status_code=status.HTTP_201_CREATED)
 async def create_production_run(
     request: ProductionRunCreateRequest,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -148,6 +161,7 @@ async def create_production_run(
                 detail=f"Insufficient inventory in spool {spool.spool_id}. Available: {spool.current_weight}g, Required: {estimated_usage}g",
             )
 
+        material_data.cost_per_gram = _frozen_cost_per_gram(spool, material_data.cost_per_gram)
         db_material = ProductionRunMaterial(
             production_run_id=db_production_run.id, **material_data.model_dump()
         )
@@ -174,12 +188,12 @@ async def create_production_run(
 
 @router.get("", response_model=ProductionRunListResponse)
 async def list_production_runs(
+    db: TenantDB,
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     start_date: Optional[datetime] = Query(None, description="Filter by start date (inclusive)"),
     end_date: Optional[datetime] = Query(None, description="Filter by end date (inclusive)"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """
@@ -244,7 +258,7 @@ async def get_failure_reasons():
 @router.get("/{run_id}", response_model=ProductionRunDetailResponse)
 async def get_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -286,7 +300,8 @@ async def get_production_run(
 async def update_production_run(
     run_id: UUID,
     updates: ProductionRunUpdate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -343,12 +358,9 @@ async def update_production_run(
 
     # Auto-calculate duration if completed_at is set
     if updates.completed_at and production_run.started_at:
-        # Ensure started_at is timezone-aware (SQLite returns naive datetimes)
-        started_at = production_run.started_at
-        if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=timezone.utc)
-        duration = updates.completed_at - started_at
-        production_run.duration_hours = Decimal(str(duration.total_seconds() / 3600))
+        production_run.duration_hours = elapsed_hours(
+            production_run.started_at, updates.completed_at
+        )
 
     await db.commit()
 
@@ -372,7 +384,7 @@ async def update_production_run(
 @router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -419,7 +431,8 @@ async def delete_production_run(
 async def add_production_run_item(
     run_id: UUID,
     item: ProductionRunItemCreate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -480,7 +493,8 @@ async def update_production_run_item(
     run_id: UUID,
     item_id: UUID,
     updates: ProductionRunItemUpdate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -551,7 +565,7 @@ async def update_production_run_item(
 async def delete_production_run_item(
     run_id: UUID,
     item_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -600,7 +614,8 @@ async def delete_production_run_item(
 async def add_production_run_material(
     run_id: UUID,
     material: ProductionRunMaterialCreate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -652,6 +667,7 @@ async def add_production_run_material(
         )
 
     # Create material
+    material.cost_per_gram = _frozen_cost_per_gram(spool, material.cost_per_gram)
     db_material = ProductionRunMaterial(production_run_id=run_id, **material.model_dump())
     db.add(db_material)
     await db.commit()
@@ -676,7 +692,8 @@ async def update_production_run_material(
     run_id: UUID,
     material_id: UUID,
     updates: ProductionRunMaterialUpdate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -756,7 +773,7 @@ async def update_production_run_material(
 async def delete_production_run_material(
     run_id: UUID,
     material_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     _: RequireAdmin = None,
 ):
@@ -801,155 +818,30 @@ async def delete_production_run_material(
 @router.post("/{run_id}/complete", response_model=ProductionRunDetailResponse)
 async def complete_production_run(
     run_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
+    user: CurrentUser = None,
 ):
     """
     Mark a production run as completed and deduct inventory from spools.
 
-    This endpoint:
-    1. Validates that all materials have actual usage recorded
-    2. Deducts actual usage from spool inventory
-    3. Updates production run status to 'completed'
-    4. Sets completed_at timestamp and calculates duration
-
-    Args:
-        run_id: Production run ID
-        db: Database session
-        tenant: Current authenticated tenant
-
-    Returns:
-        Completed production run with updated inventory
-
-    Raises:
-        HTTPException: If validation fails or insufficient inventory
+    A thin call into `ProductionRunService.complete_production_run`, the one
+    implementation of completion (task T218): it validates the recorded
+    usage, deducts it from each spool with an audit transaction, records what
+    each finished unit cost, and asks the printer what the job used. A refusal
+    there -- already completed, no usage recorded, too little filament on a
+    spool -- is a ``400`` here.
     """
-    # Get production run with materials
-    result = await db.execute(
-        select(ProductionRun)
-        .options(
-            selectinload(ProductionRun.items),
-            selectinload(ProductionRun.materials)
-            .selectinload(ProductionRunMaterial.spool)
-            .selectinload(Spool.filament_type)
-            .selectinload(FilamentType.material_type),
-        )
-        .where(and_(ProductionRun.id == run_id, ProductionRun.tenant_id == tenant.id))
-    )
-    production_run = result.scalar_one_or_none()
-
-    if not production_run:
+    service = ProductionRunService(db, tenant, user)
+    try:
+        completed = await service.complete_production_run(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if completed is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Production run {run_id} not found"
         )
-
-    if production_run.status == "completed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Production run is already completed"
-        )
-
-    # Validate all materials have actual usage recorded
-    # Must have either weighing data (before/after) or manual actual weights
-    for material in production_run.materials:
-        has_weighing = (
-            material.spool_weight_before_grams is not None
-            and material.spool_weight_after_grams is not None
-        )
-        has_manual = material.actual_model_weight_grams is not None
-        if not has_weighing and not has_manual:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Material {material.id} does not have actual usage recorded. Please weigh spools or enter manual usage.",
-            )
-
-    # Deduct inventory from spools
-    total_deducted = Decimal("0")
-    for material in production_run.materials:
-        spool = material.spool
-        actual_usage = material.actual_total_weight
-
-        # Check sufficient inventory
-        if spool.current_weight < actual_usage:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient inventory in spool {spool.spool_id}. Available: {spool.current_weight}g, Required: {actual_usage}g",
-            )
-
-        # Deduct from spool
-        spool.current_weight -= actual_usage
-        total_deducted += actual_usage
-
-    # Update production run status
-    production_run.status = "completed"
-    production_run.completed_at = datetime.now(timezone.utc)
-
-    # Calculate duration
-    if production_run.started_at:
-        # Ensure started_at is timezone-aware (SQLite returns naive datetimes)
-        started_at = production_run.started_at
-        if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=timezone.utc)
-        duration = production_run.completed_at - started_at
-        production_run.duration_hours = Decimal(str(duration.total_seconds() / 3600))
-
-    # Calculate totals from materials
-    production_run.actual_total_filament_grams = sum(
-        material.actual_total_weight for material in production_run.materials
-    )
-
-    # Calculate cost analysis (distributes waste across successful items)
-    total_material_cost = Decimal("0")
-    for material in production_run.materials:
-        if material.cost_per_gram:
-            total_material_cost += material.actual_total_weight * material.cost_per_gram
-
-    successful_weight = Decimal("0")
-
-    # Handle multi-plate runs
-    if production_run.is_multi_plate and production_run.plates:
-        for plate in production_run.plates:
-            if plate.successful_prints > 0:
-                # Get model weight from BOM
-                bom_result = await db.execute(
-                    select(func.sum(ModelMaterial.weight_grams)).where(
-                        ModelMaterial.model_id == plate.model_id
-                    )
-                )
-                model_weight = bom_result.scalar() or Decimal("0")
-                plate.model_weight_grams = model_weight
-                successful_weight += Decimal(str(plate.successful_prints)) * model_weight
-
-    # Handle legacy item-based runs
-    elif production_run.items:
-        for item in production_run.items:
-            if item.successful_quantity > 0:
-                # Get model weight from BOM
-                bom_result = await db.execute(
-                    select(func.sum(ModelMaterial.weight_grams)).where(
-                        ModelMaterial.model_id == item.model_id
-                    )
-                )
-                model_weight = bom_result.scalar() or Decimal("0")
-                item.model_weight_grams = model_weight
-                successful_weight += Decimal(str(item.successful_quantity)) * model_weight
-
-    # Calculate cost per gram and per-unit costs
-    if successful_weight > 0:
-        cost_per_gram = total_material_cost / successful_weight
-        production_run.cost_per_gram_actual = cost_per_gram
-        production_run.successful_weight_grams = successful_weight
-
-        # Calculate per-item/plate costs
-        if production_run.is_multi_plate and production_run.plates:
-            for plate in production_run.plates:
-                if plate.model_weight_grams:
-                    plate.actual_cost_per_unit = plate.model_weight_grams * cost_per_gram
-        elif production_run.items:
-            for item in production_run.items:
-                if item.model_weight_grams:
-                    item.actual_cost_per_unit = item.model_weight_grams * cost_per_gram
-
-    await db.commit()
 
     # Reload with all relationships for response
     result = await db.execute(
@@ -963,25 +855,7 @@ async def complete_production_run(
         )
         .where(ProductionRun.id == run_id)
     )
-    production_run = result.scalar_one()
-
-    # Record production run completion metrics
-    try:
-        from app.observability.metrics import record_production_run_completed
-
-        duration_seconds = float(production_run.duration_hours or 0) * 3600
-        material_cost = float(production_run.actual_total_cost or 0)
-
-        record_production_run_completed(
-            tenant_id=str(tenant.id),
-            duration_seconds=duration_seconds,
-            material_cost=material_cost,
-        )
-    except Exception:
-        # Don't fail request if metrics recording fails
-        pass
-
-    return production_run
+    return result.scalar_one()
 
 
 # Cancel and Fail Endpoints
@@ -991,7 +865,8 @@ async def complete_production_run(
 async def cancel_production_run_endpoint(
     run_id: UUID,
     request: CancelProductionRunRequest,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1044,7 +919,8 @@ async def cancel_production_run_endpoint(
 async def fail_production_run_endpoint(
     run_id: UUID,
     request: FailProductionRunRequest,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1104,7 +980,8 @@ async def fail_production_run_endpoint(
 async def create_production_run_plate(
     run_id: UUID,
     plate_data: ProductionRunPlateCreate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1136,10 +1013,10 @@ async def create_production_run_plate(
 @router.get("/{run_id}/plates", response_model=ProductionRunPlateListResponse)
 async def list_production_run_plates(
     run_id: UUID,
+    db: TenantDB,
     status_filter: Optional[str] = Query(None, description="Filter by plate status"),
     skip: int = Query(0, ge=0, description="Number of records to skip"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of records to return"),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1168,7 +1045,7 @@ async def list_production_run_plates(
 async def get_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1205,7 +1082,8 @@ async def update_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
     updates: ProductionRunPlateUpdate,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1244,7 +1122,8 @@ async def update_production_run_plate(
 async def start_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1286,7 +1165,8 @@ async def complete_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
     request: MarkPlateCompleteRequest,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1328,8 +1208,9 @@ async def complete_production_run_plate(
 async def fail_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
+    _member: RequireMember,
+    db: TenantDB,
     notes: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1371,8 +1252,9 @@ async def fail_production_run_plate(
 async def cancel_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
+    _member: RequireMember,
+    db: TenantDB,
     notes: Optional[str] = None,
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
 ):
@@ -1414,7 +1296,7 @@ async def cancel_production_run_plate(
 async def delete_production_run_plate(
     run_id: UUID,
     plate_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     _: RequireAdmin = None,

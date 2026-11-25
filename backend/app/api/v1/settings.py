@@ -2,10 +2,22 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.api.provenance_http import record_operator_origins
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+    role_in_tenant,
+)
 from app.database import get_db
+from app.models.tenant import Tenant
 from app.models.user import UserRole
+from app.schemas.dimensions import PackagingSettings, PackagingSettingsUpdate
+from app.services.packaging_advisor import get_packaging_settings
 from app.schemas.tenant_settings import (
     BrandingSettingsResponse,
     BrandingSettingsUpdate,
@@ -187,7 +199,7 @@ async def test_etsy_connection(
 async def get_tenant_settings(
     tenant: CurrentTenant,
     user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> TenantResponse:
     """Get tenant details.
 
@@ -202,14 +214,30 @@ async def update_tenant_settings(
     data: TenantUpdate,
     tenant: CurrentTenant,
     user: CurrentUser,
-    db: AsyncSession = Depends(get_db),
+    _admin: RequireAdmin,
+    db: TenantDB,
 ) -> TenantResponse:
     """Update tenant details.
 
-    Requires Admin or Owner role.
-    Can update tenant name and description.
+    Requires Admin or Owner role: the books currency is monetary policy, since
+    every cost is converted from it (FR-007a, FR-028). Can update the name,
+    the description and the books currency with its symbol.
+
+    On the tenant-scoped session (Constitution I), and a change of currency
+    records who decided it and when, like every other monetary lever (FR-001,
+    task T272). The origin is written first so the service's commit carries
+    both together.
     """
-    _require_admin_role(user, tenant)
+    if data.currency_code is not None and data.currency_code != tenant.currency_code:
+        await record_operator_origins(
+            db,
+            tenant,
+            entity_type="tenant",
+            entity_id=tenant.id,
+            fields=["currency_code"],
+            user=user,
+            role=await role_in_tenant(db, user.id, tenant.id),
+        )
 
     service = TenantSettingsService(db)
     return await service.update_tenant(tenant.id, data)
@@ -259,6 +287,56 @@ async def update_shop_settings(
 
     service = TenantSettingsService(db)
     return await service.update_shop_settings(tenant.id, data)
+
+
+# =============================================================================
+# Packaging Settings (packaging advisor, research D8)
+# =============================================================================
+
+
+def _packaging_settings(tenant: Tenant) -> PackagingSettings:
+    clearance, fragile_clearance, configured = get_packaging_settings(tenant)
+    return PackagingSettings(
+        clearance_mm=clearance, fragile_clearance_mm=fragile_clearance, configured=configured
+    )
+
+
+@router.get("/packaging", response_model=PackagingSettings)
+async def get_packaging_settings_endpoint(
+    tenant: CurrentTenant,
+    user: CurrentUser,
+    db: TenantDB,
+) -> PackagingSettings:
+    """The clearance kept around an item, standard and fragile (FR-015).
+
+    Until the operator saves their own, the defaults are returned and
+    ``configured`` is false, so a screen can say they are defaults.
+    """
+    row = await db.get(Tenant, tenant.id)
+    return _packaging_settings(row or tenant)
+
+
+@router.put("/packaging", response_model=PackagingSettings)
+async def update_packaging_settings(
+    data: PackagingSettingsUpdate,
+    tenant: CurrentTenant,
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
+) -> PackagingSettings:
+    """Save the clearances, as decimal strings in the tenant's settings."""
+    row = await db.get(Tenant, tenant.id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    settings = dict(row.settings or {})
+    settings["packaging"] = {
+        "clearance_mm": str(data.clearance_mm),
+        "fragile_clearance_mm": str(data.fragile_clearance_mm),
+    }
+    row.settings = settings
+    flag_modified(row, "settings")
+    await db.commit()
+    return _packaging_settings(row)
 
 
 # =============================================================================

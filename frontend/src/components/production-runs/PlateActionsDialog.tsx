@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Loader2, CheckCircle, XCircle, Ban } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 type ActionType = 'complete' | 'fail' | 'cancel'
 
@@ -304,7 +305,7 @@ export function PlateActionsDialog({
             <div className="bg-destructive/10 border border-destructive rounded-md p-3">
               <p className="text-sm text-destructive">
                 Failed to {action} plate:{' '}
-                {mutation.error instanceof Error ? mutation.error.message : 'Unknown error'}
+                {apiErrorDetail(mutation.error)}
               </p>
             </div>
           )}

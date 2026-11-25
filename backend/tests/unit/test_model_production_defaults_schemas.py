@@ -24,6 +24,7 @@ class TestBOMSpoolSuggestion:
             "color": "Red",
             "color_hex": "#FF0000",
             "weight_grams": Decimal("50.5"),
+            "weight_grams_per_item": Decimal("50.5"),
             "cost_per_gram": Decimal("0.025"),
             "current_weight": Decimal("750.0"),
             "is_active": True,
@@ -32,6 +33,7 @@ class TestBOMSpoolSuggestion:
         assert suggestion.spool_name == "eSun - PLA - Red"
         assert suggestion.material_type_code == "PLA"
         assert suggestion.weight_grams == Decimal("50.5")
+        assert suggestion.weight_grams_per_item == Decimal("50.5")
         assert suggestion.is_active is True
 
     def test_bom_spool_suggestion_without_color_hex(self):
@@ -43,6 +45,7 @@ class TestBOMSpoolSuggestion:
             "color": "Red",
             "color_hex": None,
             "weight_grams": Decimal("50.5"),
+            "weight_grams_per_item": Decimal("50.5"),
             "cost_per_gram": Decimal("0.025"),
             "current_weight": Decimal("750.0"),
             "is_active": True,
@@ -60,6 +63,7 @@ class TestBOMSpoolSuggestion:
             "color": "Red",
             "color_hex": "#FF0000",
             "weight_grams": Decimal("50.5"),
+            "weight_grams_per_item": Decimal("50.5"),
             "cost_per_gram": Decimal("0.025"),
             "current_weight": Decimal("0.0"),  # Empty spool
             "is_active": False,  # Inactive
@@ -76,6 +80,7 @@ class TestBOMSpoolSuggestion:
             # Missing material_type_code
             "color": "Red",
             "weight_grams": Decimal("50.5"),
+            "weight_grams_per_item": Decimal("50.5"),
             "cost_per_gram": Decimal("0.025"),
             "current_weight": Decimal("750.0"),
             "is_active": True,
@@ -97,6 +102,7 @@ class TestModelProductionDefaults:
             color="Blue",
             color_hex="#0000FF",
             weight_grams=Decimal("100.0"),
+            weight_grams_per_item=Decimal("100.0"),
             cost_per_gram=Decimal("0.025"),
             current_weight=Decimal("800.0"),
             is_active=True,
@@ -174,6 +180,7 @@ class TestModelProductionDefaults:
                 color="Blue",
                 color_hex="#0000FF",
                 weight_grams=Decimal("50.0"),
+                weight_grams_per_item=Decimal("50.0"),
                 cost_per_gram=Decimal("0.025"),
                 current_weight=Decimal("800.0"),
                 is_active=True,
@@ -185,6 +192,7 @@ class TestModelProductionDefaults:
                 color="Red",
                 color_hex="#FF0000",
                 weight_grams=Decimal("30.0"),
+                weight_grams_per_item=Decimal("30.0"),
                 cost_per_gram=Decimal("0.025"),
                 current_weight=Decimal("600.0"),
                 is_active=True,
@@ -196,6 +204,7 @@ class TestModelProductionDefaults:
                 color="Black",
                 color_hex="#000000",
                 weight_grams=Decimal("20.0"),
+                weight_grams_per_item=Decimal("20.0"),
                 cost_per_gram=Decimal("0.030"),
                 current_weight=Decimal("500.0"),
                 is_active=True,

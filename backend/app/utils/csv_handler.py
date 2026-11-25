@@ -4,6 +4,7 @@ import csv
 import io
 import re
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -23,20 +24,47 @@ class ProductCSVRow(BaseModel):
     print_time: Optional[str] = None  # Format: "13h38m" or minutes
     last_printed_date: Optional[str] = None  # Format: DD/MM/YYYY
     units_in_stock: Optional[int] = 0
-    labor_hours: Optional[float] = None
-    labor_rate: Optional[float] = None
-    overhead_percentage: Optional[float] = None
-    cost: Optional[float] = None
-    sell_price: Optional[float] = None
+    # Cost inputs are exact decimals from the cell's own text (Constitution IV,
+    # task T225): `float()` put a binary approximation of "0.35" into a figure
+    # the costing engine multiplies.
+    labor_hours: Optional[Decimal] = None
+    overhead_percentage: Optional[Decimal] = None
+    # Columns a sheet may carry that the import deliberately does not write --
+    # a labour *rate* is tenant policy, and a cost or a sell price is derived
+    # by the engine, never stored (CLAUDE.md: "nothing derived is stored").
+    # Named so the import can report them as ignored rather than drop them
+    # silently.
+    ignored_columns: list[str] = []
     # Multi-material support (up to 4 materials)
     filament_1: Optional[str] = None
-    weight_1: Optional[float] = None
+    weight_1: Optional[Decimal] = None
     filament_2: Optional[str] = None
-    weight_2: Optional[float] = None
+    weight_2: Optional[Decimal] = None
     filament_3: Optional[str] = None
-    weight_3: Optional[float] = None
+    weight_3: Optional[Decimal] = None
     filament_4: Optional[str] = None
-    weight_4: Optional[float] = None
+    weight_4: Optional[Decimal] = None
+
+
+#: Columns a spreadsheet may carry that the import reads past. Each is
+#: reported per row, so an operator who filled one in learns it changed nothing.
+IGNORED_COLUMNS: dict[str, str] = {
+    "labor_rate": "a labour rate is tenant policy, set on the pricing policy screen",
+    "cost": "a cost is derived by the engine from its inputs, never imported",
+    "sell": "a price is set per channel on the pricing screen, never imported",
+}
+
+
+def _decimal_cell(row: dict, *keys: str) -> Optional[Decimal]:
+    """The first non-empty cell among ``keys``, as an exact decimal."""
+    for key in keys:
+        value = row.get(key)
+        if value:
+            try:
+                return Decimal(value)
+            except InvalidOperation:
+                raise ValueError(f"{key!r} is not a number: {value!r}") from None
+    return None
 
 
 class CSVImportError(Exception):
@@ -219,30 +247,18 @@ def parse_csv_file(csv_content: str) -> list[ProductCSVRow]:
                 print_time=row.get("print time") or row.get("print_time"),
                 last_printed_date=row.get("date printed last") or row.get("last_printed_date"),
                 units_in_stock=int(row["units"]) if row.get("units") else 0,
-                labor_hours=float(row["labor_hours"]) if row.get("labor_hours") else None,
-                labor_rate=float(row["labor_rate"]) if row.get("labor_rate") else None,
-                overhead_percentage=float(row["overhead_percentage"])
-                if row.get("overhead_percentage")
-                else None,
-                cost=float(row["cost"]) if row.get("cost") else None,
-                sell_price=float(row["sell"]) if row.get("sell") else None,
+                labor_hours=_decimal_cell(row, "labor_hours"),
+                overhead_percentage=_decimal_cell(row, "overhead_percentage"),
+                ignored_columns=[column for column in IGNORED_COLUMNS if row.get(column)],
                 # Multi-material mapping
                 filament_1=row.get("filament1") or row.get("filament_1"),
-                weight_1=float(row["weight1"])
-                if row.get("weight1") or row.get("weight_1")
-                else None,
+                weight_1=_decimal_cell(row, "weight1", "weight_1"),
                 filament_2=row.get("filament2") or row.get("filament_2"),
-                weight_2=float(row["weight2"])
-                if row.get("weight2") or row.get("weight_2")
-                else None,
+                weight_2=_decimal_cell(row, "weight2", "weight_2"),
                 filament_3=row.get("filament3") or row.get("filament_3"),
-                weight_3=float(row["weight3"])
-                if row.get("weight3") or row.get("weight_3")
-                else None,
+                weight_3=_decimal_cell(row, "weight3", "weight_3"),
                 filament_4=row.get("filament4") or row.get("filament_4"),
-                weight_4=float(row["weight4"])
-                if row.get("weight4") or row.get("weight_4")
-                else None,
+                weight_4=_decimal_cell(row, "weight4", "weight_4"),
             )
 
             rows.append(validated_row)

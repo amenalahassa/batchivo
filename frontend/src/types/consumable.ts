@@ -1,7 +1,22 @@
 /**
  * TypeScript types for Consumable Inventory API
  * These match the Pydantic schemas in backend/app/schemas/consumable.py
+ *
+ * Every money field is a decimal **string**, not a number. The backend holds
+ * them as `Decimal` and serialises them as strings, because
+ * `current_cost_per_unit` is read by the costing engine and a cost that
+ * arrives as a JavaScript number has already lost the exactness the engine
+ * computes with (Constitution IV, task T144). Render them with `formatMoney`
+ * and do arithmetic on them with the helpers in `@/lib/money` -- never with
+ * `parseFloat` and `*`.
+ *
+ * A quantity, a reorder point and a lead time stay numbers: they count things.
  */
+
+import type { PackagingKind } from './packaging'
+
+/** A money amount as the exact decimal string the API sent, e.g. "20.30". */
+type Money = string
 
 // =============================================================================
 // ConsumableType Types
@@ -18,7 +33,7 @@ export interface ConsumableTypeBase {
   unit_of_measure: string // each, ml, g, pack
 
   // Current pricing
-  current_cost_per_unit?: number | null // Current cost per unit
+  current_cost_per_unit?: Money | null // Current cost per unit
 
   // Stock management
   quantity_on_hand: number // Current stock quantity
@@ -33,10 +48,29 @@ export interface ConsumableTypeBase {
 
   // Status
   is_active: boolean // Whether this consumable is active
+
+  // Packaging attributes (packaging advisor). Decimal strings, all optional:
+  // a consumable that is not packaging leaves them null (FR-013).
+  packaging_kind?: PackagingKind | null
+  inner_length_mm?: string | null
+  inner_width_mm?: string | null
+  /** For a mailer, its maximum usable thickness. */
+  inner_height_mm?: string | null
+  wall_mm?: string | null
+  empty_weight_grams?: string | null
+  /** Void fill only: the volume one unit fills. */
+  fill_volume_ml?: string | null
+}
+
+/** How a container's size, wall and weight are known (FR-038). Never "observed". */
+export interface PackagingProvenanceInput {
+  source: 'measured' | 'assumed'
 }
 
 // Create consumable type request (POST /api/v1/consumables/types)
-export type ConsumableTypeCreate = ConsumableTypeBase
+export interface ConsumableTypeCreate extends ConsumableTypeBase {
+  packaging_provenance?: PackagingProvenanceInput | null
+}
 
 // Update consumable type request (PUT /api/v1/consumables/types/{id})
 export interface ConsumableTypeUpdate {
@@ -45,7 +79,7 @@ export interface ConsumableTypeUpdate {
   description?: string | null
   category?: string | null
   unit_of_measure?: string
-  current_cost_per_unit?: number | null
+  current_cost_per_unit?: Money | null
   quantity_on_hand?: number
   reorder_point?: number | null
   reorder_quantity?: number | null
@@ -54,6 +88,14 @@ export interface ConsumableTypeUpdate {
   supplier_url?: string | null
   typical_lead_days?: number | null
   is_active?: boolean
+  packaging_kind?: PackagingKind | null
+  inner_length_mm?: string | null
+  inner_width_mm?: string | null
+  inner_height_mm?: string | null
+  wall_mm?: string | null
+  empty_weight_grams?: string | null
+  fill_volume_ml?: string | null
+  packaging_provenance?: PackagingProvenanceInput | null
 }
 
 // Consumable type response
@@ -65,7 +107,32 @@ export interface ConsumableTypeResponse extends ConsumableTypeBase {
 
   // Computed fields
   is_low_stock: boolean // Whether stock is below reorder point
-  stock_value: number // Total value of stock on hand
+  // The purchase that prices the unit, when one does (T273, T277): the unit
+  // cost is then read-only and changes only with a new purchase.
+  priced_by_purchase_id?: string | null
+  priced_by_purchase_date?: string | null
+  stock_value: Money // Total value of stock on hand
+  /** A box or mailer without its inner size: the advisor cannot use it (FR-013). */
+  packaging_incomplete?: boolean
+  /** Where each packaging figure came from: 'measured' | 'assumed' | null. */
+  packaging_provenance?: Record<string, string | null>
+  /** Seeded from the standard packaging catalogue (spec 006). */
+  from_catalogue?: boolean
+  catalogue_key?: string | null
+  catalogue_version?: number | null
+  /** Postage services ('<carrier>:<service>') whose size limits take this container. */
+  fits_services?: string[]
+  /** Products (and variants) that ship in it. */
+  used_by_products?: UsedByProduct[]
+  /** Where the typed unit cost came from: 'assumed' for a catalogue default. */
+  cost_provenance?: string | null
+}
+
+/** A product that ships in a packaging consumable. */
+export interface UsedByProduct {
+  id: string
+  sku: string
+  name: string
 }
 
 // List response for consumable types
@@ -84,6 +151,10 @@ export interface ConsumableTypeListParams {
   category?: string
   is_active?: boolean
   low_stock_only?: boolean
+  /** Comma-separated packaging kinds, e.g. "box,mailer". */
+  packaging_kind?: string
+  /** Only consumables that are not packaging (the Consumables page). */
+  exclude_packaging?: boolean
 }
 
 // =============================================================================
@@ -94,7 +165,7 @@ export interface ConsumableTypeListParams {
 export interface ConsumablePurchaseBase {
   consumable_type_id: string // UUID of consumable type
   quantity_purchased: number
-  total_cost: number
+  total_cost: Money
 
   // Source
   supplier?: string | null
@@ -111,7 +182,7 @@ export type ConsumablePurchaseCreate = ConsumablePurchaseBase
 // Update purchase request
 export interface ConsumablePurchaseUpdate {
   quantity_purchased?: number
-  total_cost?: number
+  total_cost?: Money
   supplier?: string | null
   order_reference?: string | null
   purchase_url?: string | null
@@ -123,7 +194,7 @@ export interface ConsumablePurchaseUpdate {
 export interface ConsumablePurchaseResponse extends ConsumablePurchaseBase {
   id: string // UUID
   tenant_id: string // UUID
-  cost_per_unit: number
+  cost_per_unit: Money
   quantity_remaining: number // For FIFO tracking
   created_at: string // ISO 8601 datetime
   updated_at: string // ISO 8601 datetime
@@ -178,8 +249,8 @@ export type ConsumableUsageCreate = ConsumableUsageBase
 export interface ConsumableUsageResponse extends ConsumableUsageBase {
   id: string // UUID
   tenant_id: string // UUID
-  cost_at_use?: number | null // Cost per unit at time of use
-  total_cost: number // Total cost of this usage
+  cost_at_use?: Money | null // Cost per unit at time of use
+  total_cost: Money // Total cost of this usage
   created_at: string // ISO 8601 datetime
   updated_at: string // ISO 8601 datetime
 }
@@ -226,7 +297,7 @@ export interface LowStockAlert {
   reorder_point: number
   reorder_quantity?: number | null
   preferred_supplier?: string | null
-  stock_value: number
+  stock_value: Money
 }
 
 // =============================================================================

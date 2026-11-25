@@ -54,7 +54,8 @@ export interface CategoryListParams {
   limit?: number
   search?: string
   parent_id?: string | null
-  is_active?: boolean
+  /** List inactive categories too (the API lists active ones only by default). */
+  include_inactive?: boolean
 }
 
 // ==================== API Functions ====================
@@ -71,7 +72,7 @@ export async function listCategories(params?: CategoryListParams): Promise<Categ
   if (params?.parent_id !== undefined) {
     queryParams.append('parent_id', params.parent_id === null ? 'null' : params.parent_id)
   }
-  if (params?.is_active !== undefined) queryParams.append('is_active', params.is_active.toString())
+  if (params?.include_inactive) queryParams.append('include_inactive', 'true')
 
   const url = `/api/v1/categories${queryParams.toString() ? `?${queryParams.toString()}` : ''}`
   return apiClient.get<CategoryListResponse>(url)
@@ -115,6 +116,31 @@ export async function reorderCategories(categoryOrders: { id: string; display_or
       updateCategory(id, { display_order })
     )
   )
+}
+
+/**
+ * The display_order updates that move one category a step up or down.
+ *
+ * `sorted` is the list as shown. Swapping the two orders is not enough: when
+ * categories share an order (every category used to be created with 0), a swap
+ * changes nothing. The list is renumbered 0..n-1 in its new order instead, and
+ * only the categories whose order actually changes are returned.
+ */
+export function displayOrderUpdatesForMove(
+  sorted: Pick<Category, 'id' | 'display_order'>[],
+  categoryId: string,
+  direction: 'up' | 'down'
+): { id: string; display_order: number }[] {
+  const from = sorted.findIndex((c) => c.id === categoryId)
+  const to = direction === 'up' ? from - 1 : from + 1
+  if (from < 0 || to < 0 || to >= sorted.length) return []
+
+  const reordered = [...sorted]
+  ;[reordered[from], reordered[to]] = [reordered[to], reordered[from]]
+  return reordered
+    .map((c, index) => ({ id: c.id, display_order: index, current: c.display_order }))
+    .filter((c) => c.display_order !== c.current)
+    .map(({ id, display_order }) => ({ id, display_order }))
 }
 
 // ==================== Product-Category Assignment ====================

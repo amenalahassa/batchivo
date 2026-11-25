@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.pricing_policy import seed_policy_row
 from app.core.rate_limit import limiter, AUTH_RATE_LIMIT, FORGOT_PASSWORD_RATE_LIMIT
 from app.services.email_service import get_email_service
 
@@ -17,6 +18,7 @@ from app.core.security import (
     decode_token,
     verify_token_type,
 )
+from app.core.rls import set_rls_context
 from app.database import get_db
 from app.models.tenant import Tenant
 from app.models.user import User, UserTenant, UserRole
@@ -75,10 +77,15 @@ async def register(
     new_tenant = Tenant(name=tenant_name, slug=tenant_slug, is_active=True, settings={})
     db.add(new_tenant)
     await db.flush()  # Get tenant ID
+    # The membership and policy rows are tenant rows: scope before writing them.
+    await set_rls_context(db, tenant_id=new_tenant.id, user_id=new_user.id)
 
     # Link user to tenant with OWNER role
     user_tenant = UserTenant(user_id=new_user.id, tenant_id=new_tenant.id, role=UserRole.OWNER)
     db.add(user_tenant)
+    # Every tenant is costed from a dated policy row; this one is assumed
+    # until the owner sets a rate (task T219).
+    await seed_policy_row(db, new_tenant)
     await db.commit()
 
     # Create tokens
@@ -120,6 +127,9 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive"
         )
+
+    # The password is verified: RLS may now show this user their memberships.
+    await set_rls_context(db, user_id=user.id)
 
     # Get user's primary tenant (first one, or could be configurable)
     result = await db.execute(select(UserTenant).where(UserTenant.user_id == user.id).limit(1))

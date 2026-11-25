@@ -1,0 +1,252 @@
+{
+  "carrier": "la_poste",
+  "name": "La Poste",
+  "currency": "EUR",
+  "effective_date": "2026-01-01",
+  "source": "La Poste, tarifs au 1er janvier 2026 (laposte.fr/tarif-lettre-suivie, laposte.fr/tarif-colissimo); Colissimo à domicile; world = Colissimo international Zone C",
+  "services": [
+    {
+      "key": "lettre_suivie",
+      "name": "Lettre suivie",
+      "max_length_mm": "600",
+      "max_width_mm": "370",
+      "max_height_mm": "30",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "20",
+              "price": "2.02"
+            },
+            {
+              "min_grams": "20",
+              "max_grams": "100",
+              "price": "3.60"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "5.74"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "7.91"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "1000",
+              "price": "9.79"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "2000",
+              "price": "11.64"
+            }
+          ]
+        },
+        {
+          "zone": "europe",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "20",
+              "price": "5.05"
+            },
+            {
+              "min_grams": "20",
+              "max_grams": "100",
+              "price": "7.65"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "14.45"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "19.40"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "2000",
+              "price": "34.50"
+            }
+          ]
+        },
+        {
+          "zone": "world",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "20",
+              "price": "5.05"
+            },
+            {
+              "min_grams": "20",
+              "max_grams": "100",
+              "price": "7.65"
+            },
+            {
+              "min_grams": "100",
+              "max_grams": "250",
+              "price": "14.45"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "19.40"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "2000",
+              "price": "34.50"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "colissimo",
+      "name": "Colissimo",
+      "max_length_mm": "700",
+      "max_width_mm": "400",
+      "max_height_mm": "400",
+      "zones": [
+        {
+          "zone": "domestic",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "250",
+              "price": "5.49"
+            },
+            {
+              "min_grams": "250",
+              "max_grams": "500",
+              "price": "7.59"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "750",
+              "price": "9.29"
+            },
+            {
+              "min_grams": "750",
+              "max_grams": "1000",
+              "price": "9.59"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "2000",
+              "price": "11.19"
+            },
+            {
+              "min_grams": "2000",
+              "max_grams": "5000",
+              "price": "17.39"
+            },
+            {
+              "min_grams": "5000",
+              "max_grams": "10000",
+              "price": "25.29"
+            },
+            {
+              "min_grams": "10000",
+              "max_grams": "15000",
+              "price": "31.99"
+            },
+            {
+              "min_grams": "15000",
+              "max_grams": "30000",
+              "price": "39.59"
+            }
+          ]
+        },
+        {
+          "zone": "europe",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "500",
+              "price": "14.99"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "1000",
+              "price": "19.39"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "2000",
+              "price": "22.19"
+            },
+            {
+              "min_grams": "2000",
+              "max_grams": "5000",
+              "price": "28.59"
+            },
+            {
+              "min_grams": "5000",
+              "max_grams": "10000",
+              "price": "46.99"
+            },
+            {
+              "min_grams": "10000",
+              "max_grams": "15000",
+              "price": "67.99"
+            },
+            {
+              "min_grams": "15000",
+              "max_grams": "30000",
+              "price": "87.99"
+            }
+          ]
+        },
+        {
+          "zone": "world",
+          "brackets": [
+            {
+              "min_grams": "0",
+              "max_grams": "500",
+              "price": "35.19"
+            },
+            {
+              "min_grams": "500",
+              "max_grams": "1000",
+              "price": "39.19"
+            },
+            {
+              "min_grams": "1000",
+              "max_grams": "2000",
+              "price": "53.99"
+            },
+            {
+              "min_grams": "2000",
+              "max_grams": "5000",
+              "price": "78.69"
+            },
+            {
+              "min_grams": "5000",
+              "max_grams": "10000",
+              "price": "148.99"
+            },
+            {
+              "min_grams": "10000",
+              "max_grams": "15000",
+              "price": "210.79"
+            },
+            {
+              "min_grams": "15000",
+              "max_grams": "20000",
+              "price": "256.89"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

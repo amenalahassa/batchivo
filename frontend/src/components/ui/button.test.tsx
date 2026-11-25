@@ -71,7 +71,7 @@ describe('Button', () => {
   })
 
   it('handles click events', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleClick = vi.fn()
     render(<Button onClick={handleClick}>Click</Button>)
     
@@ -80,7 +80,7 @@ describe('Button', () => {
   })
 
   it('is disabled when disabled prop is passed', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleClick = vi.fn()
     render(<Button onClick={handleClick} disabled>Disabled</Button>)
     

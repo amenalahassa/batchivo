@@ -9,6 +9,7 @@ when:
 depends_on:
   - test-fast
   - test-integration
+  - test-e2e
 
 steps:
   # ============================================

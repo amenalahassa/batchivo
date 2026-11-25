@@ -1,5 +1,6 @@
 """Tests for shop checkout API endpoints."""
 
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 from unittest.mock import MagicMock, patch
@@ -14,6 +15,7 @@ from app.models.discount import DiscountCode, DiscountType
 from app.models.product import Product
 from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
+from app.models.sales_channel_economics import SalesChannelEconomics
 from app.models.tenant import Tenant
 from app.services.cart import CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
@@ -83,8 +85,6 @@ async def sales_channel(db_session: AsyncSession, test_tenant: Tenant) -> SalesC
         tenant_id=test_tenant.id,
         name="Mystmereforge",
         platform_type="online_shop",
-        fee_percentage=0,
-        fee_fixed=0,
         is_active=True,
     )
     db_session.add(channel)
@@ -104,7 +104,7 @@ async def shop_client(
     mock_reservation_service,
 ):
     """Create a test HTTP client with ShopContext dependency overridden."""
-    from app.auth.dependencies import get_shop_sales_channel, get_shop_tenant
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel, get_shop_tenant
     from app.database import get_db
 
     async def override_get_db():
@@ -117,6 +117,7 @@ async def shop_client(
         return (test_tenant, sales_channel)
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_shop_tenant] = override_get_shop_tenant
     app.dependency_overrides[get_shop_sales_channel] = override_get_shop_sales_channel
     app.dependency_overrides[get_cart_service] = lambda: mock_cart_service
@@ -326,9 +327,9 @@ class TestCartOperations:
 class TestShippingRates:
     """Tests for shipping rate calculation."""
 
-    async def test_get_shipping_rates_valid_postcode(self, client: AsyncClient):
+    async def test_get_shipping_rates_valid_postcode(self, shop_client: AsyncClient):
         """Test getting shipping rates for valid UK postcode."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "SW1A 1AA", "cart_total_pence": 2000},
         )
@@ -338,19 +339,9 @@ class TestShippingRates:
         assert "data" in data
         assert len(data["data"]) > 0
 
-    async def test_get_shipping_rates_free_shipping(self, client: AsyncClient):
-        """Test free shipping threshold."""
-        response = await client.post(
-            "/api/v1/shop/checkout/shipping-rates",
-            json={"postcode": "SW1A 1AA", "cart_total_pence": 5000},  # Over threshold
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert "qualifies_for_free_shipping" in data
-
-    async def test_get_shipping_rates_highland(self, client: AsyncClient):
+    async def test_get_shipping_rates_highland(self, shop_client: AsyncClient):
         """Test Highland postcode surcharge."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "IV1 1AA", "cart_total_pence": 2000},  # Inverness
         )
@@ -358,15 +349,142 @@ class TestShippingRates:
         data = response.json()
         assert data["postcode_valid"] is True
 
-    async def test_get_shipping_rates_invalid_postcode(self, client: AsyncClient):
+    async def test_get_shipping_rates_invalid_postcode(self, shop_client: AsyncClient):
         """Test invalid postcode handling."""
-        response = await client.post(
+        response = await shop_client.post(
             "/api/v1/shop/checkout/shipping-rates",
             json={"postcode": "INVALID", "cart_total_pence": 2000},
         )
         assert response.status_code == 200
         data = response.json()
         assert data["postcode_valid"] is False
+
+
+# ============================================
+# The free-shipping threshold is the operator's (T208)
+# ============================================
+
+
+async def _set_threshold(
+    db_session: AsyncSession, channel: SalesChannel, threshold: str
+) -> SalesChannelEconomics:
+    row = SalesChannelEconomics(
+        tenant_id=channel.tenant_id,
+        sales_channel_id=channel.id,
+        free_shipping_threshold=Decimal(threshold),
+        effective_from=date(2020, 1, 1),
+    )
+    db_session.add(row)
+    await db_session.commit()
+    return row
+
+
+def _second_class(data: dict) -> dict:
+    return next(rate for rate in data["data"] if rate["id"] == "royal-mail-2nd")
+
+
+async def _checkout_one(shop_client: AsyncClient, product: Product):
+    session_id = str(uuid4())
+    await shop_client.post(
+        f"/api/v1/shop/cart/{session_id}/items",
+        json={"product_id": str(product.id), "quantity": 1},
+    )
+    return await shop_client.post(
+        "/api/v1/shop/checkout/create-payment",
+        json={
+            "cart_session_id": session_id,
+            "shippingAddress": {
+                "name": "John Doe",
+                "email": "john@example.com",
+                "line1": "123 Test St",
+                "city": "London",
+                "postcode": "SW1A 1AA",
+                "country": "United Kingdom",
+            },
+            "shippingMethodId": "royal-mail-2nd",
+        },
+    )
+
+
+class TestFreeShippingThresholdIsTheChannels:
+    """The storefront ships free at the threshold the solver planned against."""
+
+    async def test_applies_the_channels_threshold(
+        self, shop_client: AsyncClient, db_session: AsyncSession, sales_channel: SalesChannel
+    ):
+        await _set_threshold(db_session, sales_channel, "30.00")
+
+        at = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 3000},
+        )
+        below = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 2999},
+        )
+
+        assert at.status_code == 200
+        assert at.json()["free_shipping_threshold"] == 3000
+        assert at.json()["qualifies_for_free_shipping"] is True
+        assert Decimal(str(_second_class(at.json())["price"])) == 0
+        assert below.json()["qualifies_for_free_shipping"] is False
+        assert Decimal(str(_second_class(below.json())["price"])) == 295
+
+    async def test_a_threshold_above_fifty_pounds_is_honoured(
+        self, shop_client: AsyncClient, db_session: AsyncSession, sales_channel: SalesChannel
+    ):
+        """The old constant shipped free at 5000p whatever the operator set."""
+        await _set_threshold(db_session, sales_channel, "75.00")
+
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 5000},
+        )
+
+        assert response.json()["free_shipping_threshold"] == 7500
+        assert response.json()["qualifies_for_free_shipping"] is False
+
+    async def test_a_channel_without_a_threshold_ships_nothing_free(self, shop_client: AsyncClient):
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/shipping-rates",
+            json={"postcode": "SW1A 1AA", "cart_total_pence": 1_000_000},
+        )
+
+        assert response.json()["free_shipping_threshold"] is None
+        assert response.json()["qualifies_for_free_shipping"] is False
+
+    async def test_checkout_charges_shipping_below_the_threshold(
+        self,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        sales_channel: SalesChannel,
+        shop_product: Product,
+    ):
+        """A 1999p cart is below a 5000p threshold, so shipping is charged.
+
+        The cart holds pence; the checkout used to multiply it by a hundred
+        again, so this cart looked like 199,900p and shipped free.
+        """
+        await _set_threshold(db_session, sales_channel, "50.00")
+
+        response = await _checkout_one(shop_client, shop_product)
+
+        assert response.status_code == 200
+        assert Decimal(str(response.json()["data"]["orderTotal"])) == Decimal("1999") + 295
+
+    async def test_checkout_ships_free_at_the_channels_threshold(
+        self,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        sales_channel: SalesChannel,
+        shop_product: Product,
+    ):
+        await _set_threshold(db_session, sales_channel, "19.99")
+
+        response = await _checkout_one(shop_client, shop_product)
+
+        assert response.status_code == 200
+        assert Decimal(str(response.json()["data"]["orderTotal"])) == Decimal("1999")
 
 
 # ============================================
@@ -1603,3 +1721,402 @@ class TestSubmitReviewInvalidProduct:
             },
         )
         assert response.status_code == 404
+
+
+# ============================================
+# Storefront Sale Snapshot (task T157, FR-036/FR-024)
+# ============================================
+
+
+class TestStorefrontSaleSnapshot:
+    """A sale made through the shop is frozen like any other sale.
+
+    The console's order path and the Shopify webhook both called
+    `write_sale_snapshot`; the storefront's own checkout did not. Because
+    `realised_margin` and `margin_alert` select on `make_cost_at_sale` being
+    set, every storefront sale was invisible to the margin figures this
+    feature exists to report.
+    """
+
+    @pytest_asyncio.fixture
+    async def heavy_product(
+        self, db_session: AsyncSession, test_tenant: Tenant, sales_channel: SalesChannel
+    ) -> Product:
+        """A shop product with a recorded weight, so postage can be looked up."""
+        product = Product(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            sku="SNAP-PROD-001",
+            name="Snapshot Test Dragon",
+            description="Has a weight, so a shipping profile covers it",
+            is_active=True,
+            shop_visible=True,
+            units_in_stock=10,
+            weight_grams=300,
+        )
+        db_session.add(product)
+        await db_session.commit()
+
+        pricing = ProductPricing(
+            id=uuid4(),
+            product_id=product.id,
+            sales_channel_id=sales_channel.id,
+            list_price=Decimal("19.99"),
+        )
+        db_session.add(pricing)
+        await db_session.commit()
+        await db_session.refresh(product)
+        return product
+
+    @pytest_asyncio.fixture
+    async def postage_profile(self, db_session: AsyncSession, test_tenant: Tenant):
+        """A profile covering the 300 g parcel at CA$4.20."""
+        from app.models.shipping_profile import ShippingProfile
+
+        profile = ShippingProfile(
+            id=uuid4(),
+            tenant_id=test_tenant.id,
+            name="Domestic 250-500 g",
+            destination_zone="domestic",
+            weight_bracket_min_grams=250,
+            weight_bracket_max_grams=500,
+            postage_cost=Decimal("4.20"),
+            carrier="Royal Mail",
+            effective_from=date(2020, 1, 1),
+        )
+        db_session.add(profile)
+        await db_session.commit()
+        await db_session.refresh(profile)
+        return profile
+
+    async def _complete_a_sale(
+        self, shop_client: AsyncClient, product: Product, quantity: int = 1
+    ) -> str:
+        """Put units through the cart, payment and completion, return the order number."""
+        session_id = str(uuid4())
+        await shop_client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(product.id), "quantity": quantity},
+        )
+        checkout_response = await shop_client.post(
+            "/api/v1/shop/checkout/create-payment",
+            json={
+                "cart_session_id": session_id,
+                "shippingAddress": {
+                    "name": "John Doe",
+                    "email": "john@example.com",
+                    "line1": "123 Test St",
+                    "city": "London",
+                    "postcode": "SW1A 1AA",
+                    "country": "United Kingdom",
+                },
+                "shippingMethodId": "standard",
+            },
+        )
+        assert checkout_response.status_code == 200
+        checkout_session_id = checkout_response.json()["data"]["sessionId"]
+
+        response = await shop_client.post(
+            "/api/v1/shop/checkout/complete",
+            json={
+                "payment_session_id": checkout_session_id,
+                "square_payment_token": "test_token",
+            },
+        )
+        assert response.status_code == 200, response.text
+        return str(response.json()["data"]["order_number"])
+
+    @staticmethod
+    def _paid() -> MagicMock:
+        service = MagicMock()
+        service.process_payment.return_value = MagicMock(
+            success=True,
+            payment_id="sq_payment_123",
+            receipt_url="https://squareup.com/receipt/123",
+            error_code=None,
+            error_message=None,
+        )
+        return service
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_storefront_sale_is_snapshotted(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Each line of a storefront sale carries its frozen cost and basis."""
+        from sqlalchemy import select as sa_select
+        from sqlalchemy.orm import selectinload
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow)
+                .where(OrderRow.order_number == order_number)
+                .options(selectinload(OrderRow.items))
+            )
+        ).scalar_one()
+
+        assert order.items, "the sale recorded no lines"
+        for item in order.items:
+            assert item.make_cost_at_sale is not None, (
+                "a storefront line was settled with no frozen make-cost, which "
+                "hides it from realised_margin and margin_alert (FR-036)"
+            )
+            assert item.has_snapshot
+            assert item.margin_basis_at_sale, "the basis in force was not frozen (FR-031d)"
+            assert item.pricing_rev is not None
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_storefront_sale_records_postage_paid(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Postage paid is read from the profiles, separate from shipping revenue."""
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid == Decimal("4.20"), (
+            "postage paid must come from the shipping profile covering the "
+            "parcel, not from what the customer was charged (FR-024)"
+        )
+        assert order.shipping_cost != order.postage_paid or order.shipping_cost == Decimal("4.20")
+        # Tax is not invented: the storefront has no tax line of its own.
+        assert order.sales_tax_collected == Decimal("0.00")
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_postage_is_unrecorded_when_no_profile_covers_the_parcel(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        shop_product: Product,
+    ):
+        """No profile covering the parcel is a gap, not a zero (FR-019, T257).
+
+        This used to assert zero, which a margin then read as free postage.
+        """
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, shop_product)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid is None
+
+    @patch("app.services.square_payment.get_payment_service")
+    async def test_an_order_is_posted_as_one_parcel(
+        self,
+        mock_payment_service,
+        shop_client: AsyncClient,
+        db_session: AsyncSession,
+        test_tenant: Tenant,
+        heavy_product: Product,
+        postage_profile,
+    ):
+        """Two 300 g units are one 600 g parcel, not two 300 g parcels (T257)."""
+        from sqlalchemy import select as sa_select
+
+        from app.models.order import Order as OrderRow
+        from app.models.shipping_profile import ShippingProfile
+
+        db_session.add(
+            ShippingProfile(
+                id=uuid4(),
+                tenant_id=test_tenant.id,
+                name="Domestic 500-1000 g",
+                destination_zone="domestic",
+                weight_bracket_min_grams=500,
+                weight_bracket_max_grams=1000,
+                postage_cost=Decimal("5.10"),
+                effective_from=date(2020, 1, 1),
+            )
+        )
+        await db_session.commit()
+
+        mock_payment_service.return_value = self._paid()
+        order_number = await self._complete_a_sale(shop_client, heavy_product, quantity=2)
+
+        order = (
+            await db_session.execute(
+                sa_select(OrderRow).where(OrderRow.order_number == order_number)
+            )
+        ).scalar_one()
+
+        assert order.postage_paid == Decimal("5.10"), (
+            "a two-unit order was charged per line rather than as one parcel"
+        )
+
+
+# ============================================
+# Task T228: the shop's own price, for the quantity bought, or none
+# ============================================
+
+
+async def _price(db_session, product, channel, amount: str, min_quantity: int = 1) -> None:
+    db_session.add(
+        ProductPricing(
+            id=uuid4(),
+            product_id=product.id,
+            sales_channel_id=channel.id,
+            list_price=Decimal(amount),
+            min_quantity=min_quantity,
+        )
+    )
+    await db_session.commit()
+    # The client shares this session: reload the product's price collections so
+    # the route does not read the ones cached before this row existed.
+    await db_session.refresh(product, ["pricing", "current_pricing"])
+
+
+async def _unpriced_product(db_session, test_tenant) -> Product:
+    product = Product(
+        id=uuid4(),
+        tenant_id=test_tenant.id,
+        sku=f"UNPRICED-{uuid4().hex[:6]}",
+        name="Not Yet Priced",
+        is_active=True,
+        shop_visible=True,
+        units_in_stock=10,
+    )
+    db_session.add(product)
+    await db_session.commit()
+    return product
+
+
+async def _marketplace(db_session, test_tenant) -> SalesChannel:
+    channel = SalesChannel(
+        id=uuid4(),
+        tenant_id=test_tenant.id,
+        name="A Marketplace",
+        platform_type="etsy",
+        is_active=True,
+    )
+    db_session.add(channel)
+    await db_session.commit()
+    return channel
+
+
+class TestTheShopSellsAtItsOwnPrice:
+    async def test_an_unpriced_product_cannot_be_added(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(product.id), "quantity": 1},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "not_priced"
+
+    async def test_a_marketplace_price_is_never_charged_on_the_shop(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        await _price(db_session, product, await _marketplace(db_session, test_tenant), "9.99")
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(product.id), "quantity": 1},
+        )
+
+        assert response.status_code == 409
+
+    async def test_the_quantity_tier_applies_to_the_whole_line(
+        self, client: AsyncClient, db_session, shop_product, sales_channel
+    ) -> None:
+        await _price(db_session, shop_product, sales_channel, "15.00", min_quantity=3)
+        session_id = str(uuid4())
+
+        await client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(shop_product.id), "quantity": 1},
+        )
+        response = await client.post(
+            f"/api/v1/shop/cart/{session_id}/items",
+            json={"product_id": str(shop_product.id), "quantity": 2},
+        )
+
+        [line] = response.json()["data"]["items"]
+        assert line["quantity"] == 3
+        assert Decimal(line["unit_price"]) == Decimal("1500")
+
+    async def test_below_the_tier_the_base_price_applies(
+        self, client: AsyncClient, db_session, shop_product, sales_channel
+    ) -> None:
+        await _price(db_session, shop_product, sales_channel, "15.00", min_quantity=3)
+
+        response = await client.post(
+            f"/api/v1/shop/cart/{uuid4()}/items",
+            json={"product_id": str(shop_product.id), "quantity": 2},
+        )
+
+        [line] = response.json()["data"]["items"]
+        assert Decimal(line["unit_price"]) == Decimal("1999")
+
+    async def test_the_product_page_shows_an_unpriced_product_as_unpriced(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        await _price(db_session, product, await _marketplace(db_session, test_tenant), "9.99")
+
+        data = (await client.get(f"/api/v1/shop/products/{product.id}")).json()["data"]
+
+        assert data["price"] is None
+        assert data["is_priced"] is False
+
+    async def test_the_listing_shows_an_unpriced_product_as_unpriced(
+        self, shop_client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+
+        listed = (await shop_client.get("/api/v1/shop/products")).json()["data"]
+
+        [row] = [row for row in listed if row["id"] == str(product.id)]
+        assert row["price"] is None
+        assert row["is_priced"] is False
+
+    async def test_the_dragons_page_shows_an_unpriced_dragon_as_unpriced(
+        self, client: AsyncClient, db_session, test_tenant
+    ) -> None:
+        product = await _unpriced_product(db_session, test_tenant)
+        product.is_dragon = True
+        db_session.add(product)
+        await db_session.commit()
+
+        listed = (await client.get("/api/v1/shop/dragons")).json()["data"]
+
+        [row] = [row for row in listed if row["id"] == str(product.id)]
+        assert row["price"] is None
+        assert row["is_priced"] is False

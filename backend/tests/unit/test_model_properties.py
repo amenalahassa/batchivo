@@ -82,22 +82,9 @@ class TestConsumableTypeIsLowStock:
 # ---------------------------------------------------------------------------
 
 
-class TestConsumableTypeStockValue:
-    def test_no_cost_returns_zero(self):
-        obj = make_consumable_type(quantity_on_hand=10, current_cost_per_unit=None)
-        assert ConsumableType.stock_value.fget(obj) == 0.0
-
-    def test_calculates_correctly(self):
-        obj = make_consumable_type(quantity_on_hand=10, current_cost_per_unit=Decimal("2.50"))
-        assert ConsumableType.stock_value.fget(obj) == 25.0
-
-    def test_zero_quantity(self):
-        obj = make_consumable_type(quantity_on_hand=0, current_cost_per_unit=Decimal("5.00"))
-        assert ConsumableType.stock_value.fget(obj) == 0.0
-
-    def test_decimal_cost(self):
-        obj = make_consumable_type(quantity_on_hand=3, current_cost_per_unit=Decimal("1.99"))
-        assert abs(ConsumableType.stock_value.fget(obj) - 5.97) < 0.001
+# `ConsumableType.stock_value` was removed with the stored unit cost it read
+# (task T273); the unit cost is derived from the purchases on read, and its
+# tests are in `tests/unit/pricing/test_consumable_unit_cost.py`.
 
 
 # ---------------------------------------------------------------------------
@@ -115,43 +102,46 @@ class TestConsumableUsageTotalCost:
         assert ConsumableUsage.total_cost.fget(obj) == 10.0
 
     def test_fractional_cost(self):
+        # 3 x 1.33 is 3.99 exactly in Decimal; in float it is 3.9899999999999998,
+        # which is why this assertion used to need a tolerance.
         obj = make_consumable_usage(quantity_used=3, cost_at_use=Decimal("1.33"))
-        assert abs(ConsumableUsage.total_cost.fget(obj) - 3.99) < 0.001
+        assert ConsumableUsage.total_cost.fget(obj) == Decimal("3.99")
 
 
 # ---------------------------------------------------------------------------
-# ModelComponent.total_cost and effective_unit_cost
+# ModelComponent carries no derived cost any more (task T141)
 # ---------------------------------------------------------------------------
 
 
-class TestModelComponentTotalCost:
-    def test_basic_calculation(self):
-        obj = make_model_component(quantity=3, unit_cost=Decimal("4.00"))
-        assert ModelComponent.total_cost.fget(obj) == 12.0
+class TestModelComponentDerivesNothing:
+    """The two cost properties are gone, and must not come back.
 
-    def test_zero_quantity(self):
-        obj = make_model_component(quantity=0, unit_cost=Decimal("5.00"))
-        assert ModelComponent.total_cost.fget(obj) == 0.0
+    `total_cost` duplicated the engine's "components" line and
+    `effective_unit_cost` gave a *different* answer to the same question --
+    preferring a linked consumable's cost where the engine uses the typed
+    `unit_cost`. Both computed in float on a `Numeric` column. The engine is
+    the one authority (Constitution III), and the test that proves the figure
+    is `tests/unit/pricing/`'s, not this file's.
+    """
 
-    def test_fractional_unit_cost(self):
-        obj = make_model_component(quantity=2, unit_cost=Decimal("3.75"))
-        assert ModelComponent.total_cost.fget(obj) == 7.5
+    def test_the_duplicate_cost_properties_are_not_on_the_model(self):
+        assert not hasattr(ModelComponent, "total_cost"), (
+            "ModelComponent.total_cost is back; app/services/costing.py already "
+            "computes the components line in Decimal (Constitution III)"
+        )
+        assert not hasattr(ModelComponent, "effective_unit_cost"), (
+            "ModelComponent.effective_unit_cost is back; it answered the "
+            "consumable-versus-manual question differently from the engine"
+        )
 
-
-class TestModelComponentEffectiveUnitCost:
-    def test_no_consumable_uses_unit_cost(self):
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=None)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 5.0
-
-    def test_consumable_with_cost_overrides(self):
-        consumable = SimpleNamespace(current_cost_per_unit=Decimal("3.00"))
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=consumable)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 3.0
-
-    def test_consumable_without_cost_falls_back_to_unit_cost(self):
-        consumable = SimpleNamespace(current_cost_per_unit=None)
-        obj = make_model_component(unit_cost=Decimal("5.00"), consumable_type=consumable)
-        assert ModelComponent.effective_unit_cost.fget(obj) == 5.0
+    def test_the_unit_cost_column_is_annotated_as_the_decimal_it_returns(self):
+        # The column is Numeric, so a read yields Decimal. The annotation said
+        # float, which let a float conversion look correct to a type checker.
+        annotation = ModelComponent.__annotations__["unit_cost"]
+        assert "Decimal" in str(annotation), (
+            f"unit_cost is annotated {annotation!r}; a money column is Decimal "
+            f"end to end (Constitution IV)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -159,18 +149,23 @@ class TestModelComponentEffectiveUnitCost:
 # ---------------------------------------------------------------------------
 
 
-class TestModelMaterialTotalCost:
-    def test_basic_calculation(self):
-        obj = make_model_material(weight_grams=100, cost_per_gram=Decimal("0.03"))
-        assert abs(ModelMaterial.total_cost.fget(obj) - 3.0) < 0.001
+class TestModelMaterialLineCost:
+    """Weight times the per-gram figure the line resolves to (T254)."""
 
-    def test_zero_weight(self):
-        obj = make_model_material(weight_grams=0, cost_per_gram=Decimal("0.05"))
-        assert ModelMaterial.total_cost.fget(obj) == 0.0
+    def test_an_override_is_multiplied_exactly(self):
+        # This figure is shown beside every BOM line, so it is exact and
+        # asserted exactly (Constitution IV).
+        line = ModelMaterial(weight_grams=Decimal("100"), cost_per_gram=Decimal("0.03"))
+        assert line.line_cost == Decimal("3.00")
 
-    def test_zero_cost(self):
-        obj = make_model_material(weight_grams=50, cost_per_gram=Decimal("0.00"))
-        assert ModelMaterial.total_cost.fget(obj) == 0.0
+    def test_zero_weight_costs_nothing(self):
+        line = ModelMaterial(weight_grams=Decimal("0"), cost_per_gram=Decimal("0.05"))
+        assert line.line_cost == Decimal("0")
+
+    def test_no_override_and_no_spool_is_unknown_not_zero(self):
+        line = ModelMaterial(weight_grams=Decimal("50"), cost_per_gram=None)
+        assert line.resolved_cost_per_gram is None
+        assert line.line_cost is None
 
 
 # ---------------------------------------------------------------------------

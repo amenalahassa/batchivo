@@ -6,6 +6,8 @@
  */
 
 import { apiClient } from '../api'
+import type { Money } from '@/types/pricing'
+import type { ConfirmedParcel } from '@/types/packaging'
 
 // ==================== Types ====================
 
@@ -18,8 +20,31 @@ export interface OrderItem {
   product_sku: string
   product_name: string
   quantity: number
-  unit_price: number
-  total_price: number
+  /**
+   * Exact decimal strings, not numbers.
+   *
+   * These five figures -- `unit_price` and `total_price` here, and
+   * `shipping_cost`, `subtotal` and `total` on `Order` -- were the last money
+   * on this API crossing the wire as JSON numbers. The backend holds them as
+   * `Numeric(10, 2)` and now sends them as decimal strings, so render them
+   * with `formatMoney` / `useCurrency().formatCurrency` and never with
+   * `Number(...)` or `.toFixed()` (Constitution IV, FR-047).
+   */
+  unit_price: Money
+  total_price: Money
+  /**
+   * The rate frozen at sale from the order's currency to the books' (FR-028f),
+   * with the day it was for and where it came from (FR-028g, FR-028h). Null
+   * where no rate was available: the line's margin waits on one (T223).
+   */
+  fx_rate?: Money | null
+  fx_rate_date?: string | null
+  fx_rate_source?: string | null
+  fx_quote_currency?: string | null
+  /** True when the frozen rate is from a day before the sale. */
+  fx_rate_is_stale?: boolean | null
+  /** What the sale's snapshot could not record, in words (T232). */
+  snapshot_incomplete?: string[]
 }
 
 /**
@@ -39,10 +64,19 @@ export interface Order {
   shipping_postcode: string
   shipping_country: string
   shipping_method: string
-  shipping_cost: number
-  subtotal: number
-  total: number
+  /** See `OrderItem.unit_price`: a decimal string, never a number. */
+  shipping_cost: Money
+  subtotal: Money
+  total: Money
   currency: string
+  /**
+   * What the seller paid to post it, and the tax collected. Null is
+   * *unrecorded* -- a Square order carries no postage -- never zero (T230).
+   */
+  postage_paid?: Money | null
+  sales_tax_collected?: Money | null
+  /** True when the exclusive amounts were derived from tax-inclusive ones. */
+  tax_exclusive_derived?: boolean
   payment_provider: string
   payment_id: string | null
   payment_status: string
@@ -56,6 +90,10 @@ export interface Order {
   created_at: string
   updated_at: string
   items: OrderItem[]
+  /** Parcels confirmed at dispatch, as stored (packaging advisor). */
+  parcels?: ConfirmedParcel[]
+  /** True while no parcel is confirmed and the postage is derived: an estimate. */
+  postage_is_estimate?: boolean
 }
 
 /**
@@ -82,7 +120,8 @@ export interface UpdateOrderRequest {
 export interface CreateOrderItemRequest {
   product_id: string
   quantity: number
-  unit_price: number
+  /** A decimal string on the way out too; the API validates it as `Decimal`. */
+  unit_price: Money
 }
 
 export interface CreateOrderRequest {
@@ -96,7 +135,7 @@ export interface CreateOrderRequest {
   shipping_postcode: string
   shipping_country: string
   shipping_method: string
-  shipping_cost: number
+  shipping_cost: Money
   sales_channel_id: string
   payment_provider: string
   payment_status: 'pending' | 'completed'

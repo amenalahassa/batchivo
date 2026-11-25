@@ -21,6 +21,7 @@ import {
   type ProductComponent,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney } from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -78,12 +79,22 @@ type ComponentFormValues = z.infer<typeof componentFormSchema>
 interface ProductComponentsEditorProps {
   productId: string
   components: ProductComponent[]
+  /**
+   * The engine's child products subtotal from the product's cost breakdown. The
+   * browser does not re-sum quantized lines: that total can disagree with
+   * the breakdown by a cent (T263, FR-048).
+   */
+  totalCost?: string | null
 }
 
-export function ProductComponentsEditor({ productId, components }: ProductComponentsEditorProps) {
+export function ProductComponentsEditor({
+  productId,
+  components,
+  totalCost,
+}: ProductComponentsEditorProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency } = useCurrency()
 
   // Fetch available products for selection (excluding current product)
   const { data: availableProducts } = useQuery({
@@ -146,17 +157,12 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
       (p) => !existingProductIds.includes(p.id) && p.id !== productId
     ) || []
 
-  // Calculate total cost of all child products
-  const totalComponentsCost = components.reduce((total, pc) => {
-    const productCost = parseFloat(pc.child_product_cost || '0')
-    return total + productCost * pc.quantity
-  }, 0)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total child products cost: <span className="font-semibold">{formatCurrency(totalComponentsCost)}</span>
+          Total child products cost: <span className="font-semibold">{totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -265,8 +271,8 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
           </TableHeader>
           <TableBody>
             {components.map((component) => {
-              const unitCost = parseFloat(component.child_product_cost || '0')
-              const totalCost = unitCost * component.quantity
+              const unitCost = component.child_product_cost ?? null
+              const totalCost = multiplyMoney(unitCost, component.quantity)
 
               return (
                 <TableRow key={component.id}>
@@ -296,7 +302,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(unitCost)}
+                    {formatMoney(unitCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
@@ -324,7 +330,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-semibold">
-                    {formatCurrency(totalCost)}
+                    {formatMoney(totalCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right">
                     <AlertDialog>
@@ -358,7 +364,7 @@ export function ProductComponentsEditor({ productId, components }: ProductCompon
                 Total Child Products Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatCurrency(totalComponentsCost)}
+                {totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

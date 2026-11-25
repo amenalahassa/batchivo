@@ -24,14 +24,14 @@ class TestTenantModulesAPI:
     @pytest_asyncio.fixture
     async def platform_admin_user(self, db_session: AsyncSession, test_tenant: Tenant) -> User:
         """Create a platform admin user."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         unique_id = str(uuid4())[:8]
         user = User(
             id=uuid4(),
             email=f"admin-modules-{unique_id}@platform.com",
             full_name="Platform Admin",
-            hashed_password=get_password_hash("adminpassword123"),
+            hashed_password=hashed_test_password("adminpassword123"),
             is_active=True,
             is_platform_admin=True,
         )
@@ -51,14 +51,14 @@ class TestTenantModulesAPI:
     @pytest_asyncio.fixture
     async def regular_user(self, db_session: AsyncSession, test_tenant: Tenant) -> User:
         """Create a regular (non-admin) user."""
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         unique_id = str(uuid4())[:8]
         user = User(
             id=uuid4(),
             email=f"regular-modules-{unique_id}@example.com",
             full_name="Regular User",
-            hashed_password=get_password_hash("regularpassword123"),
+            hashed_password=hashed_test_password("regularpassword123"),
             is_active=True,
             is_platform_admin=False,
         )

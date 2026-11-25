@@ -93,7 +93,7 @@ async def hidden_product(db_session: AsyncSession, test_tenant: Tenant) -> Produ
 
 @pytest_asyncio.fixture
 async def shop_client(db_session: AsyncSession, test_tenant: Tenant, sales_channel: SalesChannel):
-    from app.auth.dependencies import get_shop_sales_channel
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel
     from app.database import get_db
 
     async def override_get_db():
@@ -103,6 +103,7 @@ async def shop_client(db_session: AsyncSession, test_tenant: Tenant, sales_chann
         return (test_tenant, sales_channel)
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_shop_sales_channel] = override_shop_context
     app.state.limiter.enabled = False
 

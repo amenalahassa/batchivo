@@ -5,12 +5,18 @@
  * - Create product with required fields
  * - View product details
  * - Update product information
- * - Delete product
+ * - Deactivate product
  * - SKU auto-generation
+ *
+ * Each test runs in a fresh tenant, so it creates the products it needs.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable } from '../../helpers'
+
+const PRODUCT_DETAIL_URL = /\/products\/[0-9a-f-]{36}$/
+const PRODUCT_EDIT_URL = /\/products\/[0-9a-f-]{36}\/edit$/
 
 // Generate unique test data using timestamp
 const generateTestProduct = () => ({
@@ -22,271 +28,228 @@ const generateTestProduct = () => ({
   units_in_stock: '5',
 })
 
-// Helper: Navigate to products page
+// Helper: Navigate to products page and wait for the list to settle
 async function navigateToProducts(page: Page) {
   await page.goto('/products')
-  await page.waitForLoadState('networkidle')
+  await expect(page.getByRole('heading', { level: 2, name: 'Products', exact: true })).toBeVisible()
+  await expect(page.getByText('Loading products...')).toHaveCount(0)
 }
 
-// Helper: Clean up test product by name
-async function deleteProductByName(page: Page, productName: string) {
+// Helper: Open the quick-create form from the products list
+async function openQuickCreate(page: Page) {
   await navigateToProducts(page)
+  await page.getByRole('link', { name: 'Quick Create' }).click()
+  await page.waitForURL('/products/new', { timeout: 10000 })
+  // The form fills in the next free SKU once it arrives.
+  await expect(page.locator('input[name="sku"]')).toHaveValue(/^PROD-/, { timeout: 10000 })
+}
 
-  // Search for the product
-  const searchInput = page.locator('input[placeholder*="Search"]')
-  await searchInput.fill(productName)
-  await page.waitForLoadState('networkidle')
-
-  // Click on the product row to go to detail page
-  const productRow = page.locator('tr').filter({ hasText: productName }).first()
-  if (await productRow.isVisible()) {
-    await productRow.click()
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 10000 })
-
-    // Look for delete button
-    const deleteButton = page.locator('button:has-text("Delete")')
-    if (await deleteButton.isVisible()) {
-      await deleteButton.click()
-      // Confirm deletion in dialog
-      await page.click('button:has-text("Delete"):not(:has-text("Cancel"))')
-      await page.waitForLoadState('networkidle')
-    }
-  }
+// Helper: Create a product through the quick-create form; lands on its detail page
+async function createProductViaForm(page: Page, sku: string, name: string) {
+  await openQuickCreate(page)
+  await page.fill('input[name="sku"]', sku)
+  await page.fill('input[name="name"]', name)
+  await page.getByRole('button', { name: 'Create Product' }).click()
+  await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 15000 })
+  await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
 }
 
 test.describe('Product CRUD Operations', () => {
   let testProduct: ReturnType<typeof generateTestProduct>
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     testProduct = generateTestProduct()
-    await registerAndLogin(page)
-  })
-
-  test.afterEach(async ({ page }) => {
-    // Cleanup: Try to delete test product
-    try {
-      await deleteProductByName(page, testProduct.name)
-    } catch {
-      // Ignore cleanup errors
-    }
   })
 
   test('should display products list page', async ({ page }) => {
     await navigateToProducts(page)
 
     // Verify page elements
-    await expect(page.getByRole('heading', { name: 'Products' })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'New Product' })).toBeVisible()
-    await expect(page.locator('input[placeholder*="Search"]')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create with Wizard' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Quick Create' })).toBeVisible()
+    await expect(page.getByPlaceholder('Search by SKU or name...')).toBeVisible()
   })
 
   test('should create a new product with basic fields', async ({ page }) => {
-    await navigateToProducts(page)
-
-    // Click New Product button
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new', { timeout: 10000 })
-
-    // Verify we're on create page
-    await expect(page).toHaveURL('/products/new')
+    await openQuickCreate(page)
 
     // Fill in product form
     await page.fill('input[name="sku"]', testProduct.sku)
     await page.fill('input[name="name"]', testProduct.name)
-    await page.fill('textarea[name="description"]', testProduct.description)
+    await page.locator('.ProseMirror').fill(testProduct.description)
     await page.fill('input[name="packaging_cost"]', testProduct.packaging_cost)
     await page.fill('input[name="assembly_minutes"]', testProduct.assembly_minutes)
     await page.fill('input[name="units_in_stock"]', testProduct.units_in_stock)
 
     // Submit form
-    await page.click('button[type="submit"]')
+    await page.getByRole('button', { name: 'Create Product' }).click()
 
     // Wait for redirect to product detail page
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 15000 })
 
-    // Verify product was created - should see the name on detail page
-    await expect(page.getByText(testProduct.name)).toBeVisible()
+    // Verify product was created with its fields
+    await expect(page.getByRole('heading', { level: 1, name: testProduct.name })).toBeVisible()
+    await expect(page.getByText(testProduct.description)).toBeVisible()
+    await expect(page.getByText(`${testProduct.assembly_minutes} minutes`)).toBeVisible()
   })
 
   test('should auto-generate SKU for new product', async ({ page }) => {
-    await navigateToProducts(page)
+    await openQuickCreate(page)
 
-    // Click New Product button
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new', { timeout: 10000 })
-
-    // Wait for SKU to auto-populate
-    await page.waitForTimeout(1000)
-
-    // Check that SKU field has a value (auto-generated)
-    const skuInput = page.locator('input[name="sku"]')
-    const skuValue = await skuInput.inputValue()
-    expect(skuValue).toMatch(/^PROD-\d{4}$/) // Format: PROD-0001
+    // First product of a fresh tenant: PROD-001
+    await expect(page.locator('input[name="sku"]')).toHaveValue(/^PROD-\d{3,}$/)
   })
 
   test('should view product details', async ({ page }) => {
-    // First create a product
-    await navigateToProducts(page)
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new')
-
-    await page.fill('input[name="sku"]', testProduct.sku)
-    await page.fill('input[name="name"]', testProduct.name)
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await createProductViaForm(page, testProduct.sku, testProduct.name)
 
     // Verify detail page shows product information
-    await expect(page.getByText(testProduct.sku)).toBeVisible()
-    await expect(page.getByText(testProduct.name)).toBeVisible()
+    await expect(page.getByText(testProduct.sku).first()).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: testProduct.name })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'Edit' })).toBeVisible()
   })
 
   test('should edit an existing product', async ({ page }) => {
-    // First create a product
-    await navigateToProducts(page)
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new')
-
-    await page.fill('input[name="sku"]', testProduct.sku)
-    await page.fill('input[name="name"]', testProduct.name)
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await createProductViaForm(page, testProduct.sku, testProduct.name)
 
     // Navigate to edit page
-    await page.click('text=Edit')
-    await page.waitForURL(/\/products\/[a-f0-9-]+\/edit$/, { timeout: 10000 })
+    await page.getByRole('link', { name: 'Edit' }).click()
+    await page.waitForURL(PRODUCT_EDIT_URL, { timeout: 10000 })
 
     // Update product name
     const updatedName = `${testProduct.name} - Updated`
+    await expect(page.locator('input[name="name"]')).toHaveValue(testProduct.name)
     await page.fill('input[name="name"]', updatedName)
 
     // Save changes
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+    await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 15000 })
 
     // Verify update
-    await expect(page.getByText(updatedName)).toBeVisible()
-
-    // Update testProduct name for cleanup
-    testProduct.name = updatedName
+    await expect(page.getByRole('heading', { level: 1, name: updatedName })).toBeVisible()
   })
 
   test('should search for products', async ({ page }) => {
-    // First create a product with unique name
-    await navigateToProducts(page)
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new')
+    // Two products, only one matching the search
+    const api = await apiAs(page)
+    await api.post('/api/v1/products', { sku: testProduct.sku, name: testProduct.name })
+    const otherName = `Other Product ${Date.now()}`
+    await api.post('/api/v1/products', { sku: `OTHER-${Date.now()}`, name: otherName })
 
-    await page.fill('input[name="sku"]', testProduct.sku)
-    await page.fill('input[name="name"]', testProduct.name)
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
-
-    // Navigate back to products list
     await navigateToProducts(page)
+    const rows = page.getByRole('row')
+    await expect(rows.filter({ hasText: otherName })).toBeVisible()
 
     // Search for the product
-    const searchInput = page.locator('input[placeholder*="Search"]')
-    await searchInput.fill(testProduct.name)
-    await page.waitForLoadState('networkidle')
+    await page.getByPlaceholder('Search by SKU or name...').fill(testProduct.name)
 
-    // Verify product appears in results
-    await expect(page.getByText(testProduct.name)).toBeVisible()
+    // Verify only the matching product remains
+    await expect(rows.filter({ hasText: testProduct.name })).toBeVisible()
+    await expect(rows.filter({ hasText: otherName })).toHaveCount(0)
   })
 
+  // Regression: .specify/bugs/product-inactive-detail-404 (an inactive
+  // product's detail page used to answer 404)
   test('should toggle product active status', async ({ page }) => {
-    // First create a product
-    await navigateToProducts(page)
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new')
-
-    await page.fill('input[name="sku"]', testProduct.sku)
-    await page.fill('input[name="name"]', testProduct.name)
-    await page.click('button[type="submit"]')
-    await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
+    await createProductViaForm(page, testProduct.sku, testProduct.name)
+    await expect(page.getByText('Active', { exact: true })).toBeVisible()
 
     // Navigate to edit page
-    await page.click('text=Edit')
-    await page.waitForURL(/\/products\/[a-f0-9-]+\/edit$/, { timeout: 10000 })
+    await page.getByRole('link', { name: 'Edit' }).click()
+    await page.waitForURL(PRODUCT_EDIT_URL, { timeout: 10000 })
 
-    // Toggle active status (find the switch)
-    const activeSwitch = page.locator('button[role="switch"][name="is_active"]')
-    if (await activeSwitch.isVisible()) {
-      await activeSwitch.click()
-      await page.click('button[type="submit"]')
-      await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 15000 })
-    }
+    // Toggle active status off
+    const activeSwitch = page.getByRole('switch', { name: 'Active Status' })
+    await expect(activeSwitch).toHaveAttribute('data-state', 'checked')
+    await activeSwitch.click()
+    await expect(activeSwitch).toHaveAttribute('data-state', 'unchecked')
+
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+    await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 15000 })
+
+    await expect(page.getByText('Inactive', { exact: true })).toBeVisible()
   })
 
   test('should validate required fields', async ({ page }) => {
-    await navigateToProducts(page)
-    await page.click('text=New Product')
-    await page.waitForURL('/products/new')
+    await openQuickCreate(page)
 
     // Clear the auto-generated SKU
     await page.fill('input[name="sku"]', '')
 
     // Try to submit without filling required fields
-    await page.click('button[type="submit"]')
+    await page.getByRole('button', { name: 'Create Product' }).click()
 
-    // Should show validation error - stay on create page
+    // Should see validation messages and stay on the create page
+    await expect(page.getByText('SKU is required')).toBeVisible()
+    await expect(page.getByText('Name is required')).toBeVisible()
     await expect(page).toHaveURL('/products/new')
-
-    // Should see validation message for SKU
-    await expect(page.getByText(/SKU is required/i)).toBeVisible()
   })
 })
 
 test.describe('Product List Navigation', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
-    await navigateToProducts(page)
   })
 
   test('should navigate to product detail on row click', async ({ page }) => {
-    // Click on first product row (if exists)
-    const firstProduct = page.locator('tbody tr').first()
+    const name = `Row Click Product ${Date.now()}`
+    await (await apiAs(page)).post('/api/v1/products', { sku: `ROW-${Date.now()}`, name })
+    await navigateToProducts(page)
 
-    // Wait for table to load
-    await page.waitForTimeout(1000)
-
-    if (await firstProduct.isVisible()) {
-      // Get the product name before clicking
-      const productLink = firstProduct.locator('a').first()
-
-      if (await productLink.isVisible()) {
-        await productLink.click()
-        await page.waitForURL(/\/products\/[a-f0-9-]+$/, { timeout: 10000 })
-      }
-    }
+    const row = page.getByRole('row').filter({ hasText: name })
+    await row.getByRole('link', { name }).click()
+    await page.waitForURL(PRODUCT_DETAIL_URL, { timeout: 10000 })
+    await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
   })
 
   test('should filter active/inactive products', async ({ page }) => {
-    // Click on Active filter button
-    const activeButton = page.getByRole('button', { name: /Active/i })
+    const api = await apiAs(page)
+    const activeName = `Live Product ${Date.now()}`
+    const inactiveName = `Retired Product ${Date.now()}`
+    await api.post('/api/v1/products', { sku: `ACT-${Date.now()}`, name: activeName })
+    await api.post('/api/v1/products', {
+      sku: `INACT-${Date.now()}`,
+      name: inactiveName,
+      is_active: false,
+    })
+
+    await navigateToProducts(page)
+    const rows = page.getByRole('row')
+    await expect(rows.filter({ hasText: activeName })).toBeVisible()
+    await expect(rows.filter({ hasText: inactiveName })).toBeVisible()
+
+    // Active filter: only the active product
+    const activeButton = page.getByRole('button', { name: /^Active \(\d+\)$/ })
     await activeButton.click()
-    await page.waitForLoadState('networkidle')
+    await expect(rows.filter({ hasText: activeName })).toBeVisible()
+    await expect(rows.filter({ hasText: inactiveName })).toHaveCount(0)
 
     // Click again to clear filter
     await activeButton.click()
-    await page.waitForLoadState('networkidle')
+    await expect(rows.filter({ hasText: inactiveName })).toBeVisible()
 
-    // Click on Inactive filter
-    const inactiveButton = page.getByRole('button', { name: /Inactive/i })
-    await inactiveButton.click()
-    await page.waitForLoadState('networkidle')
+    // Inactive filter: only the inactive product
+    await page.getByRole('button', { name: /^Inactive \(\d+\)$/ }).click()
+    await expect(rows.filter({ hasText: inactiveName })).toBeVisible()
+    await expect(rows.filter({ hasText: activeName })).toHaveCount(0)
   })
 
   test('should sort products', async ({ page }) => {
-    // Open sort dropdown
-    const sortTrigger = page.locator('button:has-text("Most Recent")')
-    if (await sortTrigger.isVisible()) {
-      await sortTrigger.click()
+    const api = await apiAs(page)
+    const stamp = Date.now()
+    // Most recent first lists Zulu before Alpha; Name (A-Z) reverses that.
+    await api.post('/api/v1/products', { sku: `SORT-A-${stamp}`, name: `Alpha ${stamp}` })
+    await api.post('/api/v1/products', { sku: `SORT-Z-${stamp}`, name: `Zulu ${stamp}` })
 
-      // Select Name sort
-      await page.click('text=Name (A-Z)')
-      await page.waitForLoadState('networkidle')
-    }
+    await navigateToProducts(page)
+    const productLinks = page.locator('tbody tr').getByRole('link').filter({ hasText: String(stamp) })
+    await expect(productLinks).toHaveText([`Zulu ${stamp}`, `Alpha ${stamp}`])
+
+    // Open sort dropdown and select Name sort
+    await page.getByRole('combobox').filter({ hasText: 'Most Recent' }).click()
+    await page.getByRole('option', { name: 'Name (A-Z)' }).click()
+
+    await expect(productLinks).toHaveText([`Alpha ${stamp}`, `Zulu ${stamp}`])
   })
 })

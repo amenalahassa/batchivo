@@ -112,6 +112,18 @@ pnpm install
 pnpm run dev
 ```
 
+On Windows, once dependencies are installed, `dev.ps1` in the repo root starts
+Postgres and Redis, then the backend, the frontend and a Celery worker in one
+console; Ctrl+C stops all of them (the containers keep running).
+
+```powershell
+.\dev.ps1                                      # backend, frontend, celery
+.\dev.ps1 -Migrate                             # alembic upgrade head first
+.\dev.ps1 -Services backend,celery,beat        # pick services; beat runs the daily jobs
+.\dev.ps1 -NoInfra -BackendPort 8001 -FrontendPort 5174
+Get-Help .\dev.ps1 -Detailed
+```
+
 **Access**
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:8000

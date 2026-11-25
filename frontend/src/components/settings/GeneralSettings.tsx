@@ -1,7 +1,9 @@
 /**
  * GeneralSettings Component
  *
- * Manages basic tenant/organization settings like name and description.
+ * Manages basic tenant/organization settings: name, description, and the
+ * currency the books are kept in, which every cost is converted from (T242,
+ * FR-028).
  */
 
 import { useEffect } from 'react'
@@ -12,6 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Building2, Loader2 } from 'lucide-react'
 
 import { getTenant, updateTenant, type TenantUpdate } from '@/lib/api/settings'
+import { useOptionalAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -32,16 +35,27 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { CountrySelect } from './CountrySelect'
 
 const tenantFormSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100, 'Name must be 100 characters or less'),
   description: z.string().max(500, 'Description must be 500 characters or less').optional(),
+  currency_code: z
+    .string()
+    .regex(/^[A-Za-z]{3}$/, 'Use the three-letter ISO code, e.g. GBP')
+    .transform((code) => code.toUpperCase()),
+  currency_symbol: z
+    .string()
+    .min(1, 'Symbol is required')
+    .max(5, 'Symbol must be 5 characters or less'),
+  country_code: z.string().regex(/^[A-Z]{2}$/).nullable(),
 })
 
 type TenantFormValues = z.infer<typeof tenantFormSchema>
 
 export function GeneralSettings() {
   const queryClient = useQueryClient()
+  const auth = useOptionalAuth()
 
   const { data: tenant, isLoading, error } = useQuery({
     queryKey: ['tenant'],
@@ -53,6 +67,9 @@ export function GeneralSettings() {
     defaultValues: {
       name: tenant?.name ?? '',
       description: tenant?.description ?? '',
+      currency_code: tenant?.currency_code ?? 'GBP',
+      currency_symbol: tenant?.currency_symbol ?? '£',
+      country_code: tenant?.country_code ?? null,
     },
   })
 
@@ -62,6 +79,9 @@ export function GeneralSettings() {
       form.reset({
         name: tenant.name,
         description: tenant.description ?? '',
+        currency_code: tenant.currency_code ?? 'GBP',
+        currency_symbol: tenant.currency_symbol ?? '£',
+        country_code: tenant.country_code ?? null,
       })
     }
   }, [tenant, form])
@@ -70,6 +90,9 @@ export function GeneralSettings() {
     mutationFn: (data: TenantUpdate) => updateTenant(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tenant'] })
+      // Every money figure on screen is formatted in the books currency the
+      // signed-in user carries, so it is re-read rather than left stale.
+      void auth?.refreshUser()
     },
   })
 
@@ -77,6 +100,9 @@ export function GeneralSettings() {
     updateMutation.mutate({
       name: data.name,
       description: data.description || undefined,
+      currency_code: data.currency_code,
+      currency_symbol: data.currency_symbol,
+      country_code: data.country_code,
     })
   }
 
@@ -151,6 +177,56 @@ export function GeneralSettings() {
                 </FormItem>
               )}
             />
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="currency_code"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Books currency</FormLabel>
+                    <FormControl>
+                      <Input placeholder="GBP" maxLength={3} {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      The currency your costs are kept in; channel prices are converted from it
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="currency_symbol"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Currency symbol</FormLabel>
+                    <FormControl>
+                      <Input placeholder="£" maxLength={5} {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+            <FormField
+              control={form.control}
+              name="country_code"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Shop country</FormLabel>
+                  <CountrySelect value={field.value} onChange={field.onChange} />
+                  <FormDescription>Used to choose your postage carrier</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            {form.formState.dirtyFields.currency_code && (
+              <p className="text-sm text-muted-foreground" data-testid="currency-change-note">
+                Orders already sold keep the exchange rate frozen at sale; only new costs and
+                prices use the new currency.
+              </p>
+            )}
 
             <div className="flex items-center gap-4 pt-2">
               <Button

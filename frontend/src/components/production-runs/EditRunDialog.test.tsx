@@ -86,9 +86,9 @@ const mockInProgressRun: ProductionRunDetail = {
       estimated_total_weight: 115.0,
       actual_model_weight_grams: null,
       actual_total_weight: 0,
-      cost_per_gram: 0.025,
-      estimated_cost: 2.875,
-      total_cost: 0,
+      cost_per_gram: '0.025',
+      estimated_cost: '2.875',
+      total_cost: '0',
       spool: {
         id: 'spool-1',
         spool_id: 'FIL-001',
@@ -107,8 +107,8 @@ const mockInProgressRun: ProductionRunDetail = {
   total_items_successful: 0,
   total_items_failed: 0,
   overall_success_rate: null,
-  total_estimated_cost: 2.875,
-  total_material_cost: 0,
+  total_estimated_cost: '2.875',
+  total_material_cost: '0',
   created_at: '2024-01-01T10:00:00Z',
   updated_at: '2024-01-01T10:00:00Z',
 }
@@ -227,7 +227,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should initialize items with correct quantities', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       renderEditRunDialog(mockInProgressRun)
 
       await user.click(screen.getByText(/Items \(1\)/))
@@ -238,7 +238,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should initialize materials with correct weights', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       renderEditRunDialog(mockInProgressRun)
 
       await user.click(screen.getByText(/Materials \(1\)/))
@@ -283,7 +283,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should enable Save button when item quantity changed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       renderEditRunDialog(mockInProgressRun)
 
       await user.click(screen.getByText(/Items \(1\)/))
@@ -296,7 +296,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should enable Save button when material weight changed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       renderEditRunDialog(mockInProgressRun)
 
       await user.click(screen.getByText(/Materials \(1\)/))
@@ -361,7 +361,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should call updateProductionRunItem when quantity changed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       mockUpdateProductionRun.mockResolvedValue({})
       mockUpdateProductionRunItem.mockResolvedValue({})
       const onSuccess = vi.fn()
@@ -386,7 +386,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should call updateProductionRunMaterial when weight changed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       mockUpdateProductionRun.mockResolvedValue({})
       mockUpdateProductionRunMaterial.mockResolvedValue({})
       const onSuccess = vi.fn()
@@ -413,7 +413,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should call all mutations when multiple fields changed', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       mockUpdateProductionRun.mockResolvedValue({})
       mockUpdateProductionRunItem.mockResolvedValue({})
       mockUpdateProductionRunMaterial.mockResolvedValue({})
@@ -517,7 +517,7 @@ describe('EditRunDialog', () => {
 
   describe('Empty States', () => {
     it('should show empty state when no items', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       const runWithoutItems = {
         ...mockInProgressRun,
         items: [],
@@ -531,7 +531,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should show empty state when no materials', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
       const runWithoutMaterials = {
         ...mockInProgressRun,
         materials: [],
@@ -547,7 +547,7 @@ describe('EditRunDialog', () => {
 
   describe('Form Field Coverage', () => {
     it('should handle slicer software input change', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderEditRunDialog(mockInProgressRun)
 
@@ -559,7 +559,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should handle nozzle temperature input change', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderEditRunDialog(mockInProgressRun)
 
@@ -571,7 +571,7 @@ describe('EditRunDialog', () => {
     })
 
     it('should handle estimated print time input change', async () => {
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderEditRunDialog(mockInProgressRun)
 

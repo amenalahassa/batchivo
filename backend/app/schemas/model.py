@@ -1,22 +1,158 @@
 """Pydantic schemas for Model API (printed items)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.dimensions import DimensionsOut
 
-# Cost breakdown schema
+
+# Risk class: whether a cost is exposed to print failure. The failure premium
+# reaches only the at-risk portion — packaging materials and packing labor are
+# spent on a part already known good, so they never carry it.
+RiskClass = Literal["at_risk", "not_at_risk"]
+
+# Where a figure came from, so a reader knows how much to trust it
+# (Constitution VI). See research.md D1.
+ProvenanceSource = Literal["policy", "observed", "measured", "assumed"]
+
+# How a yield figure is read when a plate holds more than one print
+# (research.md D3).
+FailureMode = Literal["per_part", "per_plate"]
+
+
+class CostLine(BaseModel):
+    """One line of a cost breakdown, with its risk class and its provenance.
+
+    Every line carries where its inputs came from and when they were set or
+    observed, which is what makes the observed share computable from the
+    breakdown alone rather than from a database aggregate.
+    """
+
+    key: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Stable line identifier: material, waste, machine, overhead, "
+            "labor_handling, labor_finishing, labor_packing, packaging, "
+            "components, child_products"
+        ),
+    )
+    label: str = Field(..., min_length=1, description="Human-readable line name")
+    amount: Decimal = Field(..., description="Line amount in the tenant's currency")
+    risk_class: RiskClass = Field(..., description="Whether this cost is exposed to print failure")
+    source: ProvenanceSource = Field(..., description="Where the inputs behind this line came from")
+    as_of: Optional[date] = Field(
+        None, description="When the figure was set or observed; null if never recorded"
+    )
+    confidence: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        le=1,
+        description=(
+            "How far to believe the line's observed inputs, in (0, 1], from the "
+            "count and spread of the outcomes behind them (T259, FR-001). Null "
+            "where confidence means nothing: a decision, a measurement, a guess."
+        ),
+    )
+    has_pending_revision: bool = Field(
+        False,
+        description=(
+            "An observation disputing one of this line's inputs is held for "
+            "review (FR-042e). The amount is still the figure in force -- "
+            "telemetry proposes and never reprices -- but the line says so "
+            "rather than letting the operator read a number the evidence "
+            "already contradicts."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CostBreakdown(BaseModel):
-    """Model cost breakdown."""
+    """A full make-cost breakdown (data-model.md, 'Cost breakdown shape').
+
+    Recomputed on demand and never stored as an authoritative figure
+    (Constitution V); the one exception is the once-written snapshot on a
+    settled order line (Constitution VI).
+
+    An incomplete breakdown reports what was missing in ``incomplete_reasons``
+    rather than costing the gap at zero (FR-019) — a zero is indistinguishable
+    from a real figure, which is the failure this field exists to prevent.
+    """
+
+    lines: list[CostLine] = Field(
+        default_factory=list, description="Cost lines, in presentation order"
+    )
+
+    at_risk_subtotal: Decimal = Field(
+        ..., description="Sum of lines exposed to print failure, before the premium"
+    )
+    not_at_risk_subtotal: Decimal = Field(
+        ..., description="Sum of lines spent on a part already known good"
+    )
+
+    yield_applied: Decimal = Field(
+        ..., gt=0, le=1, description="The yield figure actually applied, a fraction in (0, 1]"
+    )
+    failure_mode: FailureMode = Field(..., description="How the yield figure was interpreted")
+    failure_premium: Decimal = Field(
+        ..., description="What the yield figure added to the at-risk subtotal"
+    )
+
+    total_make_cost: Decimal = Field(..., description="Total cost to make one sellable unit")
+
+    machine_hours: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Machine occupancy for one sellable unit, bundles included. Null "
+            "when no print time is recorded anywhere below it — never zero, "
+            "which would read as an item that occupies no machine (FR-019)"
+        ),
+    )
+
+    observed_share: Decimal = Field(
+        ..., ge=0, le=1, description="Share of the cost whose inputs are observed or measured"
+    )
+    assumed_share: Decimal = Field(
+        ..., ge=0, le=1, description="Share of the cost still resting on assumptions"
+    )
+
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What was missing, if anything; empty means fully costed",
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ModelCostBreakdown(BaseModel):
+    """The flat model cost breakdown served by the existing endpoints.
+
+    Superseded by :class:`CostBreakdown` once Tier 1 lands (tasks T043, T049).
+    Kept, under its own name, so existing routes keep their response shape
+    while the structured breakdown is built beside it. It is not a second
+    implementation — nothing computes it except the one authoritative engine.
+    """
 
     material_cost: Decimal = Field(..., description="Total material cost from BOM")
     component_cost: Decimal = Field(..., description="Total component cost")
     labor_cost: Decimal = Field(..., description="Labor cost (hours × rate)")
     overhead_cost: Decimal = Field(..., description="Overhead cost")
     total_cost: Decimal = Field(..., description="Total model cost")
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: Carried here so the flat shape is as honest as the itemised one: a
+    #: screen reading this breakdown must be able to tell a cost from a floor
+    #: (FR-019). It is projected from the same engine pass as the amounts
+    #: above, never recomputed.
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the total is a floor",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,7 +163,14 @@ class ModelMaterialBase(BaseModel):
 
     spool_id: UUID = Field(..., description="Spool ID (material type + color + brand)")
     weight_grams: Decimal = Field(..., gt=0, description="Weight of material used in grams")
-    cost_per_gram: Decimal = Field(..., ge=0, description="Cost per gram (snapshot)")
+    cost_per_gram: Optional[Decimal] = Field(
+        None,
+        gt=0,
+        description=(
+            "Operator override of the per-gram cost. Leave empty to cost the line at "
+            "the spool's landed per-gram figure, derived on read (T254)"
+        ),
+    )
 
 
 class ModelMaterialCreate(ModelMaterialBase):
@@ -42,6 +185,16 @@ class ModelMaterialResponse(ModelMaterialBase):
     id: UUID
     model_id: UUID
     created_at: datetime
+    resolved_cost_per_gram: Optional[Decimal] = Field(
+        None,
+        description=(
+            "What the line is costed at: the override if set, else the spool's landed "
+            "per-gram cost; empty when neither can be derived"
+        ),
+    )
+    line_cost: Optional[Decimal] = Field(
+        None, description="Weight times the resolved per-gram cost; empty when underivable"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -146,16 +299,40 @@ class ModelResponse(ModelBase):
     updated_at: datetime
     # Computed cost (included when materials/components are loaded)
     total_cost: Optional[Decimal] = Field(None, description="Total build cost (computed)")
-    # Production cost tracking (Phase 2)
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: A list screen is where a product is picked, so it is where an item that
+    #: is missing its print time or its machine rate must say so rather than
+    #: show a finished-looking figure built from a zero. `total_make_cost`
+    #: above is still the cost of the lines the engine could resolve; this is
+    #: the part it could not, and a non-empty list means the figure is a floor,
+    #: not a cost (FR-019).
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the cost is a floor (FR-019)",
+    )
+    # Realised production cost, derived from completed runs on read (T255)
     actual_production_cost: Optional[Decimal] = Field(
-        None, description="Rolling average actual production cost per unit from completed runs"
+        None,
+        description=(
+            "Actual cost per unit, averaged over completed runs by successful units; "
+            "derived on read, unrounded"
+        ),
     )
     production_cost_count: int = Field(
-        0, description="Number of completed production runs included in rolling average"
+        0, description="Successful units from completed runs the average is taken over"
     )
     production_cost_updated_at: Optional[datetime] = Field(
-        None, description="Last time actual_production_cost was updated"
+        None, description="When the latest completed run in the average finished"
     )
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="Length × width × height in mm, with source and date (FR-001/002)"
+    )
+    #: The idea this record was converted from (spec 007); null for every
+    #: record not created from an idea.
+    source_idea_id: Optional[UUID] = Field(None, description="Idea it was converted from")
+    source_idea_title: Optional[str] = Field(None, description="That idea's title")
+    source_idea_archived: Optional[bool] = Field(None, description="Whether that idea is archived")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -169,7 +346,7 @@ class ModelDetailResponse(ModelResponse):
     components: list[ModelComponentResponse] = Field(
         default_factory=list, description="Model components"
     )
-    cost_breakdown: CostBreakdown = Field(..., description="Cost breakdown")
+    cost_breakdown: ModelCostBreakdown = Field(..., description="Cost breakdown")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -183,8 +360,16 @@ class BOMSpoolSuggestion(BaseModel):
     material_type_code: str = Field(..., description="Material type code (e.g., PLA, PETG)")
     color: str = Field(..., description="Spool color name")
     color_hex: Optional[str] = Field(None, description="Hex color code")
-    weight_grams: Decimal = Field(..., description="Weight from model BOM (grams)")
-    cost_per_gram: Decimal = Field(..., description="Cost per gram snapshot")
+    weight_grams: Decimal = Field(
+        ..., description="Grams on the bill of materials: one whole plate run"
+    )
+    weight_grams_per_item: Decimal = Field(
+        ..., description="Grams one item takes: the line's grams divided by items per plate"
+    )
+    cost_per_gram: Optional[Decimal] = Field(
+        None,
+        description="Per-gram cost the line is costed at (override, else spool landed cost)",
+    )
     current_weight: Decimal = Field(..., description="Current spool weight available (grams)")
     is_active: bool = Field(..., description="Whether spool is active")
 
@@ -202,6 +387,13 @@ class ModelProductionDefaults(BaseModel):
         None, description="Print time for full plate (minutes)"
     )
     prints_per_plate: int = Field(..., description="Number of items per plate")
+    print_minutes_per_item: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Print minutes one item takes on the planned printer, as the cost reads "
+            "them (plate time / items per plate, the printer's own figures first)"
+        ),
+    )
     bom_materials: list[BOMSpoolSuggestion] = Field(
         default_factory=list, description="Bill of Materials with current inventory"
     )

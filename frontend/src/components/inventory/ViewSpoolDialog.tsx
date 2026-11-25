@@ -13,6 +13,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Loader2, Pencil, Copy, QrCode } from 'lucide-react'
 import { SpoolUsageHistory } from './SpoolUsageHistory'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 
 interface ViewSpoolDialogProps {
   open: boolean
@@ -29,6 +31,8 @@ export function ViewSpoolDialog({
   onEdit,
   onDuplicate,
 }: ViewSpoolDialogProps) {
+  const { currency } = useCurrency()
+
   // Fetch the specific spool
   const { data: spool, isLoading } = useQuery({
     queryKey: ['spool', spoolId],
@@ -109,10 +113,10 @@ export function ViewSpoolDialog({
                 Filament Details
               </h4>
               <div className="grid grid-cols-2 gap-4">
-                <DetailItem label="Material" value={spool.material_type_name} />
-                <DetailItem label="Brand" value={spool.brand} />
-                <DetailItem label="Colour" value={spool.color} />
-                <DetailItem label="Finish" value={spool.finish || '—'} />
+                <DetailItem label="Material" value={spool.filament_type?.material_type_name || '—'} />
+                <DetailItem label="Brand" value={spool.filament_type?.brand || '—'} />
+                <DetailItem label="Colour" value={spool.filament_type?.color || '—'} />
+                <DetailItem label="Finish" value={spool.filament_type?.finish || '—'} />
               </div>
             </div>
 
@@ -165,7 +169,7 @@ export function ViewSpoolDialog({
                   {spool.purchase_price && (
                     <DetailItem
                       label="Price"
-                      value={`£${spool.purchase_price.toFixed(2)}`}
+                      value={formatMoney(spool.purchase_price, currency.symbol)}
                     />
                   )}
                   {spool.supplier && (
@@ -175,27 +179,9 @@ export function ViewSpoolDialog({
               </div>
             )}
 
-            {/* Batch Info */}
-            {(spool.purchased_quantity > 1 || spool.spools_remaining !== spool.purchased_quantity) && (
-              <div className="space-y-4">
-                <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                  Batch Information
-                </h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <DetailItem
-                    label="Purchased Quantity"
-                    value={`${spool.purchased_quantity} spools`}
-                  />
-                  <DetailItem
-                    label="Spools Remaining"
-                    value={`${spool.spools_remaining} spools`}
-                  />
-                </div>
-              </div>
-            )}
 
             {/* Organization */}
-            {(spool.storage_location || spool.notes) && (
+            {(spool.storage_location || spool.filament_type?.notes) && (
               <div className="space-y-4">
                 <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
                   Organization
@@ -204,11 +190,11 @@ export function ViewSpoolDialog({
                   {spool.storage_location && (
                     <DetailItem label="Storage Location" value={spool.storage_location} />
                   )}
-                  {spool.notes && (
+                  {spool.filament_type?.notes && (
                     <div>
                       <span className="text-sm text-muted-foreground">Notes</span>
                       <p className="mt-1 text-sm bg-muted/50 rounded-md p-3">
-                        {spool.notes}
+                        {spool.filament_type?.notes}
                       </p>
                     </div>
                   )}

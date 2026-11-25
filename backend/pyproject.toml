@@ -45,6 +45,7 @@ dependencies = [
     "cryptography (>=46.0.6)",
     "requests (>=2.33.0)",
     "greenlet (>=3.2.0)",
+    "mcp (>=2.3.0,<3)",
 ]
 
 [project.optional-dependencies]
@@ -94,7 +95,60 @@ disallow_untyped_defs = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+# The database engine and its schema are built once per session (see
+# tests/conftest.py); a connection pool opened on one event loop cannot be
+# used from another, so the tests and their fixtures share the session loop.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 timeout = 300
 timeout_method = "thread"
+
+# The money paths are held to a stricter standard than the rest of the app
+# (research.md D8). mypy cannot ban a builtin type, so this tightens everything
+# around it and tests/unit/pricing/test_no_float_in_money_paths.py bans `float`.
+[[tool.mypy.overrides]]
+module = [
+    "app.services.costing",
+    "app.services.landed_cost",
+    "app.services.fee_engine",
+    "app.services.pricing_solver",
+    "app.services.channel_pnl",
+    # Added in task T137, alongside the float ban: these arrived with later
+    # tiers and handle money or a rate just as the five above do.
+    "app.services.cost_resolution",
+    "app.services.provenance",
+    "app.services.pricing_policy",
+    "app.services.scenario_service",
+    "app.services.fx_service",
+    "app.services.temporal_pricing",
+    "app.services.realised_margin",
+    # The dated channel economics (task T136) and the realised-versus-planned
+    # comparison (task T134).
+    "app.services.channel_economics",
+    "app.services.margin_alert",
+    # The books-to-sale currency edge and the frozen order-line snapshot
+    # (tasks T231, T232); `tenant_cost_settings` was removed and left here.
+    "app.services.currency_edge",
+    "app.services.sale_snapshot",
+    # Found by the money rule in tests/unit/pricing/money_modules.py (T265):
+    # postage on every margin and snapshot, realised refunds, the cost-input
+    # estimates, and a run's frozen and realised filament cost.
+    "app.services.postage",
+    "app.services.order_parcel_service",
+    "app.services.refund_actuals",
+    "app.services.variance_service",
+    "app.services.run_costs",
+    # Spec 006: the overlap rule shared by the postage route and the seeding.
+    "app.services.shipping_profile_rules",
+    # Spec 008: the one place a generation cost is computed (USD, Decimal).
+    "app.services.genai.costs",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_equality = true
+warn_return_any = true
+warn_unreachable = true

@@ -1,7 +1,9 @@
 """Model file service for managing 3D model files (STL, 3MF, gcode, etc.)."""
 
 import logging
+import re
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import UTC, datetime
 from io import BytesIO
@@ -19,7 +21,16 @@ from app.models.model import Model
 from app.models.model_file import FileLocation, ModelFile, ModelFileType
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.schemas.model_file import (
+    FileMeasurementOut,
+    ThreeMFParseResponse,
+    ThreeMFFilamentUse,
+    ThreeMFPlateMetadata,
+)
+from app.services import mesh_bounds
 from app.services.image_storage import ImageStorageError, get_image_storage
+from app.services.item_dimensions import apply_measurement, record_measurement
+from app.services.model_file_version_service import ModelFileVersionService
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +61,11 @@ class ModelFileStorageError(Exception):
     """Error during model file storage operation."""
 
     pass
+
+
+# Slicer-embedded metadata config locations within a 3MF zip archive
+BAMBU_ORCA_SLICE_INFO_PATH = "Metadata/slice_info.config"
+PRUSASLICER_CONFIG_PATH = "Metadata/Slic3r_PE.config"
 
 
 def extract_3mf_thumbnail(file_content: bytes) -> Optional[tuple[bytes, str]]:
@@ -112,6 +128,276 @@ def extract_3mf_thumbnail(file_content: bytes) -> Optional[tuple[bytes, str]]:
     except Exception as e:
         logger.warning(f"Failed to extract 3MF thumbnail: {e}")
         return None
+
+
+def _positive_or_none(value: Optional[str]) -> Optional[float]:
+    """Parse a numeric string, returning None for missing/non-numeric/non-positive values.
+
+    A parsed 0 or negative value is treated as unparseable (data-model.md).
+    """
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _seconds_to_minutes(prediction_seconds: Optional[float]) -> Optional[int]:
+    """Convert a positive seconds value to whole minutes, or None if unusable."""
+    if prediction_seconds is None:
+        return None
+    minutes = int(prediction_seconds // 60)
+    return minutes if minutes > 0 else None
+
+
+def _parse_bambu_orca_plate(plate_element, fallback_index: int) -> ThreeMFPlateMetadata:
+    """Parse a single <plate> element's metadata into a ThreeMFPlateMetadata."""
+    meta = {m.get("key"): m.get("value") for m in plate_element.findall("metadata")}
+
+    try:
+        index = int(meta.get("index", str(fallback_index)))
+    except ValueError:
+        index = fallback_index
+
+    objects = plate_element.findall("object")
+    filaments = [
+        ThreeMFFilamentUse(
+            id=_int_or_none(f.get("id")),
+            type=(f.get("type") or None),
+            color=_hex_color(f.get("color")),
+            grams=_positive_or_none(f.get("used_g")),
+        )
+        for f in plate_element.findall("filament")
+    ]
+    return ThreeMFPlateMetadata(
+        index=index,
+        print_time_minutes=_seconds_to_minutes(_positive_or_none(meta.get("prediction"))),
+        filament_weight_grams=_positive_or_none(meta.get("weight")),
+        # A plate lists the objects it prints; none listed means the file does not say.
+        object_count=(
+            sum(1 for o in objects if (o.get("skipped") or "").lower() != "true")
+            if objects
+            else None
+        ),
+        filaments=[f for f in filaments if f.grams is not None],
+    )
+
+
+def _int_or_none(value: Optional[str]) -> Optional[int]:
+    """An integer attribute, or None when absent or not an integer."""
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _hex_color(value: Optional[str]) -> Optional[str]:
+    """``#RRGGBB`` in upper case from the slicer's ``#RRGGBB`` or ``#RRGGBBAA``."""
+    if not value:
+        return None
+    text = value.strip().upper()
+    if not text.startswith("#"):
+        text = "#" + text
+    return text[:7] if len(text) >= 7 else None
+
+
+def _parse_bambu_orca_slice_info(raw: bytes) -> Optional[ThreeMFParseResponse]:
+    """Parse a Bambu Studio/OrcaSlicer Metadata/slice_info.config XML document."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return None
+
+    plate_elements = root.findall("plate")
+    if not plate_elements:
+        return None
+
+    plates = [
+        _parse_bambu_orca_plate(plate_element, fallback_index=i)
+        for i, plate_element in enumerate(plate_elements, start=1)
+    ]
+    first = plates[0]
+
+    return ThreeMFParseResponse(
+        print_time_minutes=first.print_time_minutes,
+        filament_weight_grams=first.filament_weight_grams,
+        plate_count=len(plates),
+        source_plate_index=first.index,
+        slicer_detected="bambu_orca",
+        plates=plates,
+    )
+
+
+def _parse_prusaslicer_config(raw: bytes) -> Optional[ThreeMFParseResponse]:
+    """Parse a PrusaSlicer Metadata/Slic3r_PE.config key=value document.
+
+    Best-effort only: per research.md, this file is a pre-slice project
+    settings snapshot, not confirmed to reliably contain computed
+    print-time/weight results the way Bambu/Orca's slice_info.config does.
+    Recognizing the file (so slicer_detected is set) does not imply useful
+    metadata was found inside it.
+    """
+    try:
+        text = raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    key_values: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("; ", ";", "#")) or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key_values[key.strip()] = value.strip()
+
+    if not key_values:
+        return None
+
+    prediction_seconds = _positive_or_none(key_values.get("estimated_printing_time_normal_mode"))
+    print_time_minutes: Optional[int] = None
+    if prediction_seconds is not None:
+        minutes = int(prediction_seconds // 60)
+        print_time_minutes = minutes if minutes > 0 else None
+
+    filament_weight_grams = _positive_or_none(key_values.get("total_filament_used_g"))
+
+    return ThreeMFParseResponse(
+        print_time_minutes=print_time_minutes,
+        filament_weight_grams=filament_weight_grams,
+        plate_count=None,
+        source_plate_index=None,
+        slicer_detected="prusaslicer",
+    )
+
+
+def parse_3mf_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """Slicer metadata plus the file's measured bounding box (T036), never stored."""
+    result = _parse_3mf_slicer_metadata(file_content)
+    measurement = mesh_bounds.measure(file_content, ".3mf")
+    if measurement is not None:
+        result.measurement = measurement_out(measurement)
+    return result
+
+
+def measurement_out(measurement: "mesh_bounds.Measurement") -> FileMeasurementOut:
+    """A transient measurement in the API's shape (contracts: model file upload)."""
+    overall = measurement.overall
+    return FileMeasurementOut(
+        length_mm=overall.length if overall else None,
+        width_mm=overall.width if overall else None,
+        height_mm=overall.height if overall else None,
+        objects=mesh_bounds.objects_json(measurement.objects),
+        note=measurement.note,
+        status=measurement.status,
+        reason=measurement.reason,
+    )
+
+
+#: How much of each end of a G-code file is read for its slicer comments. Bambu
+#: and Orca write them in the header, PrusaSlicer at the end.
+_GCODE_COMMENT_SPAN = 64 * 1024
+
+_DURATION_PATTERNS = (
+    re.compile(r";\s*total estimated time:\s*([^;\n]+)", re.IGNORECASE),
+    re.compile(r";\s*estimated printing time \(normal mode\)\s*=\s*([^\n]+)", re.IGNORECASE),
+)
+_TOTAL_WEIGHT = re.compile(
+    r";\s*total filament (?:used|weight) \[g\]\s*[:=]\s*([\d.]+)", re.IGNORECASE
+)
+_PER_EXTRUDER_WEIGHT = re.compile(r";\s*filament used \[g\]\s*=\s*([\d.,\s]+)", re.IGNORECASE)
+
+
+def _duration_minutes(text: str) -> Optional[int]:
+    """'1d 2h 3m 4s' -> minutes (whole, at least 1), or None if nothing parses."""
+    units = {"d": 86400, "h": 3600, "m": 60, "s": 1}
+    seconds = sum(
+        int(amount) * units[unit] for amount, unit in re.findall(r"(\d+)\s*([dhms])", text.lower())
+    )
+    return _seconds_to_minutes(float(seconds)) if seconds else None
+
+
+def parse_gcode_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """Print time and filament weight from a sliced G-code file's slicer comments.
+
+    A plain G-code file is one plate, but it does not say how many parts are on
+    it, so ``plate_count`` stays unknown rather than guessed (research D4).
+    """
+    head = file_content[:_GCODE_COMMENT_SPAN].decode("utf-8", errors="ignore")
+    tail = file_content[-_GCODE_COMMENT_SPAN:].decode("utf-8", errors="ignore")
+    comments = head + "\n" + tail
+
+    minutes: Optional[int] = None
+    for pattern in _DURATION_PATTERNS:
+        match = pattern.search(comments)
+        if match:
+            minutes = _duration_minutes(match.group(1))
+            if minutes is not None:
+                break
+
+    weight: Optional[float] = None
+    total = _TOTAL_WEIGHT.search(comments)
+    if total:
+        weight = _positive_or_none(total.group(1))
+    else:
+        per_extruder = _PER_EXTRUDER_WEIGHT.search(comments)
+        if per_extruder:
+            parts = [_positive_or_none(p.strip()) for p in per_extruder.group(1).split(",")]
+            present = [p for p in parts if p is not None]
+            weight = round(sum(present), 2) if present else None
+
+    detected = "bambu_orca" if "BambuStudio" in head or "OrcaSlicer" in head else None
+    return ThreeMFParseResponse(
+        print_time_minutes=minutes,
+        filament_weight_grams=weight,
+        plate_count=None,
+        slicer_detected=detected,
+    )
+
+
+def _parse_3mf_slicer_metadata(file_content: bytes) -> ThreeMFParseResponse:
+    """
+    Parse embedded slicer metadata (print time, filament weight, plate count)
+    from a 3MF file.
+
+    Tries the Bambu Studio/OrcaSlicer metadata location first, then falls
+    back to PrusaSlicer's. Never raises: malformed archives, missing
+    metadata, or unrecognized slicers all return an all-null result so the
+    caller can always fall back to manual entry (FR-007).
+
+    Args:
+        file_content: Raw bytes of the 3MF file
+
+    Returns:
+        ThreeMFParseResponse with whichever fields were found (all optional
+        except thumbnail_available, which the caller fills in separately).
+    """
+    try:
+        with zipfile.ZipFile(BytesIO(file_content), "r") as zf:
+            namelist_lower = {n.lower(): n for n in zf.namelist()}
+
+            bambu_entry = namelist_lower.get(BAMBU_ORCA_SLICE_INFO_PATH.lower())
+            if bambu_entry:
+                result = _parse_bambu_orca_slice_info(zf.read(bambu_entry))
+                if result is not None:
+                    return result
+
+            prusa_entry = namelist_lower.get(PRUSASLICER_CONFIG_PATH.lower())
+            if prusa_entry:
+                result = _parse_prusaslicer_config(zf.read(prusa_entry))
+                if result is not None:
+                    return result
+
+            logger.debug("No recognized slicer metadata found in 3MF file")
+            return ThreeMFParseResponse()
+
+    except zipfile.BadZipFile:
+        logger.warning("File is not a valid ZIP/3MF archive for metadata parsing")
+        return ThreeMFParseResponse()
+    except Exception as e:
+        logger.warning(f"Failed to parse 3MF metadata: {e}")
+        return ThreeMFParseResponse()
 
 
 class ModelFileService:
@@ -233,9 +519,23 @@ class ModelFileService:
         version: Optional[str] = None,
         is_primary: bool = False,
         notes: Optional[str] = None,
+        version_id: Optional[UUID] = None,
+        new_version_label: Optional[str] = None,
+        new_version_note: Optional[str] = None,
+        commit: bool = True,
+        offer_measurement: bool = True,
     ) -> ModelFile:
         """
-        Upload a 3D model file.
+        Upload a 3D model file into a version (see `version_for_upload`).
+
+        ``commit=False`` flushes instead of committing, for a caller that owns the
+        transaction (spec 008: an AI draft added inside an adoption or a conversion).
+        ``offer_measurement=False`` records the file's measured size on the file only
+        and never offers it to the model's dimensions (spec 008 FR-019: an AI draft has
+        no real-world scale).
+
+        ``version_created`` is set on the returned row (response only) when a
+        new version was made for it, so the client can offer to make it active.
 
         Args:
             model_id: UUID of the model to attach file to
@@ -267,6 +567,14 @@ class ModelFileService:
 
         # Validate file
         extension = self._validate_file(file_content, content_type, original_filename)
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version, version_created = await versions.version_for_upload(
+            model,
+            version_id=version_id,
+            new_version_label=new_version_label,
+            new_version_note=new_version_note,
+            legacy_version=version,
+        )
 
         # Generate unique filename
         file_id = str(uuid.uuid4())
@@ -299,16 +607,26 @@ class ModelFileService:
             file_size=len(file_content),
             content_type=content_type,
             part_name=part_name,
-            version=version,
             is_primary=is_primary,
             notes=notes,
+            is_sliced=mesh_bounds.is_sliced(original_filename, file_content),
             uploaded_at=datetime.now(UTC),
             uploaded_by_user_id=self.user.id if self.user else None,
         )
 
         self.db.add(model_file)
-        await self.db.commit()
+        await versions.attach_file(version, model_file)
+        queue = await self._measure(
+            model, model_file, extension, file_content, len(file_content), offer=offer_measurement
+        )
+        if commit:
+            await self.db.commit()
+        else:
+            await self.db.flush()
         await self.db.refresh(model_file)
+        model_file.version_created = version_created
+        if queue:
+            await self._queue_measurement(model_file)
 
         logger.info(
             f"Uploaded file '{original_filename}' for model {model_id} "
@@ -325,9 +643,12 @@ class ModelFileService:
         version: Optional[str] = None,
         is_primary: bool = False,
         notes: Optional[str] = None,
+        version_id: Optional[UUID] = None,
+        new_version_label: Optional[str] = None,
+        new_version_note: Optional[str] = None,
     ) -> ModelFile:
         """
-        Create a local file reference (no upload, just store the path).
+        Create a local file reference (no upload, just store the path), in a version.
 
         Args:
             model_id: UUID of the model to attach file to
@@ -367,6 +688,14 @@ class ModelFileService:
         # Determine content type from extension
         extension = path_obj.suffix.lower()
         content_type = self._get_content_type_from_extension(extension)
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version, version_created = await versions.version_for_upload(
+            model,
+            version_id=version_id,
+            new_version_label=new_version_label,
+            new_version_note=new_version_note,
+            legacy_version=version,
+        )
 
         # If setting as primary, unset other primary files of same type
         if is_primary:
@@ -384,22 +713,101 @@ class ModelFileService:
             file_size=file_size,
             content_type=content_type,
             part_name=part_name,
-            version=version,
             is_primary=is_primary,
             notes=notes,
+            is_sliced=mesh_bounds.is_sliced(original_filename),
             uploaded_at=datetime.now(UTC),
             uploaded_by_user_id=self.user.id if self.user else None,
         )
 
         self.db.add(model_file)
+        await versions.attach_file(version, model_file)
+        content = None
+        if (
+            file_size is not None
+            and file_size <= mesh_bounds.INLINE_MEASURE_BYTES
+            and mesh_bounds.is_measurable(extension)
+        ):
+            content = path_obj.read_bytes()
+        queue = await self._measure(model, model_file, extension, content, file_size)
         await self.db.commit()
         await self.db.refresh(model_file)
+        model_file.version_created = version_created
+        if queue:
+            await self._queue_measurement(model_file)
 
         logger.info(
             f"Created local reference for model {model_id}: '{local_path}' "
             f"(file_id={model_file.id})"
         )
         return model_file
+
+    async def _measure(
+        self,
+        model: Model,
+        model_file: ModelFile,
+        extension: str,
+        content: Optional[bytes],
+        size: Optional[int],
+        offer: bool = True,
+    ) -> bool:
+        """Measure an STL or 3MF and offer it to the model (research D3, FR-007 to FR-010).
+
+        With ``offer=False`` (spec 008, an AI draft) the measurement is recorded on
+        the file only: never offered to the model, and never queued for later.
+
+        Up to ``INLINE_MEASURE_BYTES`` the file is measured here; a larger one
+        is marked ``pending`` and the caller queues it, which this returns True
+        for. Nothing here can fail the upload: a bad mesh is recorded as
+        ``failed`` with its reason.
+        """
+        if not mesh_bounds.is_measurable(extension):
+            return False
+        if size is None:
+            record_measurement(
+                model_file,
+                mesh_bounds.Measurement(
+                    overall=None,
+                    note="The linked file was not found",
+                    status="failed",
+                    reason=mesh_bounds.REASON_UNREADABLE,
+                ),
+            )
+            return False
+        if size > mesh_bounds.MAX_MEASURE_BYTES:
+            record_measurement(model_file, mesh_bounds.skipped(size))
+            return False
+        if content is None or size > mesh_bounds.INLINE_MEASURE_BYTES:
+            if not offer:
+                record_measurement(model_file, mesh_bounds.skipped(size))
+                return False
+            model_file.measurement_status = "pending"
+            return True
+
+        measurement = mesh_bounds.measure(content, extension)
+        if measurement is None:  # pragma: no cover - is_measurable said it was a mesh
+            return False
+        record_measurement(model_file, measurement)
+        await self.db.flush()
+        if not offer:
+            return False
+        model_file.measurement_applied_to = await apply_measurement(
+            self.db, self.tenant, model, model_file
+        )
+        return False
+
+    async def _queue_measurement(self, model_file: ModelFile) -> None:
+        """Hand a large file to the worker; a broker that cannot be reached is recorded."""
+        from app.tasks.mesh_measure import measure_model_file
+
+        try:
+            measure_model_file.delay(str(self.tenant.id), str(model_file.id))
+        except Exception as exc:  # noqa: BLE001 - the upload has already succeeded
+            logger.warning(f"Could not queue measurement of file {model_file.id}: {exc}")
+            model_file.measurement_status = "failed"
+            model_file.measurement_note = "Could not queue the measurement; upload it again later"
+            await self.db.commit()
+            await self.db.refresh(model_file)
 
     def _get_content_type_from_extension(self, extension: str) -> Optional[str]:
         """Get MIME content type from file extension."""
@@ -719,6 +1127,11 @@ class ModelFileService:
         if not model_file:
             return False
 
+        # Version rules first: nothing is removed from storage for a refused delete.
+        versions = ModelFileVersionService(self.db, self.tenant, self.user)
+        version = await versions.get(model_file.model_id, model_file.version_id)
+        await versions.before_file_delete(version, model_file)
+
         # Delete from storage (only for uploaded files, not local references)
         if model_file.file_location != FileLocation.LOCAL_REFERENCE.value:
             if self.storage_type == "local":
@@ -729,10 +1142,24 @@ class ModelFileService:
 
         # Delete database record
         await self.db.delete(model_file)
+        await self.db.flush()
+        await versions.after_file_delete(version)
         await self.db.commit()
 
         logger.info(f"Deleted file {file_id} ({model_file.original_filename})")
         return True
+
+    async def delete_stored_file(self, file_url: Optional[str]) -> bool:
+        """Delete only the stored object behind ``file_url`` (no database row).
+
+        For a caller that stored a file inside a transaction it then rolled back
+        (spec 008: an AI draft added during an adoption or a conversion).
+        """
+        if not file_url:
+            return False
+        if self.storage_type == "local":
+            return await self._delete_local(file_url)
+        return await self._delete_s3(file_url)
 
     async def _delete_local(self, file_url: str) -> bool:
         """Delete file from local filesystem."""

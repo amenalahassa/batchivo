@@ -1,11 +1,12 @@
 """Test API endpoints to verify authentication and tenant context."""
 
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser, require_role
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, require_role
 from app.database import get_db
 from app.models.material import MaterialType
 from app.services.email_service import get_email_service
@@ -24,6 +25,7 @@ async def send_test_email(
     request: TestEmailRequest,
     user: CurrentUser,
     tenant: CurrentTenant,
+    _admin: RequireAdmin,
 ) -> dict:
     """
     Send a test email to verify Brevo configuration.
@@ -44,12 +46,12 @@ async def send_test_email(
         customer_name="Test Customer",
         order_number="TEST-20251229-001",
         order_items=[
-            {"name": "Test Dragon - Ember", "quantity": 1, "price": 29.99},
-            {"name": "Test Dinosaur - Rex", "quantity": 2, "price": 19.99},
+            {"name": "Test Dragon - Ember", "quantity": 1, "price": Decimal("29.99")},
+            {"name": "Test Dinosaur - Rex", "quantity": 2, "price": Decimal("19.99")},
         ],
-        subtotal=69.97,
-        shipping_cost=4.99,
-        total=74.96,
+        subtotal=Decimal("69.97"),
+        shipping_cost=Decimal("4.99"),
+        total=Decimal("74.96"),
         shipping_address={
             "address_line1": "123 Test Street",
             "city": "London",

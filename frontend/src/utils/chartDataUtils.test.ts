@@ -1,4 +1,11 @@
 /**
+ * @vitest-environment node
+ *
+ * No DOM here, so no jsdom. Building one costs more than this file's tests
+ * take to run, and a budget spent before a test starts is what made the suite
+ * depend on how loaded the machine was (task T174, Constitution II).
+ */
+/**
  * Tests for chartDataUtils
  */
 
@@ -34,8 +41,8 @@ function createMockRun(overrides: Partial<ProductionRunDetail> = {}): Production
     total_items_planned: 0,
     total_items_successful: 0,
     total_items_failed: 0,
-    total_material_cost: 0,
-    total_estimated_cost: 0,
+    total_material_cost: '0',
+    total_estimated_cost: '0',
     items: [],
     created_at: '2024-01-15T10:00:00Z',
     updated_at: '2024-01-15T12:00:00Z',
@@ -255,8 +262,11 @@ describe('statsToCSV', () => {
 
   it('includes date range when provided', () => {
     const csv = statsToCSV(mockStats, {
-      start: new Date('2024-01-01'),
-      end: new Date('2024-12-31'),
+      // Local-time dates, as the dashboard's date presets produce — a
+      // date-only string would parse as UTC midnight and format a day early
+      // west of UTC.
+      start: new Date(2024, 0, 1),
+      end: new Date(2024, 11, 31),
     })
     expect(csv).toContain('2024-01-01')
     expect(csv).toContain('2024-12-31')

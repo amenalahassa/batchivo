@@ -12,6 +12,7 @@ from app.modules.threed_print.designers import DesignersModule
 from app.modules.threed_print.consumables import ConsumablesModule
 from app.modules.threed_print.sales_channels import SalesChannelsModule
 from app.modules.threed_print.filament_types import FilamentTypesModule
+from app.modules.threed_print.ideas import IdeasModule
 
 
 def get_modules() -> list[BaseModule]:
@@ -33,6 +34,7 @@ def get_modules() -> list[BaseModule]:
         DesignersModule(),
         ConsumablesModule(),
         SalesChannelsModule(),
+        IdeasModule(),
     ]
 
 
@@ -48,5 +50,6 @@ __all__ = [
     "DesignersModule",
     "ConsumablesModule",
     "SalesChannelsModule",
+    "IdeasModule",
     "get_modules",
 ]

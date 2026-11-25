@@ -5,7 +5,7 @@
  */
 
 import { useState } from 'react'
-import { Search, Filter, Plus } from 'lucide-react'
+import { Search, Filter, Plus, Receipt } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -23,7 +23,9 @@ import { FilamentTypeRow } from '@/components/filaments/FilamentTypeRow'
 import { FilamentTypeSpoolSheet } from '@/components/filaments/FilamentTypeSpoolSheet'
 import { FilamentTypeFilterSheet } from '@/components/filaments/FilamentTypeFilterSheet'
 import { AddFilamentDialog } from '@/components/filaments/AddFilamentDialog'
+import { FilamentPurchaseDialog } from '@/components/filaments/FilamentPurchaseDialog'
 import { AppLayout } from '@/components/layout/AppLayout'
+import { useAuth } from '@/contexts/AuthContext'
 
 export function FilamentLibrary() {
   const [spoolSheetFilamentTypeId, setSpoolSheetFilamentTypeId] = useState<string | null>(null)
@@ -32,8 +34,10 @@ export function FilamentLibrary() {
   >(undefined)
   const [filterSheetOpen, setFilterSheetOpen] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [purchaseDialogOpen, setPurchaseDialogOpen] = useState(false)
   const [params, setParams] = useState<FilamentTypeListParams>({ page: 1, page_size: 20 })
 
+  const { user } = useAuth()
   const { data, isLoading, isError, error, refetch } = useFilamentTypes(params)
   const toggleSampleMutation = useToggleHasSample(params)
 
@@ -105,6 +109,10 @@ export function FilamentLibrary() {
               {activeFilterCount}
             </Badge>
           )}
+        </Button>
+        <Button variant="outline" onClick={() => setPurchaseDialogOpen(true)}>
+          <Receipt className="h-4 w-4 mr-2" />
+          Purchases
         </Button>
         <Button variant="default" onClick={() => setAddDialogOpen(true)}>
           <Plus className="h-4 w-4 mr-2" />
@@ -258,6 +266,12 @@ export function FilamentLibrary() {
         onParamsChange={(newParams: FilamentTypeListParams) => setParams(newParams)}
       />
       <AddFilamentDialog open={addDialogOpen} onOpenChange={setAddDialogOpen} />
+
+      <FilamentPurchaseDialog
+        open={purchaseDialogOpen}
+        onOpenChange={setPurchaseDialogOpen}
+        currencySymbol={user?.currency_symbol ?? '$'}
+      />
     </div>
     </AppLayout>
   )

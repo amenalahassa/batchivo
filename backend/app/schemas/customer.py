@@ -1,6 +1,7 @@
 """Pydantic schemas for customer accounts."""
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
@@ -182,8 +183,12 @@ class CustomerOrderItemResponse(BaseModel):
     product_sku: str
     product_name: str
     quantity: int
-    unit_price: float
-    total_price: float
+    # Exact decimals, not doubles. These are the same `Numeric` order columns
+    # `app.services.realised_margin` and `channel_pnl` read exactly, and they
+    # were being put through a binary double on the way to the customer who
+    # paid them (Constitution IV, FR-047).
+    unit_price: Decimal
+    total_price: Decimal
 
 
 class CustomerOrderResponse(BaseModel):
@@ -194,10 +199,10 @@ class CustomerOrderResponse(BaseModel):
     id: UUID
     order_number: str
     status: str
-    subtotal: float
-    shipping_cost: float
-    discount_amount: float
-    total: float
+    subtotal: Decimal
+    shipping_cost: Decimal
+    discount_amount: Decimal
+    total: Decimal
     currency: str
     shipping_method: str
     tracking_number: Optional[str]

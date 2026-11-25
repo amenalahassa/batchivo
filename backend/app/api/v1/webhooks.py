@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_tenant
+from app.auth.dependencies import RequireAdmin, get_current_tenant
 from app.database import get_db
 from app.models.tenant import Tenant
 from app.models.webhook import DeliveryStatus
@@ -39,6 +39,7 @@ router = APIRouter(tags=["Webhooks"])
 )
 async def create_subscription(
     data: WebhookSubscriptionCreate,
+    _admin: RequireAdmin,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -122,6 +123,7 @@ async def get_subscription(
 async def update_subscription(
     subscription_id: UUID,
     data: WebhookSubscriptionUpdate,
+    _admin: RequireAdmin,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -151,6 +153,7 @@ async def update_subscription(
 )
 async def delete_subscription(
     subscription_id: UUID,
+    _admin: RequireAdmin,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -172,6 +175,7 @@ async def delete_subscription(
 )
 async def regenerate_secret(
     subscription_id: UUID,
+    _admin: RequireAdmin,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):
@@ -195,6 +199,7 @@ async def regenerate_secret(
 )
 async def test_subscription(
     subscription_id: UUID,
+    _admin: RequireAdmin,
     payload: Optional[WebhookTestPayload] = None,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
@@ -291,6 +296,7 @@ async def get_delivery(
 )
 async def retry_delivery(
     delivery_id: UUID,
+    _admin: RequireAdmin,
     tenant: Tenant = Depends(get_current_tenant),
     db: AsyncSession = Depends(get_db),
 ):

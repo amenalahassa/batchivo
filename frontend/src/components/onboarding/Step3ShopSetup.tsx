@@ -19,10 +19,12 @@ import {
 } from '@/components/ui/select'
 import { Loader2, Upload, X, Image as ImageIcon } from 'lucide-react'
 import { uploadLogo } from '@/lib/api/onboarding'
+import { CountrySelect } from '@/components/settings/CountrySelect'
 
 const step3Schema = z.object({
   shop_display_name: z.string().optional(),
   currency: z.string().default('GBP'),
+  country: z.string().regex(/^[A-Z]{2}$/).nullable().default(null),
   timezone: z.string().default('Europe/London'),
   primary_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid color format').default('#6366f1'),
 })
@@ -64,6 +66,7 @@ interface Step3ShopSetupProps {
   initialData?: {
     shop_display_name?: string
     currency?: string
+    country?: string | null
     timezone?: string
     primary_color?: string
     logo_url?: string
@@ -90,6 +93,7 @@ export function Step3ShopSetup({ initialData, onSubmit, onBack, isLoading }: Ste
     defaultValues: {
       shop_display_name: initialData?.shop_display_name || '',
       currency: initialData?.currency || 'GBP',
+      country: initialData?.country ?? null,
       timezone: initialData?.timezone || 'Europe/London',
       primary_color: initialData?.primary_color || '#6366f1',
     },
@@ -241,6 +245,19 @@ export function Step3ShopSetup({ initialData, onSubmit, onBack, isLoading }: Ste
               ))}
             </SelectContent>
           </Select>
+        </div>
+
+        {/* Country (spec 006) */}
+        <div className="space-y-2">
+          <Label>Shop country</Label>
+          <CountrySelect
+            value={watch('country')}
+            onChange={(code) => setValue('country', code)}
+            disabled={isLoading}
+          />
+          <p className="text-xs text-muted-foreground">
+            Optional. Used to choose your postage carrier.
+          </p>
         </div>
 
         {/* Timezone */}

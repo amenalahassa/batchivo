@@ -1,26 +1,40 @@
 """Model for 3D printed items (individual printed parts)."""
 
 import uuid
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+from app.models.dimensions import DimensionsMixin, dimension_constraints
 
 if TYPE_CHECKING:
     from app.models.model_component import ModelComponent
     from app.models.model_file import ModelFile
+    from app.models.model_file_version import ModelFileVersion
     from app.models.model_material import ModelMaterial
     from app.models.model_printer_config import ModelPrinterConfig
     from app.models.print_job import PrintJob
+    from app.models.printer import Printer
     from app.models.production_run_plate import ProductionRunPlate
 
 
-class Model(Base, UUIDMixin, TimestampMixin):
+class Model(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
     """
     Model represents a 3D printed item (individual printed part).
 
@@ -74,23 +88,121 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Model image URL",
     )
 
+    source_idea_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        # use_alter: ideas points back here (converted_model_id / converted_product_id).
+        ForeignKey(
+            "ideas.id", ondelete="SET NULL", use_alter=True, name="fk_models_source_idea_id"
+        ),
+        nullable=True,
+        index=True,
+        comment="Idea this record was converted from (feature 007)",
+    )
+
     # Labor Costing
-    labor_hours: Mapped[float] = mapped_column(
+    #
+    # DEPRECATED by the Tier 1 labor split below. The migration copies this
+    # figure into `labor_hours_per_item`; the engine reads it only when the new
+    # column is absent or zero, which is what keeps a record created before the
+    # migration costing the same as it did. The column is dropped once no read
+    # path remains.
+    labor_hours: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
         server_default="0",
-        comment="Labor hours required (post-processing, assembly, etc.)",
+        comment=(
+            "DEPRECATED (Tier 1): superseded by labor_hours_per_item. "
+            "Labor hours required (post-processing, assembly, etc.)"
+        ),
     )
 
-    labor_rate_override: Mapped[Optional[float]] = mapped_column(
+    # ------------------------------------------------------------------
+    # Item cost profile (Tier 1)
+    #
+    # Labor is split four ways because the four behave differently: per-plate
+    # work is divided across the plate's output (FR-013), per-item work is not,
+    # finishing may carry its own rate (FR-012), and packing happens on a part
+    # already known good so the failure premium must never reach it (FR-015).
+    # ------------------------------------------------------------------
+    waste_grams: Mapped[Decimal] = mapped_column(
+        Numeric(8, 2),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment=(
+            "Purge, priming and colour-change filament for one plate — consumed, "
+            "never sold, and costed as its own line (FR-009)"
+        ),
+    )
+
+    expected_yield: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4),
+        nullable=False,
+        default=Decimal("1.0"),
+        server_default="1.0",
+        comment="Per-part success probability in (0, 1]; 1.0 means no failure premium",
+    )
+
+    failure_mode: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default="per_part",
+        server_default="per_part",
+        comment=(
+            "How the yield figure is read: 'per_part' (parts fail independently) "
+            "or 'per_plate' (one failure condemns the plate)"
+        ),
+    )
+
+    # When the failure mode last changed. A yield learned from runs is read only
+    # from runs completed since, because the same figure means something
+    # different under each mode (FR-015d, T256). Null: never changed.
+    failure_mode_since: Mapped[Optional[date]] = mapped_column(
+        Date,
+        nullable=True,
+        comment="Date the failure mode last changed; yield is learned only from runs since",
+    )
+
+    labor_hours_per_plate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Preparation a plate needs once, divided across its output (FR-013)",
+    )
+
+    labor_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Handling per item, never divided across a plate (FR-013)",
+    )
+
+    finishing_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Finishing per item, charged at the finishing rate (FR-012)",
+    )
+
+    packing_hours_per_item: Mapped[Decimal] = mapped_column(
+        Numeric(8, 3),
+        nullable=False,
+        default=0,
+        server_default="0",
+        comment="Packing per item — NOT at risk of print failure (FR-015, FR-016)",
+    )
+
+    labor_rate_override: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 2),
         nullable=True,
         comment="Override labor rate for this model (£/hour). If null, use tenant default.",
     )
 
     # Overhead
-    overhead_percentage: Mapped[float] = mapped_column(
+    overhead_percentage: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=0,
@@ -124,6 +236,14 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Print time in minutes (for full plate if prints_per_plate > 1)",
     )
 
+    # The machine this item is planned on, whose cost policy gives its machine
+    # rate (FR-011, T243). NULL costs it at the policy's default rate.
+    planned_printer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("printers.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="The machine this item is planned on; its rate costs the item (FR-011)",
+    )
+
     prints_per_plate: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -153,26 +273,9 @@ class Model(Base, UUIDMixin, TimestampMixin):
         comment="Number of printed units in inventory",
     )
 
-    # Production Cost Tracking (Phase 2: Rolling average from actual runs)
-    actual_production_cost: Mapped[Optional[float]] = mapped_column(
-        Numeric(10, 4),
-        nullable=True,
-        comment="Rolling average actual production cost per unit from completed runs",
-    )
-
-    production_cost_count: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        default=0,
-        server_default="0",
-        comment="Number of completed production runs included in rolling average",
-    )
-
-    production_cost_updated_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        comment="Last time actual_production_cost was updated",
-    )
+    # A realised production cost is not stored here: it is derived from the
+    # completed runs' unit costs on read (`production_run.realised_unit_costs`,
+    # T255). The rolling average this held was re-rounded at every run.
 
     # Relationships
     materials: Mapped[list["ModelMaterial"]] = relationship(
@@ -201,6 +304,15 @@ class Model(Base, UUIDMixin, TimestampMixin):
         lazy="select",
     )
 
+    # Eager, because the engine issues no queries: a planned machine nobody
+    # loaded would read as absent and cost the item at the default rate on one
+    # screen and at its own on another (Constitution III).
+    planned_printer: Mapped[Optional["Printer"]] = relationship(
+        "Printer",
+        foreign_keys=[planned_printer_id],
+        lazy="selectin",
+    )
+
     # Printer-specific configurations
     printer_configs: Mapped[list["ModelPrinterConfig"]] = relationship(
         "ModelPrinterConfig",
@@ -227,13 +339,35 @@ class Model(Base, UUIDMixin, TimestampMixin):
     files: Mapped[list["ModelFile"]] = relationship(
         "ModelFile",
         back_populates="model",
+        foreign_keys="ModelFile.model_id",
         cascade="all, delete-orphan",
         lazy="selectin",
+    )
+
+    # Revisions of the design; one is active (the version printed)
+    file_versions: Mapped[list["ModelFileVersion"]] = relationship(
+        "ModelFileVersion",
+        back_populates="model",
+        cascade="all, delete-orphan",
+        lazy="select",
+        order_by="ModelFileVersion.sequence.desc()",
     )
 
     # Constraints
     __table_args__ = (
         UniqueConstraint("tenant_id", "sku", name="uq_model_tenant_sku"),
+        # A yield of zero would divide the at-risk cost by nothing and report an
+        # infinite cost; it is a configuration error, not a number (spec edge
+        # case "Yield of zero or 100%").
+        CheckConstraint(
+            "expected_yield > 0 AND expected_yield <= 1",
+            name="check_model_expected_yield_in_unit_interval",
+        ),
+        CheckConstraint(
+            "failure_mode IN ('per_part', 'per_plate')",
+            name="check_model_failure_mode",
+        ),
+        *dimension_constraints("models"),
         {"comment": "3D printed model/part with Bill of Materials and cost tracking"},
     )
 

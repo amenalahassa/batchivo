@@ -90,4 +90,5 @@ export const ONBOARDING_STEPS: Step[] = [
   { number: 2, title: 'Craft Type', description: 'What you make' },
   { number: 3, title: 'Shop Setup', description: 'Branding' },
   { number: 4, title: 'First Product', description: 'Optional' },
+  { number: 5, title: 'Packaging & Postage', description: 'Optional' },
 ]

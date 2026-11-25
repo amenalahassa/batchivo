@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2, Scale } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface UpdateWeightDialogProps {
   open: boolean
@@ -119,7 +120,7 @@ export function UpdateWeightDialog({ open, onOpenChange, spoolId }: UpdateWeight
           </DialogTitle>
           <DialogDescription>
             {spool ? (
-              <>Update current weight for {spool.spool_id} - {spool.material_type_code} {spool.color}</>
+              <>Update current weight for {spool.spool_id} - {spool.filament_type?.material_type_code} {spool.filament_type?.color}</>
             ) : (
               'Loading spool information...'
             )}
@@ -266,7 +267,7 @@ export function UpdateWeightDialog({ open, onOpenChange, spoolId }: UpdateWeight
             {updateMutation.isError && (
               <div className="bg-destructive/10 border border-destructive rounded-md p-3">
                 <p className="text-sm text-destructive">
-                  Failed to update weight: {updateMutation.error instanceof Error ? updateMutation.error.message : 'Unknown error'}
+                  Failed to update weight: {apiErrorDetail(updateMutation.error)}
                 </p>
               </div>
             )}

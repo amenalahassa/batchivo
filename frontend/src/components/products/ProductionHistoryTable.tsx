@@ -21,6 +21,15 @@ import {
 } from 'lucide-react'
 import { listProductionRuns, formatStatus, formatDuration } from '@/lib/api/production-runs'
 import { useCurrency } from '@/hooks/useCurrency'
+import {
+  ZERO,
+  compareMoney,
+  divideMoney,
+  formatPercent,
+  multiplyMoney,
+  subtractMoney,
+  sumMoney,
+} from '@/lib/money'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -38,6 +47,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import type { Money } from '@/types/pricing'
 import type { ProductionRunDetail, ProductionRunStatus } from '@/types/production-run'
 
 interface ProductionHistoryTableProps {
@@ -53,8 +63,28 @@ interface ProductRunSummary {
   successfulQuantity: number
   failedQuantity: number
   successRate: number
-  estimatedCost: number
-  actualCost: number
+  /**
+   * Exact decimal strings, and `null` where nothing was recorded.
+   *
+   * Both were `number` and both were wrong (task T193). `estimated_total_cost`
+   * is `Optional[Decimal]` on the API, so it arrives as a JSON *string*, and
+   * `0 + "12.50" + "8.00"` is the string `"012.508.00"` — every cost column on
+   * this table was broken for any run with more than one costed item.
+   *
+   * `actualCost` was worse than broken: it was
+   * `estimated * (1 + variance/100) * (successRate/100)`, an estimate scaled
+   * by a *weight* variance and a yield. The recorded actuals live on the run
+   * (`actual_cost_per_unit`, written by
+   * `ProductionRunService.record_actual_unit_costs`) and are what
+   * `ProductionRunDetail` renders, so the two screens answered differently for
+   * one run (Constitution III and IV, SC-008, FR-040).
+   *
+   * `null` rather than zero, because a cost nobody recorded and a cost of
+   * nothing are different facts and showing the second for the first is what
+   * FR-019 forbids.
+   */
+  estimatedCost: Money | null
+  actualCost: Money | null
 }
 
 function getStatusBadgeVariant(status: ProductionRunStatus) {
@@ -139,14 +169,26 @@ export function ProductionHistoryTable({ productId, modelIds }: ProductionHistor
         const successRate =
           itemQuantity > 0 ? (successfulQuantity / itemQuantity) * 100 : 0
 
-        const estimatedCost = productItems.reduce(
-          (sum, item) => sum + (item.estimated_total_cost || 0),
-          0
-        )
+        // The BOM estimate captured when each print was created, summed
+        // exactly. A run where no item carries one has an unknown estimate,
+        // which reads as a dash rather than as £0.00 (FR-019).
+        const estimates = productItems
+          .map((item) => item.estimated_total_cost)
+          .filter((cost): cost is Money => cost != null)
+        const estimatedCost = estimates.length > 0 ? sumMoney(estimates) : null
 
-        // Calculate actual cost based on success rate and variance
-        const varianceMultiplier = 1 + (runDetail.variance_percentage || 0) / 100
-        const actualCost = estimatedCost * varianceMultiplier * (successRate / 100)
+        // The recorded actual, not a figure derived from the estimate.
+        //
+        // `actual_cost_per_unit` is written per unit by
+        // `record_actual_unit_costs` once a run completes, so the cost of what
+        // this product actually yielded is that times the units that
+        // succeeded. The estimate above is for what was *planned*; a run that
+        // lost parts therefore shows a lower actual than estimate, which is
+        // the yield showing up in the cost rather than an error.
+        const actuals = productItems
+          .filter((item) => item.actual_cost_per_unit != null)
+          .map((item) => multiplyMoney(item.actual_cost_per_unit, item.successful_quantity))
+        const actualCost = actuals.length > 0 ? sumMoney(actuals) : null
 
         return {
           run: runDetail,
@@ -163,27 +205,47 @@ export function ProductionHistoryTable({ productId, modelIds }: ProductionHistor
 
   // Calculate summary statistics
   const summaryStats = useMemo(() => {
-    if (productRuns.length === 0) {
-      return {
-        totalRuns: 0,
-        totalQuantity: 0,
-        averageSuccessRate: 0,
-        totalEstimatedCost: 0,
-        totalActualCost: 0,
-        costVariance: 0,
-      }
+    const empty = {
+      totalRuns: 0,
+      totalQuantity: 0,
+      averageSuccessRate: 0,
+      totalEstimatedCost: null as Money | null,
+      totalActualCost: null as Money | null,
+      costVariance: null as Money | null,
     }
+    if (productRuns.length === 0) return empty
 
     const totalRuns = productRuns.length
     const totalQuantity = productRuns.reduce((sum, pr) => sum + pr.itemQuantity, 0)
     const totalSuccessful = productRuns.reduce((sum, pr) => sum + pr.successfulQuantity, 0)
     const averageSuccessRate = totalQuantity > 0 ? (totalSuccessful / totalQuantity) * 100 : 0
-    const totalEstimatedCost = productRuns.reduce((sum, pr) => sum + pr.estimatedCost, 0)
-    const totalActualCost = productRuns.reduce((sum, pr) => sum + pr.actualCost, 0)
+
+    // Only the runs that have a figure contribute one, so a single costed run
+    // among ten uncosted ones reports its own cost rather than being averaged
+    // against nine zeroes.
+    const estimated = productRuns
+      .map((pr) => pr.estimatedCost)
+      .filter((cost): cost is Money => cost != null)
+    const actual = productRuns
+      .map((pr) => pr.actualCost)
+      .filter((cost): cost is Money => cost != null)
+
+    const totalEstimatedCost = estimated.length > 0 ? sumMoney(estimated) : null
+    const totalActualCost = actual.length > 0 ? sumMoney(actual) : null
+
+    // A variance needs both sides and a non-zero denominator. Without them it
+    // is undefined, which is a dash — reporting 0% would say "on plan" about a
+    // comparison that was never made.
     const costVariance =
-      totalEstimatedCost > 0
-        ? ((totalActualCost - totalEstimatedCost) / totalEstimatedCost) * 100
-        : 0
+      totalEstimatedCost != null &&
+      totalActualCost != null &&
+      compareMoney(totalEstimatedCost, ZERO) > 0
+        ? divideMoney(
+            multiplyMoney(subtractMoney(totalActualCost, totalEstimatedCost), 100),
+            totalEstimatedCost,
+            1
+          )
+        : null
 
     return {
       totalRuns,
@@ -273,19 +335,27 @@ export function ProductionHistoryTable({ productId, modelIds }: ProductionHistor
           </div>
           <div className="text-center">
             <p className="text-muted-foreground">Cost Variance</p>
-            <p
-              className={`font-semibold flex items-center gap-1 ${
-                summaryStats.costVariance > 0 ? 'text-red-600' : 'text-green-600'
-              }`}
-            >
-              {summaryStats.costVariance > 0 ? (
-                <TrendingUp className="h-3 w-3" />
-              ) : (
-                <TrendingDown className="h-3 w-3" />
-              )}
-              {summaryStats.costVariance > 0 ? '+' : ''}
-              {summaryStats.costVariance.toFixed(1)}%
-            </p>
+            {summaryStats.costVariance == null ? (
+              <p className="font-semibold text-muted-foreground" title="No run has recorded actual costs yet">
+                —
+              </p>
+            ) : (
+              <p
+                className={`font-semibold flex items-center justify-center gap-1 ${
+                  compareMoney(summaryStats.costVariance, ZERO) > 0
+                    ? 'text-red-600'
+                    : 'text-green-600'
+                }`}
+              >
+                {compareMoney(summaryStats.costVariance, ZERO) > 0 ? (
+                  <TrendingUp className="h-3 w-3" />
+                ) : (
+                  <TrendingDown className="h-3 w-3" />
+                )}
+                {compareMoney(summaryStats.costVariance, ZERO) > 0 ? '+' : ''}
+                {formatPercent(summaryStats.costVariance, { undefinedLabel: '—' })}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -311,12 +381,13 @@ export function ProductionHistoryTable({ productId, modelIds }: ProductionHistor
                 <TableHead className="text-right">Qty</TableHead>
                 <TableHead className="text-right">Success</TableHead>
                 <TableHead className="text-right">Est. Cost</TableHead>
-                <TableHead className="text-right">Variance</TableHead>
+                <TableHead className="text-right">Actual Cost</TableHead>
+                <TableHead className="text-right">Weight Variance</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {productRuns.map(({ run, itemQuantity, successRate, estimatedCost }) => (
+              {productRuns.map(({ run, itemQuantity, successRate, estimatedCost, actualCost }) => (
                 <TableRow key={run.id}>
                   <TableCell className="font-mono font-medium">
                     <Link
@@ -357,7 +428,25 @@ export function ProductionHistoryTable({ productId, modelIds }: ProductionHistor
                       {successRate.toFixed(0)}%
                     </span>
                   </TableCell>
-                  <TableCell className="text-right">{formatCurrency(estimatedCost)}</TableCell>
+                  <TableCell className="text-right">
+                    {estimatedCost == null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      formatCurrency(estimatedCost)
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {actualCost == null ? (
+                      <span
+                        className="text-muted-foreground"
+                        title="No actual cost recorded for this run"
+                      >
+                        —
+                      </span>
+                    ) : (
+                      formatCurrency(actualCost)
+                    )}
+                  </TableCell>
                   <TableCell className="text-right">
                     {run.variance_percentage != null ? (
                       <span

@@ -1,8 +1,11 @@
 """Unit tests for shipping service."""
 
+from decimal import Decimal
+
 import pytest
 
-from app.services.shipping_service import ShippingService
+from app.services.channel_economics import ChannelEconomics
+from app.services.shipping_service import ShippingService, get_shipping_service
 
 
 class TestShippingService:
@@ -10,8 +13,8 @@ class TestShippingService:
 
     @pytest.fixture
     def service(self):
-        """Create a shipping service instance."""
-        return ShippingService()
+        """A service carrying a £50 threshold, as a channel's economics would set it."""
+        return ShippingService(free_shipping_threshold_pence=5000)
 
     def test_normalize_postcode_uppercase(self, service):
         """Test postcode normalization converts to uppercase."""
@@ -97,6 +100,7 @@ class TestShippingService:
 
         assert result.postcode_valid is True
         assert len(result.options) == 4  # 4 standard options
+        # The threshold it was given, not a constant of its own (T208).
         assert result.free_shipping_threshold_pence == 5000
 
     @pytest.mark.asyncio
@@ -209,3 +213,60 @@ class TestShippingService:
             cart_total_pence=5000,
         )
         assert express_cost == 595  # Normal price
+
+
+# ============================================
+# The threshold is the channel's (T208)
+# ============================================
+
+
+class TestFreeShippingThresholdIsTheChannels:
+    """The checkout applies the operator's threshold, never a constant."""
+
+    def test_the_class_carries_no_threshold_of_its_own(self):
+        assert not hasattr(ShippingService, "FREE_SHIPPING_THRESHOLD_PENCE")
+
+    @pytest.mark.asyncio
+    async def test_no_threshold_means_no_free_shipping(self):
+        service = ShippingService()
+
+        result = await service.get_shipping_rates("SW1A 1AA", cart_total_pence=1_000_000)
+
+        assert result.free_shipping_threshold_pence is None
+        assert result.qualifies_for_free_shipping is False
+        second = next(opt for opt in result.options if opt.id == "royal-mail-2nd")
+        assert second.price_pence == 295
+
+    def test_no_threshold_charges_the_cost(self):
+        _, cost = ShippingService().get_shipping_cost(
+            "royal-mail-2nd", "SW1A 1AA", cart_total_pence=1_000_000
+        )
+        assert cost == 295
+
+    def test_the_tenantless_dependency_offers_no_free_shipping(self):
+        assert get_shipping_service().free_shipping_threshold_pence is None
+
+    @pytest.mark.asyncio
+    async def test_for_economics_applies_the_operators_threshold(self):
+        service = ShippingService.for_economics(
+            ChannelEconomics(free_shipping_threshold=Decimal("30.00"))
+        )
+
+        assert service.free_shipping_threshold_pence == 3000
+        assert (
+            await service.get_shipping_rates("SW1A 1AA", cart_total_pence=3000)
+        ).qualifies_for_free_shipping
+        assert not (
+            await service.get_shipping_rates("SW1A 1AA", cart_total_pence=2999)
+        ).qualifies_for_free_shipping
+
+    def test_for_economics_converts_the_threshold_exactly(self):
+        service = ShippingService.for_economics(
+            ChannelEconomics(free_shipping_threshold=Decimal("79.99"))
+        )
+        # `int(79.99 * 100)` is 7998; the threshold must not lose the penny.
+        assert service.free_shipping_threshold_pence == 7999
+
+    def test_for_economics_without_a_threshold_offers_none(self):
+        service = ShippingService.for_economics(ChannelEconomics())
+        assert service.free_shipping_threshold_pence is None

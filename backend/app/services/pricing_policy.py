@@ -1,0 +1,456 @@
+"""Resolve the operator's pricing policy as at a date, and version a change.
+
+Two things the old ``Tenant.settings`` blob could not do, and that FR-002,
+FR-003, FR-031d and FR-039 all need:
+
+* **Read as at a date.** "What was the labor rate when this order was placed"
+  must be answerable from the data, not reconstructed from a changelog.
+* **Write without overwriting.** Changing one lever writes a new effective row
+  copying the rest forward; the superseded row stays readable (research.md D2).
+
+The engine in :mod:`app.services.costing` is synchronous and takes no database
+session, so policy is resolved here and handed over as a :class:`CostPolicy` --
+an immutable snapshot of the figures a cost needs. That is also what keeps the
+engine free to run inside a recursive bill-of-materials walk without issuing a
+query per node.
+
+Every tenant has a policy row: the Tier 1 migration seeded one per tenant, a
+later migration seeded any created since, and tenant creation seeds one
+(:func:`seed_policy_row`, task T219). A seeded row records nobody as having
+set it, and the costing engine labels its figures ``assumed`` rather than as a
+decision. :func:`legacy_cost_policy` remains for a read that finds no row --
+which should not happen -- so a cost is still never computed from nothing.
+"""
+
+import logging
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
+from decimal import Decimal
+from typing import Any, Mapping, Optional, TYPE_CHECKING
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core import clock
+from app.models.tenant_pricing_policy import (
+    MARGIN_BASES,
+    OVERHEAD_METHODS,
+    TenantPricingPolicy,
+)
+
+if TYPE_CHECKING:
+    from app.models.user import User
+    from app.models.tenant import Tenant
+
+logger = logging.getLogger(__name__)
+
+
+#: The levers a `PUT /settings/pricing-policy` may carry. Anything else in the
+#: body is a typo, and a typo that silently did nothing would be worse than a
+#: refusal.
+POLICY_FIELDS: tuple[str, ...] = (
+    "print_labor_rate",
+    "finishing_labor_rate",
+    "default_machine_rate_per_hour",
+    "overhead_method",
+    "overhead_monthly_pool",
+    "expected_monthly_machine_hours",
+    "electricity_rate_per_kwh",
+    "overhead_percentage",
+    "margin_basis",
+    "default_target_margin_pct",
+    "rounding_rule",
+    "sales_tax_recoverable",
+    "staleness_threshold_days",
+    "margin_alert_threshold_pct",
+    "min_outcomes_before_auto_update",
+    "estimate_divergence_threshold_pct",
+)
+
+
+class PolicyMisconfigured(ValueError):
+    """Raised when a policy change would store a figure that cannot be used."""
+
+
+@dataclass(frozen=True)
+class CostPolicy:
+    """The policy figures one cost calculation needs, frozen at a date.
+
+    Immutable on purpose: a product cost built from two different labor rates
+    is one figure with two policies in it, which is the defect User Story 1
+    removed. Passing a frozen snapshot down the recursion makes that
+    impossible rather than merely discouraged.
+    """
+
+    print_labor_rate: Decimal
+    finishing_labor_rate: Decimal
+    overhead_method: str = "percentage"
+    overhead_monthly_pool: Optional[Decimal] = None
+    expected_monthly_machine_hours: Optional[Decimal] = None
+    default_machine_rate_per_hour: Optional[Decimal] = None
+    electricity_rate_per_kwh: Optional[Decimal] = None
+    #: Overhead percentage for the percentage method, 0-100. A dated lever on
+    #: the policy row like the rest (task T222); a model's own percentage wins.
+    overhead_percentage: Decimal = Decimal("0")
+    margin_basis: str = "customer_total"
+    default_target_margin_pct: Optional[Decimal] = None
+    rounding_rule: Optional[str] = None
+    sales_tax_recoverable: bool = False
+    staleness_threshold_days: int = 180
+    margin_alert_threshold_pct: Decimal = Decimal("5")
+    min_outcomes_before_auto_update: int = 5
+    estimate_divergence_threshold_pct: Decimal = Decimal("25")
+    effective_from: Optional[date] = None
+    #: Where these figures came from: a policy row, or the legacy settings blob
+    #: for a tenant the migration has not reached. Surfaced so a breakdown can
+    #: say which, rather than presenting a fallback as a decision.
+    origin: str = "policy_row"
+    #: Whether an operator set these figures. A row seeded at tenant creation
+    #: or by migration records nobody, and its figures are ``assumed``: a
+    #: CA$20.00 labour rate nobody chose is not a policy decision (task T219,
+    #: Constitution VI). A row written through the policy screen is.
+    decided: bool = False
+    #: The role that authorised the row, where somebody did (FR-007a).
+    set_by_role: Optional[str] = None
+    #: The levers an operator decided, each with its day and role (T260). The
+    #: row-level ``decided`` says somebody wrote the row; this says which
+    #: figures they chose, so a carried-forward default is not relabelled.
+    decided_levers: Mapping[str, Mapping[str, Optional[str]]] = field(default_factory=dict)
+
+    @property
+    def source(self) -> str:
+        """Whether any lever on this policy was decided by an operator."""
+        return "policy" if self.decided else "assumed"
+
+    def lever_source(self, lever: str) -> str:
+        """``policy`` for a lever an operator chose, ``assumed`` otherwise (T260)."""
+        return "policy" if lever in self.decided_levers else "assumed"
+
+    def lever_as_of(self, lever: str) -> Optional[date]:
+        """The day a lever was decided, or ``None`` for one nobody chose."""
+        entry = self.decided_levers.get(lever)
+        if not entry or not entry.get("as_of"):
+            return None
+        return date.fromisoformat(str(entry["as_of"]))
+
+    @property
+    def overhead_rate_per_machine_hour(self) -> Optional[Decimal]:
+        """Overhead absorbed per machine-hour, or ``None`` if not absorbable.
+
+        ``None`` means the operator has not declared a pool and a capacity, so
+        the overhead line is reported as incompletely costed rather than as
+        zero (FR-019). Zero capacity cannot reach here -- the table's CHECK
+        refuses it -- but it is guarded anyway, because a division by zero in a
+        cost is the kind of failure that surfaces as a 500 on a pricing screen.
+        """
+        if self.overhead_method != "per_machine_hour":
+            return None
+        pool = self.overhead_monthly_pool
+        hours = self.expected_monthly_machine_hours
+        if pool is None or hours is None or hours <= 0:
+            return None
+        return Decimal(str(pool)) / Decimal(str(hours))
+
+    def with_overhead_percentage(self, percentage: Decimal) -> "CostPolicy":
+        """Return a copy carrying a caller's overhead percentage instead."""
+        return replace(self, overhead_percentage=percentage)
+
+
+def _today() -> date:
+    """The business date, from the one authoritative clock.
+
+    Delegates rather than computing its own: this module dates every policy
+    row, and the endpoints that read them back default their ``as_of`` to the
+    same function. The two disagreeing is what made a policy change written in
+    the evening invisible until the next morning.
+    """
+    return clock.today()
+
+
+async def resolve_policy_row(
+    db: AsyncSession,
+    tenant: "Tenant",
+    as_of: Optional[date] = None,
+) -> Optional[TenantPricingPolicy]:
+    """The policy row in effect on ``as_of``, or ``None`` if there is none.
+
+    Ordered by ``effective_from``, then by whether the row is still open, then
+    by insertion -- newest first. Two rows can legitimately share a start date
+    when a lever is changed twice in one day, and the later write is the one in
+    force.
+
+    The open-row tiebreaker is load-bearing. ``created_at`` has second
+    resolution, so two writes in the same second are indistinguishable by it
+    and the tie resolves arbitrarily -- which meant a change could be made and
+    then read back as the figure it replaced. Among rows sharing a start date,
+    the one with no ``effective_to`` is by definition the later write, and the
+    partial unique index guarantees there is only one of those. It cannot
+    disturb a historical read, because ``effective_from`` is still the primary
+    sort: an open row that started earlier never outranks a closed row that
+    started later.
+    """
+    reference = as_of or _today()
+    statement = (
+        select(TenantPricingPolicy)
+        .where(
+            TenantPricingPolicy.tenant_id == tenant.id,
+            TenantPricingPolicy.effective_from <= reference,
+        )
+        .where(
+            (TenantPricingPolicy.effective_to.is_(None))
+            | (TenantPricingPolicy.effective_to >= reference)
+        )
+        .order_by(
+            TenantPricingPolicy.effective_from.desc(),
+            TenantPricingPolicy.effective_to.is_(None).desc(),
+            TenantPricingPolicy.created_at.desc(),
+        )
+        .limit(1)
+    )
+    result = await db.execute(statement)
+    return result.scalars().first()
+
+
+async def current_policy_row(db: AsyncSession, tenant: "Tenant") -> Optional[TenantPricingPolicy]:
+    """The open row -- the one with no ``effective_to``."""
+    result = await db.execute(
+        select(TenantPricingPolicy).where(
+            TenantPricingPolicy.tenant_id == tenant.id,
+            TenantPricingPolicy.effective_to.is_(None),
+        )
+    )
+    return result.scalars().first()
+
+
+def cost_policy_from_row(row: TenantPricingPolicy) -> CostPolicy:
+    """Freeze a policy row into the snapshot the engine takes."""
+    return CostPolicy(
+        print_labor_rate=Decimal(str(row.print_labor_rate)),
+        finishing_labor_rate=Decimal(str(row.finishing_labor_rate)),
+        overhead_method=row.overhead_method,
+        overhead_monthly_pool=(
+            Decimal(str(row.overhead_monthly_pool))
+            if row.overhead_monthly_pool is not None
+            else None
+        ),
+        expected_monthly_machine_hours=(
+            Decimal(str(row.expected_monthly_machine_hours))
+            if row.expected_monthly_machine_hours is not None
+            else None
+        ),
+        default_machine_rate_per_hour=(
+            Decimal(str(row.default_machine_rate_per_hour))
+            if row.default_machine_rate_per_hour is not None
+            else None
+        ),
+        electricity_rate_per_kwh=(
+            Decimal(str(row.electricity_rate_per_kwh))
+            if row.electricity_rate_per_kwh is not None
+            else None
+        ),
+        overhead_percentage=Decimal(str(row.overhead_percentage or 0)),
+        margin_basis=row.margin_basis,
+        default_target_margin_pct=(
+            Decimal(str(row.default_target_margin_pct))
+            if row.default_target_margin_pct is not None
+            else None
+        ),
+        rounding_rule=row.rounding_rule,
+        sales_tax_recoverable=bool(row.sales_tax_recoverable),
+        staleness_threshold_days=row.staleness_threshold_days,
+        margin_alert_threshold_pct=Decimal(str(row.margin_alert_threshold_pct)),
+        min_outcomes_before_auto_update=row.min_outcomes_before_auto_update,
+        estimate_divergence_threshold_pct=Decimal(str(row.estimate_divergence_threshold_pct)),
+        effective_from=row.effective_from,
+        origin="policy_row",
+        decided=row.set_by_user_id is not None,
+        set_by_role=row.set_by_role,
+        decided_levers=dict(row.decided_levers or {}),
+    )
+
+
+#: The hourly labor rate a tenant with no policy row costs at. It matches what
+#: the settings screen presented as its default before the typed policy table
+#: replaced it, so a tenant who has configured nothing gets the figure that
+#: screen would have shown them rather than one invented here.
+POLICYLESS_LABOR_RATE = Decimal("20.00")
+
+
+def legacy_cost_policy(tenant: "Tenant") -> CostPolicy:
+    """The figures a tenant starts from before anybody sets a policy.
+
+    These seed the tenant's first policy row (:func:`seed_policy_row`), and are
+    what a read that found no row at all would fall back to. They carry
+    :data:`POLICYLESS_LABOR_RATE`, the figure the settings screen used to
+    present as its default, and are labelled ``assumed`` by the engine: nobody
+    configured them (Constitution IV, task T219).
+
+    They carry no machine rate and no overhead pool, which is why such a
+    tenant's machine line is reported missing rather than guessed.
+    """
+    rate = POLICYLESS_LABOR_RATE
+    return CostPolicy(
+        print_labor_rate=rate,
+        finishing_labor_rate=rate,
+        overhead_method="percentage",
+        origin="legacy_settings",
+    )
+
+
+async def resolve_cost_policy(
+    db: AsyncSession,
+    tenant: "Tenant",
+    as_of: Optional[date] = None,
+) -> CostPolicy:
+    """The policy snapshot the cost engine should use for this tenant."""
+    row = await resolve_policy_row(db, tenant, as_of)
+    if row is None:
+        return legacy_cost_policy(tenant)
+    return cost_policy_from_row(row)
+
+
+def _validate(values: dict[str, Any]) -> None:
+    """Refuse a policy that could not be used once stored."""
+    basis = values.get("margin_basis")
+    if basis is not None and basis not in MARGIN_BASES:
+        raise PolicyMisconfigured(f"margin_basis must be one of {MARGIN_BASES}, not {basis!r}")
+
+    method = values.get("overhead_method")
+    if method is not None and method not in OVERHEAD_METHODS:
+        raise PolicyMisconfigured(
+            f"overhead_method must be one of {OVERHEAD_METHODS}, not {method!r}"
+        )
+
+    if method == "per_machine_hour":
+        hours = values.get("expected_monthly_machine_hours")
+        if hours is None or Decimal(str(hours)) <= 0:
+            raise PolicyMisconfigured(
+                "absorbing overhead per machine-hour needs expected_monthly_machine_hours "
+                "above zero; a capacity of zero is a misconfiguration, not a divisor"
+            )
+
+    for lever in ("print_labor_rate", "finishing_labor_rate", "overhead_percentage"):
+        value = values.get(lever)
+        if value is not None and Decimal(str(value)) < 0:
+            raise PolicyMisconfigured(f"{lever} cannot be negative")
+
+
+async def write_policy(
+    db: AsyncSession,
+    tenant: "Tenant",
+    changes: dict[str, Any],
+    *,
+    user: Optional["User"] = None,
+    role: Optional[str] = None,
+    effective_from: Optional[date] = None,
+) -> TenantPricingPolicy:
+    """Write a new effective policy row, copying unchanged levers forward.
+
+    Never updates in place (FR-003). The superseded row is closed the day
+    before the new one opens, so the two do not overlap; where a lever is
+    changed twice on one day the superseded row is closed on its own start
+    date, leaving a period of zero length that the as-of read orders past.
+
+    Unknown keys are refused rather than ignored, because a silently dropped
+    lever is a policy the operator believes they set.
+    """
+    unknown = sorted(set(changes) - set(POLICY_FIELDS))
+    if unknown:
+        raise PolicyMisconfigured(
+            f"unknown policy levers: {', '.join(unknown)}. Known levers: {', '.join(POLICY_FIELDS)}"
+        )
+
+    opens_on = effective_from or _today()
+    current = await current_policy_row(db, tenant)
+
+    if current is not None:
+        carried = {field: getattr(current, field) for field in POLICY_FIELDS}
+    else:
+        legacy = legacy_cost_policy(tenant)
+        carried = {
+            "print_labor_rate": legacy.print_labor_rate,
+            "finishing_labor_rate": legacy.finishing_labor_rate,
+            "default_machine_rate_per_hour": None,
+            "overhead_method": "percentage",
+            "overhead_monthly_pool": None,
+            "expected_monthly_machine_hours": None,
+            "electricity_rate_per_kwh": None,
+            "overhead_percentage": legacy.overhead_percentage,
+            "margin_basis": "customer_total",
+            "default_target_margin_pct": None,
+            "rounding_rule": None,
+            "sales_tax_recoverable": False,
+            "staleness_threshold_days": 180,
+            "margin_alert_threshold_pct": Decimal("5"),
+            "min_outcomes_before_auto_update": 5,
+            "estimate_divergence_threshold_pct": Decimal("25"),
+        }
+
+    merged = {**carried, **changes}
+    _validate(merged)
+
+    # Which levers an operator has decided (T260): the predecessor's, plus the
+    # ones this write names when somebody is writing it. A seed or migration
+    # write decides nothing, so its figures stay assumed.
+    decided = dict(current.decided_levers or {}) if current is not None else {}
+    if user is not None:
+        for lever in changes:
+            decided[lever] = {"as_of": opens_on.isoformat(), "role": role}
+
+    if current is not None:
+        closes_on = opens_on - timedelta(days=1)
+        if closes_on < current.effective_from:
+            # Two changes on one day. The row keeps a zero-length period rather
+            # than an invalid one, and the as-of read takes the later write.
+            closes_on = current.effective_from
+        current.effective_to = closes_on
+        db.add(current)
+        await db.flush()
+
+    row = TenantPricingPolicy(
+        tenant_id=tenant.id,
+        effective_from=opens_on,
+        effective_to=None,
+        set_by_user_id=user.id if user is not None else None,
+        set_by_role=role,
+        decided_levers=decided,
+        **merged,
+    )
+    db.add(row)
+    await db.flush()
+    logger.info(
+        f"Wrote pricing policy for tenant {tenant.id} effective {opens_on} "
+        f"(levers changed: {', '.join(sorted(changes)) or 'none'})"
+    )
+    return row
+
+
+async def ensure_policy_row(
+    db: AsyncSession,
+    tenant: "Tenant",
+    *,
+    effective_from: Optional[date] = None,
+) -> TenantPricingPolicy:
+    """The tenant's current policy row, seeding one if the tenant has none.
+
+    The seeded row records nobody as its author, so its figures read as
+    ``assumed`` until an administrator writes the policy (task T219).
+    """
+    current = await current_policy_row(db, tenant)
+    if current is not None:
+        return current
+    return await write_policy(
+        db,
+        tenant,
+        {},
+        effective_from=effective_from or _today(),
+    )
+
+
+async def seed_policy_row(db: AsyncSession, tenant: "Tenant") -> TenantPricingPolicy:
+    """Give a newly created tenant its first, assumed, dated policy row.
+
+    Called by every path that creates a tenant (task T219), so no tenant is
+    costed from a policy that exists nowhere. Opens on the tenant's first day.
+    """
+    return await ensure_policy_row(db, tenant, effective_from=_today())

@@ -241,7 +241,7 @@ class TestShopSearch:
         shop_sales_channel,
     ):
         """Create a test HTTP client with ShopContext dependency overridden."""
-        from app.auth.dependencies import get_shop_sales_channel, get_shop_tenant
+        from app.auth.dependencies import get_shop_db, get_shop_sales_channel, get_shop_tenant
         from app.database import get_db
         from app.main import app
 
@@ -255,6 +255,7 @@ class TestShopSearch:
             return (test_tenant, shop_sales_channel)
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_shop_db] = override_get_db
         app.dependency_overrides[get_shop_tenant] = override_get_shop_tenant
         app.dependency_overrides[get_shop_sales_channel] = override_get_shop_sales_channel
 

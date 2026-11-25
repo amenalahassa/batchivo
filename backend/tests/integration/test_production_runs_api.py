@@ -411,6 +411,54 @@ class TestProductionRunMaterialsEndpoints:
         assert Decimal(data["estimated_model_weight_grams"]) == Decimal("150.0")
         assert Decimal(data["cost_per_gram"]) == Decimal("0.025")
 
+    async def test_a_material_without_a_cost_is_frozen_at_the_spools_landed_figure(
+        self, async_client: AsyncClient, db_session, test_tenant, test_spool
+    ):
+        """T254: the server freezes the landed cost; the browser no longer derives one."""
+        test_spool.unusable_remainder_grams = Decimal("250")
+        await db_session.commit()
+        run = ProductionRun(
+            tenant_id=test_tenant.id,
+            run_number="TEST-LANDED-001",
+            started_at=datetime.now(timezone.utc),
+            status="in_progress",
+        )
+        db_session.add(run)
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/production-runs/{run.id}/materials",
+            json={"spool_id": str(test_spool.id), "estimated_model_weight_grams": 50.0},
+        )
+
+        assert response.status_code == 201, response.text
+        # 25.00 over 750 usable grams, not over the nominal 1000.
+        stored = Decimal(response.json()["cost_per_gram"]).quantize(Decimal("0.0001"))
+        assert stored == Decimal("0.0333")
+
+    async def test_a_material_whose_cost_cannot_be_derived_is_refused_not_zero(
+        self, async_client: AsyncClient, db_session, test_tenant, test_spool
+    ):
+        """FR-019: consumed filament is never frozen as free."""
+        test_spool.purchase_price = None
+        await db_session.commit()
+        run = ProductionRun(
+            tenant_id=test_tenant.id,
+            run_number="TEST-LANDED-002",
+            started_at=datetime.now(timezone.utc),
+            status="in_progress",
+        )
+        db_session.add(run)
+        await db_session.commit()
+
+        response = await async_client.post(
+            f"/api/v1/production-runs/{run.id}/materials",
+            json={"spool_id": str(test_spool.id), "estimated_model_weight_grams": 50.0},
+        )
+
+        assert response.status_code == 422
+        assert "no purchase price" in response.json()["detail"]
+
     async def test_add_material_insufficient_inventory(
         self, async_client: AsyncClient, db_session, test_tenant, test_spool
     ):
@@ -556,6 +604,42 @@ class TestProductionRunCompletion:
         await db_session.refresh(test_spool)
         expected_weight = float(Decimal(str(initial_weight)) - Decimal("105.0"))
         assert abs(float(test_spool.current_weight) - expected_weight) < 0.01
+
+    async def test_complete_run_started_in_the_future_answers_200(
+        self, async_client: AsyncClient, db_session, test_tenant, test_spool
+    ):
+        """Regression (complete-run-timezone-500): a start after the end is a 0 h run.
+
+        The completion dialog used to send a local time as UTC, so west of UTC
+        the start landed hours ahead; the derived duration was negative, the
+        response failed validation and the endpoint answered 500 after committing.
+        """
+        run = ProductionRun(
+            tenant_id=test_tenant.id,
+            run_number="TEST-COMPLETE-FUTURE",
+            started_at=datetime.now(timezone.utc) + timedelta(hours=5),
+            status="in_progress",
+        )
+        db_session.add(run)
+        await db_session.flush()
+        db_session.add(
+            ProductionRunMaterial(
+                production_run_id=run.id,
+                spool_id=test_spool.id,
+                estimated_model_weight_grams=Decimal("10.0"),
+                estimated_flushed_grams=Decimal("1.0"),
+                actual_model_weight_grams=Decimal("10.0"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+        await db_session.commit()
+
+        response = await async_client.post(f"/api/v1/production-runs/{run.id}/complete")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
+        assert Decimal(data["duration_hours"]) == Decimal("0")
 
     async def test_complete_without_actual_usage_fails(
         self, async_client: AsyncClient, db_session, test_tenant, test_spool

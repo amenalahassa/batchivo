@@ -40,9 +40,9 @@ from app.database import async_session_maker
 from app.models.category import Category
 from app.models.product import Product
 from app.models.product_image import ProductImage
-from app.models.product_pricing import ProductPricing
 from app.models.sales_channel import SalesChannel
 from app.models.tenant import Tenant
+from app.services.temporal_pricing import set_price
 
 
 # =============================================================================
@@ -359,14 +359,14 @@ async def import_products(
                         )
                     )
 
-                # Add pricing
-                pricing = ProductPricing(
+                # Add pricing: a Decimal, through the one dated writer of a
+                # price (task T237), never through a double.
+                await set_price(
+                    session,
                     product_id=product.id,
                     sales_channel_id=channel_id,
-                    list_price=float(price),
-                    is_active=True,
+                    list_price=price,
                 )
-                session.add(pricing)
 
                 # Upload images if folder specified
                 image_folder = row.get("image_folder", "").strip()

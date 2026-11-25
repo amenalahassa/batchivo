@@ -2,6 +2,7 @@
 Tests for Consumable Inventory Pydantic schemas.
 """
 
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -53,7 +54,15 @@ class TestConsumableTypeBase:
 
     def test_current_cost_per_unit_zero_accepted(self):
         c = ConsumableTypeBase(**self._valid(current_cost_per_unit=0.0))
-        assert c.current_cost_per_unit == 0.0
+        assert c.current_cost_per_unit == Decimal("0")
+
+    def test_current_cost_per_unit_is_held_as_an_exact_decimal(self):
+        # The engine reads this field for a linked packaging consumable, so a
+        # cost typed as 0.07 must stay 0.07 and not become 0.070000000000000007
+        # (Constitution IV, task T144).
+        c = ConsumableTypeBase(**self._valid(current_cost_per_unit="0.07"))
+        assert c.current_cost_per_unit == Decimal("0.07")
+        assert isinstance(c.current_cost_per_unit, Decimal)
 
     def test_quantity_on_hand_negative_raises(self):
         with pytest.raises(ValidationError):

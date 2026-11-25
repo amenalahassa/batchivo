@@ -2,41 +2,45 @@
  * E2E Tests: Authentication - Registration Flow
  *
  * Tests the registration functionality including:
- * - Successful registration with valid credentials
- * - Form validation errors (password length, mismatch)
+ * - Successful registration: signup, "Check your email", verification, dashboard
+ * - Form validation errors (password rules, mismatch)
  * - Duplicate email registration
- * - Redirect to dashboard after successful registration
- * - Empty state verification on new account dashboard
+ * - Navigation to key areas on a new account
  *
  * Prerequisites:
- * - Frontend dev server running (Playwright starts this automatically)
- * - Backend API running on port 8000 (must be started manually)
- *
- * To run these tests:
- * 1. Start backend: cd backend && poetry run uvicorn app.main:app --reload
- * 2. Run tests: npm run test:e2e e2e/tests/auth/registration.spec.ts
+ * - Backend started with E2E_TEST_HOOKS_ENABLED=true (see e2e/README.md): the
+ *   verification step reads the token through the backend's e2e-only hook.
  */
 
-import { test, expect } from '@playwright/test'
-import { HEALTH_URL } from '../../config'
+import { test, expect, type Page } from '@playwright/test'
+import { fetchVerificationToken, isBackendAvailable, registerAndLogin } from '../../helpers'
 
-// Check if backend is available
-async function isBackendAvailable(): Promise<boolean> {
-  try {
-    const response = await fetch(HEALTH_URL)
-    return response.ok
-  } catch {
-    return false
-  }
-}
+const TEST_PASSWORD = 'TestPassword123!'
 
 // Generate unique test email to avoid conflicts between test runs
 function generateTestEmail(): string {
   return `test-${Date.now()}-${Math.random().toString(36).substring(7)}@example.com`
 }
 
-// Store created test accounts for cleanup
-const createdAccounts: string[] = []
+/** Fill the signup form. The business name is required by the form. */
+async function fillSignup(
+  page: Page,
+  email: string,
+  options: { password?: string; confirmPassword?: string; fullName?: string } = {}
+): Promise<void> {
+  const password = options.password ?? TEST_PASSWORD
+  await page.fill('#businessName', `E2E Shop ${Date.now()}`)
+  if (options.fullName) await page.fill('#fullName', options.fullName)
+  await page.fill('#email', email)
+  await page.fill('#password', password)
+  await page.fill('#confirmPassword', options.confirmPassword ?? password)
+}
+
+/** Open the verification link for `email`, as the user would from the email. */
+async function verifyFromEmail(page: Page, email: string): Promise<void> {
+  const token = await fetchVerificationToken(page, email)
+  await page.goto(`/verify-email?token=${encodeURIComponent(token)}`)
+}
 
 test.describe('Registration Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -49,6 +53,7 @@ test.describe('Registration Page', () => {
     await expect(page.getByText('Sign up for Batchivo to get started')).toBeVisible()
 
     // Verify form elements exist
+    await expect(page.locator('#businessName')).toBeVisible()
     await expect(page.locator('#fullName')).toBeVisible()
     await expect(page.locator('#email')).toBeVisible()
     await expect(page.locator('#password')).toBeVisible()
@@ -58,96 +63,55 @@ test.describe('Registration Page', () => {
     // Verify navigation link to login
     await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible()
 
-    // Verify password requirement hint
-    await expect(page.getByText('Must be at least 8 characters')).toBeVisible()
+    // Password requirements appear once the user starts typing a password
+    await page.fill('#password', 'a')
+    await expect(page.getByText('8+ characters')).toBeVisible()
   })
 
   test('should successfully register with valid credentials', async ({ page }) => {
-    // Skip if backend is not available
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
 
     const testEmail = generateTestEmail()
-    const testPassword = 'TestPassword123!'
-
-    // Fill in registration form
-    await page.fill('#fullName', 'E2E Test User')
-    await page.fill('#email', testEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
-
-    // Submit form
+    await fillSignup(page, testEmail, { fullName: 'E2E Test User' })
     await page.click('button[type="submit"]')
 
-    // Wait for redirect to dashboard
-    await page.waitForURL('/dashboard', { timeout: 15000 })
+    // Registration asks the user to verify their email first
+    await expect(page.getByText('Check your email')).toBeVisible({ timeout: 15000 })
 
-    // Verify we're on the dashboard
-    await expect(page).toHaveURL(/\/dashboard/)
-
-    // Track account for cleanup
-    createdAccounts.push(testEmail)
+    // Following the link verifies the account and signs the user in
+    await verifyFromEmail(page, testEmail)
+    await page.waitForURL(/\/(dashboard|onboarding)/, { timeout: 15000 })
   })
 
   test('should register without full name (optional field)', async ({ page }) => {
-    // Skip if backend is not available
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
 
-    const testEmail = generateTestEmail()
-    const testPassword = 'TestPassword123!'
-
-    // Fill in registration form WITHOUT full name
-    await page.fill('#email', testEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
-
-    // Submit form
+    await fillSignup(page, generateTestEmail())
     await page.click('button[type="submit"]')
 
-    // Wait for redirect to dashboard
-    await page.waitForURL('/dashboard', { timeout: 15000 })
-
-    // Verify we're on the dashboard
-    await expect(page).toHaveURL(/\/dashboard/)
-
-    // Track account for cleanup
-    createdAccounts.push(testEmail)
+    await expect(page.getByText('Check your email')).toBeVisible({ timeout: 15000 })
   })
 
-  test('should show error for password too short', async ({ page }) => {
-    const testEmail = generateTestEmail()
-
-    // Fill in form with short password
-    await page.fill('#email', testEmail)
-    await page.fill('#password', 'short')
-    await page.fill('#confirmPassword', 'short')
-
-    // Submit form
+  test('should show error for weak password', async ({ page }) => {
+    await fillSignup(page, generateTestEmail(), { password: 'short' })
     await page.click('button[type="submit"]')
 
-    // Wait for error message
-    await expect(page.locator('[role="alert"]')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('Password must be at least 8 characters')).toBeVisible()
-
-    // Verify we're still on signup page
+    await expect(page.locator('[role="alert"]')).toHaveText('Password must meet all requirements', {
+      timeout: 5000,
+    })
     await expect(page).toHaveURL(/\/signup/)
   })
 
   test('should show error for password mismatch', async ({ page }) => {
-    const testEmail = generateTestEmail()
-
-    // Fill in form with mismatched passwords
-    await page.fill('#email', testEmail)
-    await page.fill('#password', 'ValidPassword123!')
-    await page.fill('#confirmPassword', 'DifferentPassword123!')
-
-    // Submit form
+    await fillSignup(page, generateTestEmail(), {
+      password: 'ValidPassword123!',
+      confirmPassword: 'DifferentPassword123!',
+    })
     await page.click('button[type="submit"]')
 
-    // Wait for error message
-    await expect(page.locator('[role="alert"]')).toBeVisible({ timeout: 5000 })
-    await expect(page.getByText('Passwords do not match')).toBeVisible()
-
-    // Verify we're still on signup page
+    await expect(page.locator('[role="alert"]')).toHaveText('Passwords do not match', {
+      timeout: 5000,
+    })
     await expect(page).toHaveURL(/\/signup/)
   })
 
@@ -157,38 +121,27 @@ test.describe('Registration Page', () => {
 
     // Form should not submit (HTML5 validation)
     await expect(page).toHaveURL(/\/signup/)
-
-    // Email field should show validation
-    const emailInput = page.locator('#email')
-    await expect(emailInput).toHaveAttribute('required', '')
+    await expect(page.locator('#businessName')).toHaveAttribute('required', '')
+    await expect(page.locator('#email')).toHaveAttribute('required', '')
   })
 
   test('should show loading state during registration', async ({ page }) => {
-    // Skip if backend is not available
-    test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
 
-    const testEmail = generateTestEmail()
-    const testPassword = 'TestPassword123!'
+    await fillSignup(page, generateTestEmail())
 
-    // Fill in form
-    await page.fill('#email', testEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
+    // Hold the request so the loading state is observable
+    await page.route('**/onboarding/register', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      await route.continue()
+    })
 
-    // Click submit and immediately check for loading state
     const submitButton = page.locator('button[type="submit"]')
     await submitButton.click()
-
-    // Button should be disabled during loading
     await expect(submitButton).toBeDisabled()
+    await expect(submitButton).toHaveText(/Creating account/)
 
-    // Wait for completion (either success or error)
-    await page.waitForURL('/dashboard', { timeout: 15000 }).catch(() => {})
-
-    // Track account for cleanup if successful
-    if (page.url().includes('/dashboard')) {
-      createdAccounts.push(testEmail)
-    }
+    await expect(page.getByText('Check your email')).toBeVisible({ timeout: 15000 })
   })
 
   test('should navigate to login page', async ({ page }) => {
@@ -197,108 +150,54 @@ test.describe('Registration Page', () => {
   })
 
   test('should have accessible form labels', async ({ page }) => {
-    // Check that labels are properly associated with inputs
-    await expect(page.getByText('Full Name', { exact: false })).toBeVisible()
-    await expect(page.getByText('Email', { exact: false })).toBeVisible()
-    await expect(page.getByText('Password', { exact: false }).first()).toBeVisible()
-    await expect(page.getByText('Confirm Password', { exact: false })).toBeVisible()
+    await expect(page.getByLabel('Business Name')).toBeVisible()
+    await expect(page.getByLabel('Full Name')).toBeVisible()
+    await expect(page.getByLabel('Email')).toBeVisible()
+    await expect(page.getByLabel('Password *', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('Confirm Password')).toBeVisible()
   })
 })
 
 test.describe('Registration - Duplicate Email', () => {
-  // These tests require backend
-  test.skip(async () => !(await isBackendAvailable()), 'Backend API not running on port 8000')
-
-  const existingEmail = generateTestEmail()
-  const testPassword = 'TestPassword123!'
+  let existingEmail = ''
 
   test.beforeAll(async ({ browser }) => {
-    // Create a user first
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
+    // A verified account owns the email
     const page = await browser.newPage()
-    await page.goto('/signup')
-
-    await page.fill('#email', existingEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
-    await page.click('button[type="submit"]')
-
-    await page.waitForURL('/dashboard', { timeout: 15000 })
-    createdAccounts.push(existingEmail)
-
+    existingEmail = await registerAndLogin(page)
     await page.close()
   })
 
   test('should show error when registering with existing email', async ({ page }) => {
     await page.goto('/signup')
-
-    // Try to register with the same email
-    await page.fill('#email', existingEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
+    await fillSignup(page, existingEmail)
     await page.click('button[type="submit"]')
 
-    // Wait for error message
     await expect(page.locator('[role="alert"]')).toBeVisible({ timeout: 10000 })
-
-    // Verify we're still on signup page
     await expect(page).toHaveURL(/\/signup/)
   })
 })
 
 test.describe('Registration - Dashboard Onboarding', () => {
-  // These tests require backend
-  test.skip(async () => !(await isBackendAvailable()), 'Backend API not running on port 8000')
+  test.beforeEach(async () => {
+    test.skip(!(await isBackendAvailable()), 'Backend API not available')
+  })
 
-  test('new user should see empty state on dashboard', async ({ page }) => {
-    const testEmail = generateTestEmail()
-    const testPassword = 'TestPassword123!'
-
-    // Register new user
-    await page.goto('/signup')
-    await page.fill('#fullName', 'New User Test')
-    await page.fill('#email', testEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
-    await page.click('button[type="submit"]')
-
-    // Wait for dashboard
-    await page.waitForURL('/dashboard', { timeout: 15000 })
-
-    // Verify dashboard has loaded
+  test('new user lands on the dashboard after verifying', async ({ page }) => {
+    await registerAndLogin(page)
     await expect(page).toHaveURL(/\/dashboard/)
-
-    // Check for welcome/empty state indicators
-    // The dashboard should show some indication it's a new account
-    // This could be empty inventory, welcome message, etc.
     await page.waitForLoadState('networkidle')
-
-    // Track account for cleanup
-    createdAccounts.push(testEmail)
   })
 
   test('new user can navigate to key areas after registration', async ({ page }) => {
-    const testEmail = generateTestEmail()
-    const testPassword = 'TestPassword123!'
+    await registerAndLogin(page)
 
-    // Register new user
-    await page.goto('/signup')
-    await page.fill('#email', testEmail)
-    await page.fill('#password', testPassword)
-    await page.fill('#confirmPassword', testPassword)
-    await page.click('button[type="submit"]')
+    // /inventory is the old address of the filament page
+    await page.goto('/filaments')
+    await expect(page).toHaveURL(/\/filaments/)
 
-    // Wait for dashboard
-    await page.waitForURL('/dashboard', { timeout: 15000 })
-
-    // Verify user can access inventory page
-    await page.goto('/inventory')
-    await expect(page).toHaveURL(/\/inventory/)
-
-    // Verify user can access products page
     await page.goto('/products')
     await expect(page).toHaveURL(/\/products/)
-
-    // Track account for cleanup
-    createdAccounts.push(testEmail)
   })
 })

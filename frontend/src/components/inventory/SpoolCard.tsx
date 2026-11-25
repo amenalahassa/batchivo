@@ -7,6 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import type { SpoolResponse } from '@/types/spool'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
 
 interface SpoolCardProps {
   spool: SpoolResponse
@@ -19,6 +21,7 @@ interface SpoolCardProps {
 }
 
 export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate, onView, isDuplicating }: SpoolCardProps) {
+  const { currency } = useCurrency()
   const [expanded, setExpanded] = useState(false)
   const [swipeOffset, setSwipeOffset] = useState(0)
 
@@ -90,19 +93,19 @@ export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate
                 <div
                   className="w-10 h-10 rounded-md border border-border flex-shrink-0 mt-0.5"
                   style={{
-                    backgroundColor: spool.color_hex
-                      ? `#${spool.color_hex.length === 8 ? spool.color_hex.slice(2) : spool.color_hex}`
+                    backgroundColor: spool.filament_type?.color_hex
+                      ? `#${spool.filament_type?.color_hex.length === 8 ? spool.filament_type?.color_hex.slice(2) : spool.filament_type?.color_hex}`
                       : '#e5e7eb'
                   }}
-                  title={spool.color_hex ? `#${spool.color_hex}` : 'No color set'}
+                  title={spool.filament_type?.color_hex ? `#${spool.filament_type?.color_hex}` : 'No color set'}
                 />
                 <div>
                   <CardTitle className="text-base font-mono">
                     {spool.spool_id}
                   </CardTitle>
                   <CardDescription className="text-sm mt-1">
-                    {spool.material_type_code} • {spool.brand} • {spool.color}
-                    {spool.finish && <span className="text-muted-foreground"> ({spool.finish})</span>}
+                    {spool.filament_type?.material_type_code} • {spool.filament_type?.brand} • {spool.filament_type?.color}
+                    {spool.filament_type?.finish && <span className="text-muted-foreground"> ({spool.filament_type?.finish})</span>}
                   </CardDescription>
                 </div>
               </div>
@@ -149,18 +152,18 @@ export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate
               {spool.remaining_percentage < 20 && (
                 <Badge variant="warning">Low Stock</Badge>
               )}
-              {spool.translucent && (
+              {spool.filament_type?.translucent && (
                 <Badge variant="outline" className="gap-1">
                   <Droplets className="h-3 w-3" /> Translucent
                 </Badge>
               )}
-              {spool.glow && (
+              {spool.filament_type?.glow && (
                 <Badge variant="outline" className="gap-1">
                   <Sparkles className="h-3 w-3" /> Glow
                 </Badge>
               )}
-              {spool.pattern && (
-                <Badge variant="outline">{spool.pattern}</Badge>
+              {spool.filament_type?.pattern && (
+                <Badge variant="outline">{spool.filament_type?.pattern}</Badge>
               )}
             </div>
 
@@ -174,16 +177,16 @@ export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate
                   transition={{ duration: 0.2 }}
                   className="space-y-2 pt-2 border-t"
                 >
-                  <DetailRow label="Material" value={spool.material_type_name} />
-                  <DetailRow label="Diameter" value={`${spool.diameter}mm`} />
+                  <DetailRow label="Material" value={spool.filament_type?.material_type_name} />
+                  <DetailRow label="Diameter" value={`${spool.filament_type?.diameter}mm`} />
                   <DetailRow
                     label="Weight"
                     value={`${spool.current_weight.toFixed(0)}g / ${spool.initial_weight.toFixed(0)}g`}
                   />
-                  {(spool.extruder_temp || spool.bed_temp) && (
+                  {(spool.filament_type?.extruder_temp || spool.filament_type?.bed_temp) && (
                     <DetailRow
                       label="Temps"
-                      value={`${spool.extruder_temp || '—'}°C / ${spool.bed_temp || '—'}°C (bed)`}
+                      value={`${spool.filament_type?.extruder_temp || '—'}°C / ${spool.filament_type?.bed_temp || '—'}°C (bed)`}
                     />
                   )}
                   {spool.storage_location && (
@@ -199,7 +202,7 @@ export function SpoolCard({ spool, onUpdateWeight, onEdit, onDelete, onDuplicate
                     <DetailRow label="Supplier" value={spool.supplier} />
                   )}
                   {spool.purchase_price && (
-                    <DetailRow label="Price" value={`£${spool.purchase_price.toFixed(2)}`} />
+                    <DetailRow label="Price" value={formatMoney(spool.purchase_price, currency.symbol)} />
                   )}
                 </motion.div>
               )}

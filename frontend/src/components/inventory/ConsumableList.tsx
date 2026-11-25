@@ -1,6 +1,9 @@
 import { useState } from 'react'
+import { useCurrency } from '@/hooks/useCurrency'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney } from '@/lib/money'
 import type { ConsumableTypeListParams } from '@/types/consumable'
 import { CONSUMABLE_CATEGORIES } from '@/types/consumable'
 import {
@@ -41,6 +44,8 @@ import { EditConsumableDialog } from './EditConsumableDialog'
 import { DeleteConsumableDialog } from './DeleteConsumableDialog'
 
 export function ConsumableList() {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   const [addDialogOpen, setAddDialogOpen] = useState(false)
   const [purchaseDialogOpen, setPurchaseDialogOpen] = useState(false)
   const [purchaseConsumableId, setPurchaseConsumableId] = useState<string | null>(null)
@@ -53,6 +58,8 @@ export function ConsumableList() {
     page_size: 20,
     search: '',
     low_stock_only: false,
+    // Boxes, mailers, void fill and wrap live on the Packaging page (spec 006, D1).
+    exclude_packaging: true,
   })
 
   // Fetch consumables with react-query
@@ -100,6 +107,7 @@ export function ConsumableList() {
       page_size: 20,
       search: '',
       low_stock_only: false,
+      exclude_packaging: true,
     })
   }
 
@@ -111,11 +119,6 @@ export function ConsumableList() {
   // Calculate total pages
   const totalPages = consumableData ? Math.ceil(consumableData.total / params.page_size!) : 0
 
-  // Format currency
-  const formatCurrency = (value: number | null | undefined) => {
-    if (value === null || value === undefined) return '-'
-    return `£${value.toFixed(2)}`
-  }
 
   return (
     <div className="space-y-4">
@@ -125,6 +128,13 @@ export function ConsumableList() {
           <h1 className="text-3xl font-bold tracking-tight">Consumables Inventory</h1>
           <p className="text-muted-foreground">
             Manage magnets, inserts, hardware, and other consumables
+          </p>
+          <p className="text-sm text-muted-foreground" data-testid="packaging-page-link">
+            Boxes and mailers are on the{' '}
+            <Link to="/packaging" className="underline underline-offset-2">
+              Packaging page
+            </Link>
+            .
           </p>
         </div>
         <Button onClick={() => setAddDialogOpen(true)}>
@@ -304,6 +314,11 @@ export function ConsumableList() {
                         {consumable.is_low_stock && (
                           <Badge variant="warning">Low</Badge>
                         )}
+                        {consumable.packaging_incomplete && (
+                          <Badge variant="outline" title="Set its inner size so the advisor can suggest it">
+                            Incomplete
+                          </Badge>
+                        )}
                       </div>
                     </div>
 
@@ -323,13 +338,13 @@ export function ConsumableList() {
                       <div>
                         <span className="text-muted-foreground">Cost/Unit:</span>
                         <span className="ml-2 font-mono">
-                          {formatCurrency(consumable.current_cost_per_unit)}
+                          {formatMoney(consumable.current_cost_per_unit, currency.symbol)}
                         </span>
                       </div>
                       <div>
                         <span className="text-muted-foreground">Value:</span>
                         <span className="ml-2 font-mono">
-                          {formatCurrency(consumable.stock_value)}
+                          {formatMoney(consumable.stock_value, currency.symbol)}
                         </span>
                       </div>
                     </div>
@@ -413,10 +428,10 @@ export function ConsumableList() {
                           {consumable.quantity_on_hand} {consumable.unit_of_measure}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(consumable.current_cost_per_unit)}
+                          {formatMoney(consumable.current_cost_per_unit, currency.symbol)}
                         </TableCell>
                         <TableCell className="text-right font-mono">
-                          {formatCurrency(consumable.stock_value)}
+                          {formatMoney(consumable.stock_value, currency.symbol)}
                         </TableCell>
                         <TableCell>
                           <div className="flex gap-1">
@@ -427,6 +442,11 @@ export function ConsumableList() {
                             )}
                             {consumable.is_low_stock && (
                               <Badge variant="warning">Low</Badge>
+                            )}
+                            {consumable.packaging_incomplete && (
+                              <Badge variant="outline" title="Set its inner size so the advisor can suggest it">
+                                Incomplete
+                              </Badge>
                             )}
                           </div>
                         </TableCell>

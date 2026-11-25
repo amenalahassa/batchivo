@@ -1,309 +1,257 @@
 /**
  * E2E Test: Production Run Auto-Population from Model BOM
  *
- * This test verifies the complete user flow for creating a production run
- * with auto-populated materials from a Model's Bill of Materials (BOM).
+ * Verifies that the production run wizard suggests materials from the
+ * selected models' Bills of Materials (BOM).
  *
  * Flow:
- * 1. Create a model with BOM materials (2 spools with different weights)
- * 2. Navigate to production runs
- * 3. Create new production run
- * 4. Select the model in Step 2
- * 5. Navigate to Step 3 (Materials)
- * 6. Verify suggested materials appear with correct weights
- * 7. Apply suggestions
- * 8. Verify materials are added to form
- * 9. Complete and submit the production run
+ * 1. Seed spools and a model with BOM materials through the API
+ * 2. Open the new production run wizard
+ * 3. Select the model in Step 2
+ * 4. Step 3 (Materials) suggests the BOM spools with weights scaled by quantity
+ * 5. Apply suggestions; they land in the Selected Materials table
+ * 6. Review and create the run
+ *
+ * Each test gets a fresh tenant, so the spools and models are seeded through
+ * the API rather than by clicking through other screens.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from './helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from './fixtures'
+import { apiAs, isBackendAvailable } from './helpers'
 
 // Test data
 const TEST_MODEL = {
   sku: `AUTO-TEST-${Date.now()}`,
   name: 'E2E Test Widget',
-  description: 'Auto-population test model',
-  category: 'Test',
-  laborHours: '1.0',
-  overheadPercentage: '25',
-  printsPerPlate: 5,
-  printTimeMinutes: 120,
-  machine: 'Prusa i3 MK3S',
 }
 
 const TEST_SPOOLS = {
-  spool1: {
-    name: 'eSun - PLA - Blue',
-    materialType: 'PLA',
-    color: 'Blue',
-    weight: 50.5, // grams per item
-  },
-  spool2: {
-    name: 'Polymaker - PLA - Red',
-    materialType: 'PLA',
-    color: 'Red',
-    weight: 30.0, // grams per item
-  },
+  spool1: { brand: 'eSun', color: 'Blue', name: 'eSun - PLA - Blue', weight: 50.5 },
+  spool2: { brand: 'Polymaker', color: 'Red', name: 'Polymaker - PLA - Red', weight: 30.0 },
 }
 
-// Helper functions - registerAndLogin is defined above
+// ============================================
+// Seeding helpers (API)
+// ============================================
 
-async function createTestModel(page: Page): Promise<string> {
-  // Navigate to models page
-  await page.goto('/models')
-  await page.waitForLoadState('networkidle')
+type Api = Awaited<ReturnType<typeof apiAs>>
 
-  // Click "New Model" button
-  await page.click('button:has-text("New Model")')
-
-  // Fill in basic model information
-  await page.fill('input[name="sku"]', TEST_MODEL.sku)
-  await page.fill('input[name="name"]', TEST_MODEL.name)
-  await page.fill('textarea[name="description"]', TEST_MODEL.description)
-  await page.fill('input[name="category"]', TEST_MODEL.category)
-  await page.fill('input[name="labor_hours"]', TEST_MODEL.laborHours)
-  await page.fill('input[name="overhead_percentage"]', TEST_MODEL.overheadPercentage)
-  await page.fill('input[name="prints_per_plate"]', TEST_MODEL.printsPerPlate.toString())
-  await page.fill('input[name="print_time_minutes"]', TEST_MODEL.printTimeMinutes.toString())
-  await page.fill('input[name="machine"]', TEST_MODEL.machine)
-
-  // Submit model creation
-  await page.click('button[type="submit"]:has-text("Create Model")')
-
-  // Wait for redirect to model detail page
-  await page.waitForURL(/\/models\/[a-f0-9-]+$/, { timeout: 10000 })
-
-  // Extract model ID from URL
-  const url = page.url()
-  const modelId = url.split('/').pop()!
-
-  // Add BOM materials (assuming there's an "Add Material" section)
-  // Note: This section may need adjustment based on actual UI implementation
-  await page.click('button:has-text("Add Material")')
-
-  // Add first spool (Blue PLA)
-  await page.selectOption('select[name="spool_id"]', { label: TEST_SPOOLS.spool1.name })
-  await page.fill('input[name="weight_grams"]', TEST_SPOOLS.spool1.weight.toString())
-  await page.click('button:has-text("Add to BOM")')
-
-  // Wait for material to be added
-  await expect(page.locator(`text=${TEST_SPOOLS.spool1.name}`)).toBeVisible()
-
-  // Add second spool (Red PLA)
-  await page.click('button:has-text("Add Material")')
-  await page.selectOption('select[name="spool_id"]', { label: TEST_SPOOLS.spool2.name })
-  await page.fill('input[name="weight_grams"]', TEST_SPOOLS.spool2.weight.toString())
-  await page.click('button:has-text("Add to BOM")')
-
-  // Wait for second material to be added
-  await expect(page.locator(`text=${TEST_SPOOLS.spool2.name}`)).toBeVisible()
-
-  return modelId
+async function seedSpool(
+  api: Api,
+  data: { brand: string; color: string; currentWeight?: number }
+): Promise<string> {
+  const materials = await api.get<{ id: string; code: string }[]>('/api/v1/spools/material-types')
+  const pla = materials.find((m) => m.code === 'PLA') ?? materials[0]
+  const filamentType = await api.post<{ id: string }>('/api/v1/filament-types', {
+    material_type_id: pla.id,
+    brand: data.brand,
+    color: data.color,
+  })
+  const spool = await api.post<{ id: string }>('/api/v1/spools', {
+    spool_id: `E2E-${data.brand}-${data.color}-${Math.random().toString(36).slice(2, 7)}`,
+    filament_type_id: filamentType.id,
+    initial_weight: 1000,
+    current_weight: data.currentWeight ?? 1000,
+    purchase_price: '25.00',
+  })
+  return spool.id
 }
 
-async function deleteTestModel(page: Page, modelId: string) {
-  await page.goto(`/models/${modelId}`)
-  await page.click('button:has-text("Delete")')
-  await page.click('button:has-text("Confirm")')
-  await page.waitForURL('/models')
+async function seedModel(
+  api: Api,
+  data: { sku: string; name: string },
+  bom: { spoolId: string; grams: number }[]
+): Promise<string> {
+  const model = await api.post<{ id: string }>('/api/v1/models', {
+    sku: data.sku,
+    name: data.name,
+    prints_per_plate: 1,
+    print_time_minutes: 120,
+  })
+  for (const line of bom) {
+    await api.post(`/api/v1/models/${model.id}/materials`, {
+      spool_id: line.spoolId,
+      weight_grams: String(line.grams),
+    })
+  }
+  return model.id
+}
+
+// ============================================
+// Wizard helpers (UI)
+// ============================================
+
+async function openWizard(page: Page) {
+  await page.goto('/production-runs/new')
+  await expect(page.getByText('Step 1 of 4: Basic Info')).toBeVisible()
+}
+
+async function nextStep(page: Page, label: string) {
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByText(label)).toBeVisible()
+}
+
+async function addModel(page: Page, sku: string, quantity: number) {
+  const picker = page.getByRole('combobox').filter({ hasText: 'Select a model' })
+  await expect(picker).toBeEnabled()
+  await picker.click()
+  // Options read "<sku> <name>": match the SKU exactly, not as a prefix
+  await page
+    .getByRole('option')
+    .filter({ has: page.getByText(sku, { exact: true }) })
+    .click()
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+
+  const row = page.getByRole('row').filter({ has: page.getByText(sku, { exact: true }) })
+  await expect(row).toBeVisible()
+  await row.getByRole('spinbutton').fill(String(quantity))
+}
+
+function suggestion(page: Page, spoolName: string) {
+  return page.locator('div.p-3.rounded-md.border').filter({ hasText: spoolName })
 }
 
 test.describe('Production Run Auto-Population from Model BOM', () => {
-  let modelId: string
+  // Signup, API seeding and a multi-step wizard: more than the default 30 s
+  // when the shared stack is busy.
+  test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should auto-populate materials from model BOM when creating production run', async ({ page }) => {
-    // Step 1: Create a model with BOM materials
-    modelId = await createTestModel(page)
+    // Step 1: Seed a model with two BOM materials
+    const api = await apiAs(page)
+    const blueId = await seedSpool(api, TEST_SPOOLS.spool1)
+    const redId = await seedSpool(api, TEST_SPOOLS.spool2)
+    await seedModel(api, TEST_MODEL, [
+      { spoolId: blueId, grams: TEST_SPOOLS.spool1.weight },
+      { spoolId: redId, grams: TEST_SPOOLS.spool2.weight },
+    ])
 
-    // Step 2: Navigate to production runs
-    await page.goto('/production-runs')
-    await page.waitForLoadState('networkidle')
+    // Step 2: Open the wizard and fill basic info
+    await openWizard(page)
+    await page.getByRole('combobox').filter({ hasText: 'Select a printer' }).click()
+    await page.getByRole('option', { name: 'Prusa MK3S+' }).click()
+    await page.locator('#estimated_print_time_hours_part').fill('2')
 
-    // Step 3: Click "New Production Run" button
-    await page.click('button:has-text("New Production Run")')
+    // Step 3: Select the model with quantity 10
+    await nextStep(page, 'Step 2 of 4: Models')
+    await addModel(page, TEST_MODEL.sku, 10)
 
-    // Wait for wizard to load - Step 1 should be visible
-    await expect(page.locator('text=Step 1 of 4: Basic Info')).toBeVisible()
+    // Step 4: Materials step suggests the BOM spools
+    await nextStep(page, 'Step 3 of 4: Materials')
+    await expect(page.getByText('Suggested Materials from Model BOM')).toBeVisible()
 
-    // Fill in basic info (Step 1)
-    await page.fill('input[name="printer"]', 'Prusa i3 MK3S')
-    await page.fill('input[name="estimated_print_time_hours"]', '2')
+    // Weights scaled by quantity: 50.5g * 10 = 505g, 30.0g * 10 = 300g
+    const blueSuggestion = suggestion(page, TEST_SPOOLS.spool1.name)
+    await expect(blueSuggestion).toContainText('Suggested weight: 505.0g')
+    await expect(blueSuggestion).toContainText('PLA')
 
-    // Navigate to Step 2 (Models)
-    await page.click('button:has-text("Next")')
-    await expect(page.locator('text=Step 2 of 4: Models')).toBeVisible()
+    const redSuggestion = suggestion(page, TEST_SPOOLS.spool2.name)
+    await expect(redSuggestion).toContainText('Suggested weight: 300.0g')
+    await expect(redSuggestion).toContainText('PLA')
 
-    // Step 4: Select the model
-    // Find the model selector (combobox/select)
-    const modelSelect = page.locator('select[name="model_id"], [role="combobox"]').first()
+    // Step 5: Apply all suggestions
+    await page.getByRole('button', { name: 'Apply All Suggestions' }).click()
 
-    // If it's a custom combobox (Radix UI)
-    if (await page.locator('[role="combobox"]').count() > 0) {
-      await page.click('[role="combobox"]')
-      await page.click(`text=${TEST_MODEL.sku}`)
-    } else {
-      // Standard select
-      await modelSelect.selectOption({ label: TEST_MODEL.sku })
-    }
+    // Materials are now in the Selected Materials table with their weights
+    await expect(page.getByText('Selected Materials (2)')).toBeVisible()
+    const blueRow = page.getByRole('row').filter({ hasText: TEST_SPOOLS.spool1.name })
+    await expect(blueRow.getByRole('spinbutton').first()).toHaveValue('505')
+    await expect(blueRow).toContainText('505.0g')
+    const redRow = page.getByRole('row').filter({ hasText: TEST_SPOOLS.spool2.name })
+    await expect(redRow.getByRole('spinbutton').first()).toHaveValue('300')
+    await expect(redRow).toContainText('300.0g')
 
-    // Set quantity (default should be 1, but let's be explicit)
-    await page.fill('input[name="quantity"]', '10')
+    // The suggestions are now marked as "Added"
+    await expect(blueSuggestion.getByText('Added', { exact: true })).toBeVisible()
+    await expect(redSuggestion.getByText('Added', { exact: true })).toBeVisible()
 
-    // Click "Add" button to add the model to the production run
-    await page.click('button:has-text("Add")')
+    // Step 6: Review
+    await nextStep(page, 'Step 4 of 4: Review')
+    const modelRow = page.getByRole('row').filter({ hasText: TEST_MODEL.sku })
+    await expect(modelRow).toContainText(TEST_MODEL.name)
+    await expect(modelRow.getByRole('cell', { name: '10', exact: true })).toBeVisible()
+    await expect(page.getByRole('row').filter({ hasText: TEST_SPOOLS.spool1.name })).toContainText(
+      '505.0g'
+    )
+    await expect(page.getByRole('row').filter({ hasText: TEST_SPOOLS.spool2.name })).toContainText(
+      '300.0g'
+    )
 
-    // Verify model was added to the list
-    await expect(page.locator(`text=${TEST_MODEL.name}`)).toBeVisible()
-
-    // Step 5: Navigate to Step 3 (Materials)
-    await page.click('button:has-text("Next")')
-    await expect(page.locator('text=Step 3 of 4: Materials')).toBeVisible()
-
-    // Step 6: Verify "Suggested Materials from Model BOM" card appears
-    await expect(page.locator('text=Suggested Materials from Model BOM')).toBeVisible()
-
-    // Step 7: Verify suggested materials show correct weights (scaled by quantity)
-    // Expected weights: spool1 = 50.5g * 10 = 505g, spool2 = 30.0g * 10 = 300g
-
-    // Verify Blue PLA suggestion
-    const blueSuggestion = page.locator(`text=${TEST_SPOOLS.spool1.name}`).locator('..')
-    await expect(blueSuggestion).toContainText('505.0g') // 50.5 * 10
-    await expect(blueSuggestion).toContainText('Blue')
-
-    // Verify Red PLA suggestion
-    const redSuggestion = page.locator(`text=${TEST_SPOOLS.spool2.name}`).locator('..')
-    await expect(redSuggestion).toContainText('300.0g') // 30.0 * 10
-    await expect(redSuggestion).toContainText('Red')
-
-    // Verify "Apply All Suggestions" button is present
-    await expect(page.locator('button:has-text("Apply All Suggestions")')).toBeVisible()
-
-    // Step 8: Click "Apply All Suggestions" button
-    await page.click('button:has-text("Apply All Suggestions")')
-
-    // Step 9: Verify materials are added to "Selected Materials" table
-    // The materials should now appear in the main materials table
-    const materialsTable = page.locator('table, [role="table"]')
-
-    // Verify Blue PLA is in the table with correct weight
-    await expect(materialsTable.locator(`text=${TEST_SPOOLS.spool1.name}`)).toBeVisible()
-    await expect(materialsTable.locator('text=505')).toBeVisible() // Weight in grams
-
-    // Verify Red PLA is in the table with correct weight
-    await expect(materialsTable.locator(`text=${TEST_SPOOLS.spool2.name}`)).toBeVisible()
-    await expect(materialsTable.locator('text=300')).toBeVisible() // Weight in grams
-
-    // Step 10: Verify the suggestions are now marked as "Added"
-    await expect(page.locator('text=Added').first()).toBeVisible()
-
-    // Navigate to Step 4 (Review)
-    await page.click('button:has-text("Next")')
-    await expect(page.locator('text=Step 4 of 4: Review')).toBeVisible()
-
-    // Verify the review summary shows correct information
-    await expect(page.locator(`text=${TEST_MODEL.name}`)).toBeVisible()
-    await expect(page.locator('text=Quantity: 10')).toBeVisible()
-    await expect(page.locator(`text=${TEST_SPOOLS.spool1.name}`)).toBeVisible()
-    await expect(page.locator(`text=${TEST_SPOOLS.spool2.name}`)).toBeVisible()
-
-    // Step 11: Submit the production run
-    await page.click('button:has-text("Create Production Run")')
-
-    // Wait for redirect to production run detail page or list
-    await page.waitForURL(/\/production-runs/, { timeout: 10000 })
-
-    // Verify success message or production run appears in list
-    await expect(
-      page.locator('text=Production run created successfully, text=Production Run #')
-    ).toBeVisible({ timeout: 10000 })
+    // Step 7: Create the run and land on its detail page
+    await page.getByRole('button', { name: 'Create Production Run' }).click()
+    await page.waitForURL(/\/production-runs\/[a-f0-9-]+$/, { timeout: 15000 })
+    await expect(page.getByText('In Progress', { exact: true })).toBeVisible()
+    await expect(page.getByRole('row').filter({ hasText: TEST_MODEL.sku })).toContainText(
+      TEST_MODEL.name
+    )
+    await expect(page.getByRole('row').filter({ hasText: 'eSun' })).toContainText('505.0')
+    await expect(page.getByRole('row').filter({ hasText: 'Polymaker' })).toContainText('300.0')
   })
 
   test('should handle low inventory warning when applying suggestions', async ({ page }) => {
-    // This test verifies that when a spool has insufficient inventory,
-    // a warning badge appears in the suggestions
+    // A spool with only 100g left, on a model that needs 50.5g per item
+    const api = await apiAs(page)
+    const lowId = await seedSpool(api, { ...TEST_SPOOLS.spool1, currentWeight: 100 })
+    await seedModel(api, TEST_MODEL, [{ spoolId: lowId, grams: TEST_SPOOLS.spool1.weight }])
 
-    // Navigate to production runs
-    await page.goto('/production-runs')
-    await page.click('button:has-text("New Production Run")')
+    await openWizard(page)
+    await nextStep(page, 'Step 2 of 4: Models')
+    // 10 items need 505g: more than the 100g available
+    await addModel(page, TEST_MODEL.sku, 10)
+    await nextStep(page, 'Step 3 of 4: Materials')
 
-    // Navigate to Step 2 and add model
-    await page.click('button:has-text("Next")')
-    // Select model with quantity that exceeds available inventory
-    // (This requires a model setup with known low inventory - may need test data setup)
-
-    // Navigate to Step 3
-    await page.click('button:has-text("Next")')
-
-    // Verify "Low Inventory" badge appears for affected materials
-    await expect(page.locator('text=Low Inventory')).toBeVisible()
-
-    // Verify the warning styling (red background)
-    const lowInventoryCard = page.locator('.bg-destructive\\/10').first()
-    await expect(lowInventoryCard).toBeVisible()
+    // The suggestion is flagged "Low Inventory" with the warning styling
+    const lowSuggestion = suggestion(page, TEST_SPOOLS.spool1.name)
+    await expect(lowSuggestion.getByText('Low Inventory', { exact: true })).toBeVisible()
+    await expect(lowSuggestion).toContainText('Available: 100g')
+    await expect(lowSuggestion).toHaveClass(/bg-destructive\/10/)
   })
 
   test('should handle inactive spool warning when applying suggestions', async ({ page }) => {
-    // This test verifies that when a spool is inactive (depleted/archived),
-    // a warning badge appears in the suggestions
+    // A model whose BOM spool has since been archived (inactive)
+    const api = await apiAs(page)
+    const spoolId = await seedSpool(api, TEST_SPOOLS.spool1)
+    await seedModel(api, TEST_MODEL, [{ spoolId, grams: TEST_SPOOLS.spool1.weight }])
+    await api.put(`/api/v1/spools/${spoolId}`, { is_active: false })
 
-    // Navigate to production runs
-    await page.goto('/production-runs')
-    await page.click('button:has-text("New Production Run")')
+    await openWizard(page)
+    await nextStep(page, 'Step 2 of 4: Models')
+    await addModel(page, TEST_MODEL.sku, 1)
+    await nextStep(page, 'Step 3 of 4: Materials')
 
-    // Navigate to Step 2 and add model
-    await page.click('button:has-text("Next")')
-    // Select model that uses an inactive spool
-    // (This requires a model setup with inactive spool - may need test data setup)
-
-    // Navigate to Step 3
-    await page.click('button:has-text("Next")')
-
-    // Verify "Inactive" badge appears for affected materials
-    await expect(page.locator('text=Inactive')).toBeVisible()
-
-    // Verify the warning styling (red background)
-    const inactiveCard = page.locator('.bg-destructive\\/10').first()
-    await expect(inactiveCard).toBeVisible()
+    // The suggestion is flagged "Inactive" with the warning styling
+    const inactiveSuggestion = suggestion(page, TEST_SPOOLS.spool1.name)
+    await expect(inactiveSuggestion.getByText('Inactive', { exact: true })).toBeVisible()
+    await expect(inactiveSuggestion).toHaveClass(/bg-destructive\/10/)
   })
 
   test('should show per-model breakdown when multiple models use same spool', async ({ page }) => {
-    // This test verifies material grouping across multiple models
+    // Two models that both use the Blue PLA spool
+    const api = await apiAs(page)
+    const blueId = await seedSpool(api, TEST_SPOOLS.spool1)
+    const secondModel = { sku: `${TEST_MODEL.sku}-B`, name: 'E2E Second Widget' }
+    await seedModel(api, TEST_MODEL, [{ spoolId: blueId, grams: TEST_SPOOLS.spool1.weight }])
+    await seedModel(api, secondModel, [{ spoolId: blueId, grams: 20 }])
 
-    // Create second model that also uses Blue PLA
-    // (Requires additional test setup)
+    await openWizard(page)
+    await nextStep(page, 'Step 2 of 4: Models')
+    await addModel(page, TEST_MODEL.sku, 2)
+    await addModel(page, secondModel.sku, 3)
+    await nextStep(page, 'Step 3 of 4: Materials')
 
-    await page.goto('/production-runs')
-    await page.click('button:has-text("New Production Run")')
+    // One combined suggestion: 50.5 * 2 + 20 * 3 = 161g
+    const blueSuggestion = suggestion(page, TEST_SPOOLS.spool1.name)
+    await expect(blueSuggestion).toHaveCount(1)
+    await expect(blueSuggestion).toContainText('Suggested weight: 161.0g')
 
-    // Add both models to production run
-    await page.click('button:has-text("Next")')
-    // Add model 1 and model 2 (both using Blue PLA)
-
-    // Navigate to Step 3
-    await page.click('button:has-text("Next")')
-
-    // Verify Blue PLA shows combined weight
-    await expect(page.locator('text=Total')).toBeVisible()
-
-    // Expand the details to see per-model breakdown
-    const detailsToggle = page.locator('details summary:has-text("Used in 2 models")')
-    await detailsToggle.click()
-
-    // Verify both models are listed with individual weights
-    await expect(page.locator(`text=${TEST_MODEL.sku}`).first()).toBeVisible()
-    // Should show individual model weights
-  })
-
-  test.afterEach(async ({ page }) => {
-    // Cleanup: Delete the test model if it was created
-    if (modelId) {
-      await deleteTestModel(page, modelId)
-    }
+    // Expand the details to see the per-model breakdown
+    await blueSuggestion.getByText('Used in 2 models').click()
+    await expect(blueSuggestion.getByText(`${TEST_MODEL.sku}: 101.0g (qty: 2)`)).toBeVisible()
+    await expect(blueSuggestion.getByText(`${secondModel.sku}: 60.0g (qty: 3)`)).toBeVisible()
   })
 })

@@ -24,24 +24,31 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2, RefreshCw } from 'lucide-react'
+import { PackagingFieldsSection } from './PackagingFieldsSection'
+import { PACKAGING_KIND_LABELS } from '@/components/packaging/catalogueHelpers'
+import type { PackagingKind } from '@/types/packaging'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface AddConsumableDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Spec 006: open the form as "Add box/mailer/..." with the kind preset. */
+  presetKind?: PackagingKind
+  /**
+   * The Packaging page's form: packaging fields, cost, stock, unit and
+   * supplier only -- no category or hardware description.
+   */
+  packagingOnly?: boolean
 }
 
-export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogProps) {
-  const queryClient = useQueryClient()
-
-  // Auto-generate SKU
-  const { nextSKU, isLoading: isLoadingSKU, refetch: refetchSKU } = useNextSKU('COM', open)
-
-  // Form state
-  const [formData, setFormData] = useState<Partial<ConsumableTypeCreate>>({
+function emptyForm(presetKind?: PackagingKind): Partial<ConsumableTypeCreate> {
+  return {
     sku: '',
     name: '',
     description: '',
-    category: 'hardware',
+    category: presetKind ? 'packaging' : 'hardware',
     unit_of_measure: 'each',
     current_cost_per_unit: undefined,
     quantity_on_hand: 0,
@@ -52,29 +59,36 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
     supplier_url: '',
     typical_lead_days: undefined,
     is_active: true,
-  })
+    packaging_kind: presetKind ?? null,
+  }
+}
+
+export function AddConsumableDialog({
+  open,
+  onOpenChange,
+  presetKind,
+  packagingOnly = false,
+}: AddConsumableDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
+  const queryClient = useQueryClient()
+
+  // Auto-generate SKU
+  const { nextSKU, isLoading: isLoadingSKU, refetch: refetchSKU } = useNextSKU('COM', open)
+
+  // Form state
+  const [formData, setFormData] = useState<Partial<ConsumableTypeCreate>>(() =>
+    emptyForm(presetKind),
+  )
 
   // Reset form when dialog opens
   useEffect(() => {
     if (open) {
-      setFormData({
-        sku: '',
-        name: '',
-        description: '',
-        category: 'hardware',
-        unit_of_measure: 'each',
-        current_cost_per_unit: undefined,
-        quantity_on_hand: 0,
-        reorder_point: undefined,
-        reorder_quantity: undefined,
-        preferred_supplier: '',
-        supplier_sku: '',
-        supplier_url: '',
-        typical_lead_days: undefined,
-        is_active: true,
-      })
+      setFormData(emptyForm(presetKind))
     }
-  }, [open])
+  }, [open, presetKind])
 
   // Auto-fill SKU when nextSKU is fetched
   // formData.sku intentionally excluded to prevent re-run when this effect sets it
@@ -106,21 +120,35 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
     createMutation.mutate(formData as ConsumableTypeCreate)
   }
 
-  const handleInputChange = (field: keyof ConsumableTypeCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumableTypeCreate>(field: K, value: ConsumableTypeCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
+
+  const kindLabel = formData.packaging_kind
+    ? PACKAGING_KIND_LABELS[formData.packaging_kind].toLowerCase()
+    : null
+  const title = packagingOnly
+    ? `Add ${kindLabel ?? 'packaging'}`
+    : presetKind
+      ? `Add ${PACKAGING_KIND_LABELS[presetKind].toLowerCase()}`
+      : 'Add New Consumable'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Add New Consumable</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            Create a new consumable type for tracking inventory (magnets, inserts, hardware, etc.)
+            {packagingOnly
+              ? 'Boxes and mailers need their inner size before the advisor can suggest them.'
+              : 'Create a new consumable type for tracking inventory (magnets, inserts, hardware, etc.)'}
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
           {/* Basic Info */}
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
@@ -157,6 +185,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
                 <p className="text-xs text-muted-foreground">Auto-generated, but you can edit it</p>
               </div>
 
+              {!packagingOnly && (
               <div className="space-y-2">
                 <Label htmlFor="category">Category</Label>
                 <Select
@@ -175,6 +204,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
                   </SelectContent>
                 </Select>
               </div>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -183,13 +213,16 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
               </Label>
               <Input
                 id="name"
-                placeholder="Magnet 3mm x 1mm, M3 Heat Insert, etc."
+                placeholder={
+                  packagingOnly ? 'Box 150 x 100 x 50' : 'Magnet 3mm x 1mm, M3 Heat Insert, etc.'
+                }
                 value={formData.name}
                 onChange={(e) => handleInputChange('name', e.target.value)}
                 required
               />
             </div>
 
+            {!packagingOnly && (
             <div className="space-y-2">
               <Label htmlFor="description">Description</Label>
               <textarea
@@ -200,6 +233,7 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
                 onChange={(e) => handleInputChange('description', e.target.value)}
               />
             </div>
+            )}
           </div>
 
           {/* Stock & Pricing */}
@@ -246,7 +280,10 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
                   placeholder="0.00"
                   value={formData.current_cost_per_unit || ''}
                   onChange={(e) =>
-                    handleInputChange('current_cost_per_unit', e.target.value ? parseFloat(e.target.value) : undefined)
+                    // The typed string, not a double: the costing engine reads
+                    // this for a linked packaging consumable, and the backend
+                    // takes a `Decimal` (FR-047, task T210).
+                    handleInputChange('current_cost_per_unit', e.target.value || undefined)
                   }
                 />
               </div>
@@ -334,6 +371,12 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             </div>
           </div>
 
+          <PackagingFieldsSection
+            value={formData}
+            onChange={handleInputChange}
+            packagingOnly={packagingOnly}
+          />
+
           {/* Status */}
           <div className="border-t pt-4">
             <div className="flex items-center gap-2">
@@ -353,9 +396,21 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             <div className="bg-destructive/10 border border-destructive rounded-md p-3">
               <p className="text-sm text-destructive">
                 Failed to create consumable:{' '}
-                {createMutation.error instanceof Error ? createMutation.error.message : 'Unknown error'}
+                {apiErrorDetail(createMutation.error)}
               </p>
             </div>
+          )}
+
+          </fieldset>
+
+          {!canEdit && (
+
+            <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+              Changing this needs a member, admin or owner role.
+
+            </p>
+
           )}
 
           <DialogFooter>
@@ -367,9 +422,9 @@ export function AddConsumableDialog({ open, onOpenChange }: AddConsumableDialogP
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
+            <Button type="submit" disabled={createMutation.isPending || !canEdit}>
               {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              Create Consumable
+              {packagingOnly || presetKind ? title : 'Create Consumable'}
             </Button>
           </DialogFooter>
         </form>

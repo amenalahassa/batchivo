@@ -9,6 +9,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Package, Clock, X } from 'lucide-react'
 
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney, multiplyMoney } from '@/lib/money'
+import { useCurrency } from '@/hooks/useCurrency'
+import { AssemblyRateNote } from '@/components/pricing/AssemblyRateNote'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
@@ -41,6 +44,8 @@ export function WizardPackaging({
   assemblyMinutes,
   onPackagingChange,
 }: WizardPackagingProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   // Fetch packaging consumables
   const { data: packagingConsumables } = useQuery({
     queryKey: ['consumables', 'packaging'],
@@ -51,12 +56,19 @@ export function WizardPackaging({
 
   // Calculate estimated packaging cost
   const selectedConsumable = consumables.find((c) => c.id === packagingConsumableId)
+  // A unit cost times a quantity, kept exact: the consumable's cost arrives
+  // as a decimal string and multiplying it as a float is the conversion
+  // Constitution IV rules out for money.
   const estimatedCost = selectedConsumable
-    ? (selectedConsumable.current_cost_per_unit || 0) * packagingQuantity
-    : parseFloat(packagingCost) || 0
+    ? multiplyMoney(selectedConsumable.current_cost_per_unit, packagingQuantity)
+    : packagingCost || '0'
 
-  // Calculate labor cost (£10/hr)
-  const laborCost = (assemblyMinutes / 60) * 10
+  // A labor cost was computed here as `(assemblyMinutes / 60) * 10` -- the
+  // same hardcoded £10/hr Tier 0 deleted from the engine, surviving on a
+  // wizard screen and summed into a figure presented as a cost. It ignored
+  // the rate the operator configured and contradicted it the moment one was
+  // set (FR-002, Constitution IV), so the summary below states the packaging
+  // cost it actually knows and leaves the labour to the engine.
 
   return (
     <div className="space-y-6">
@@ -90,7 +102,7 @@ export function WizardPackaging({
                       {consumable.name}
                       {consumable.current_cost_per_unit && (
                         <span className="ml-2 text-muted-foreground">
-                          (£{consumable.current_cost_per_unit.toFixed(2)}/ea)
+                          ({formatMoney(consumable.current_cost_per_unit, currency.symbol)}/ea)
                         </span>
                       )}
                     </SelectItem>
@@ -133,7 +145,7 @@ export function WizardPackaging({
             </div>
           ) : (
             <div className="space-y-2">
-              <Label htmlFor="packagingCost">Manual Packaging Cost (£)</Label>
+              <Label htmlFor="packagingCost">Manual Packaging Cost ({currency.symbol})</Label>
               <Input
                 id="packagingCost"
                 type="number"
@@ -175,7 +187,7 @@ export function WizardPackaging({
               }
             />
             <p className="text-sm text-muted-foreground">
-              Time to assemble/package (calculated at £10/hr)
+              <AssemblyRateNote />
             </p>
           </div>
         </CardContent>
@@ -188,18 +200,17 @@ export function WizardPackaging({
           <div className="space-y-2 text-sm">
             <div className="flex justify-between">
               <span className="text-muted-foreground">Packaging Cost:</span>
-              <span className="font-medium">£{estimatedCost.toFixed(2)}</span>
+              <span className="font-medium">{formatMoney(estimatedCost, currency.symbol)}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">
-                Labor Cost ({assemblyMinutes} min @ £10/hr):
-              </span>
-              <span className="font-medium">£{laborCost.toFixed(2)}</span>
+              <span className="text-muted-foreground">Assembly Time:</span>
+              <span className="font-medium">{assemblyMinutes} min</span>
             </div>
-            <div className="flex justify-between pt-2 border-t">
-              <span className="font-medium">Total (excl. models):</span>
-              <span className="font-bold">£{(estimatedCost + laborCost).toFixed(2)}</span>
-            </div>
+            <p className="pt-2 border-t text-muted-foreground">
+              The labour cost of those minutes is the pricing policy's rate to
+              apply, and the full make-cost appears with every line's origin on
+              the product once it is saved.
+            </p>
           </div>
         </CardContent>
       </Card>

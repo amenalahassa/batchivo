@@ -21,6 +21,8 @@ const mockTenant = {
   slug: 'test-org',
   description: 'A test organization',
   is_active: true,
+  currency_code: 'GBP',
+  currency_symbol: '£',
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-01T00:00:00Z',
 }
@@ -83,7 +85,7 @@ describe('GeneralSettings', () => {
 
   it('enables save button when form is dirty', async () => {
     vi.mocked(settingsApi.getTenant).mockResolvedValue(mockTenant)
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<GeneralSettings />)
 
@@ -112,7 +114,7 @@ describe('GeneralSettings', () => {
       name: 'New Organization Name',
     })
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<GeneralSettings />)
 
@@ -131,6 +133,9 @@ describe('GeneralSettings', () => {
       expect(settingsApi.updateTenant).toHaveBeenCalledWith({
         name: 'New Organization Name',
         description: 'A test organization',
+        currency_code: 'GBP',
+        currency_symbol: '£',
+        country_code: null,
       })
     })
   })
@@ -147,5 +152,86 @@ describe('GeneralSettings', () => {
     expect(screen.getByText('Slug:')).toBeInTheDocument()
     expect(screen.getByText('test-org')).toBeInTheDocument()
     expect(screen.getByText('Created:')).toBeInTheDocument()
+  })
+})
+
+describe('GeneralSettings: the books currency (T242, FR-028)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(settingsApi.getTenant).mockResolvedValue(mockTenant)
+    vi.mocked(settingsApi.updateTenant).mockResolvedValue({
+      ...mockTenant,
+      currency_code: 'CAD',
+      currency_symbol: 'C$',
+    })
+  })
+
+  it('shows the currency the books are kept in', async () => {
+    renderWithQueryClient(<GeneralSettings />)
+    expect(await screen.findByDisplayValue('GBP')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('£')).toBeInTheDocument()
+  })
+
+  it('saves a new currency, upper-cased, and says settled orders keep their rate', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderWithQueryClient(<GeneralSettings />)
+
+    const code = await screen.findByLabelText('Books currency')
+    await user.clear(code)
+    await user.type(code, 'cad')
+    const symbol = screen.getByLabelText('Currency symbol')
+    await user.clear(symbol)
+    await user.type(symbol, 'C$')
+
+    expect(screen.getByTestId('currency-change-note')).toHaveTextContent('frozen at sale')
+
+    await user.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() =>
+      expect(vi.mocked(settingsApi.updateTenant).mock.calls[0][0]).toMatchObject({
+        currency_code: 'CAD',
+        currency_symbol: 'C$',
+      })
+    )
+  })
+
+  it('refuses a code that is not three letters', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderWithQueryClient(<GeneralSettings />)
+
+    const code = await screen.findByLabelText('Books currency')
+    await user.clear(code)
+    await user.type(code, 'C1')
+    await user.click(screen.getByRole('button', { name: /save changes/i }))
+
+    expect(await screen.findByText(/three-letter ISO code/)).toBeInTheDocument()
+    expect(settingsApi.updateTenant).not.toHaveBeenCalled()
+  })
+
+  // Spec 006, T040: the country chooses the postage carrier, nothing else.
+  describe('shop country', () => {
+    it('shows the saved country and what it is for', async () => {
+      vi.mocked(settingsApi.getTenant).mockResolvedValue({ ...mockTenant, country_code: 'CA' })
+      renderWithQueryClient(<GeneralSettings />)
+      expect(await screen.findByRole('combobox')).toHaveTextContent('Canada')
+      expect(screen.getByText('Used to choose your postage carrier')).toBeInTheDocument()
+    })
+
+    it('saves a chosen country by its ISO code', async () => {
+      const user = userEvent.setup()
+      vi.mocked(settingsApi.getTenant).mockResolvedValue(mockTenant)
+      vi.mocked(settingsApi.updateTenant).mockResolvedValue({ ...mockTenant, country_code: 'FR' })
+      renderWithQueryClient(<GeneralSettings />)
+      const combobox = await screen.findByRole('combobox')
+      expect(combobox).toHaveTextContent('No country set')
+      await user.click(combobox)
+      await user.type(screen.getByPlaceholderText('Search countries...'), 'France')
+      await user.click(await screen.findByRole('option', { name: /France/ }))
+      await user.click(screen.getByRole('button', { name: /save/i }))
+      await waitFor(() =>
+        expect(settingsApi.updateTenant).toHaveBeenCalledWith(
+          expect.objectContaining({ country_code: 'FR' }),
+        ),
+      )
+    })
   })
 })

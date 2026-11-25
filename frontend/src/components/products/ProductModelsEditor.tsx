@@ -20,6 +20,7 @@ import {
   type ProductModel,
 } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney } from '@/lib/money'
 import { listModels } from '@/lib/api/models'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -78,18 +79,29 @@ type ModelFormValues = z.infer<typeof modelFormSchema>
 interface ProductModelsEditorProps {
   productId: string
   models: ProductModel[]
+  /**
+   * The engine's models subtotal from the product's cost breakdown. The
+   * browser does not re-sum quantized lines: that total can disagree with
+   * the breakdown by a cent (T263, FR-048).
+   */
+  totalCost?: string | null
 }
 
-export function ProductModelsEditor({ productId, models }: ProductModelsEditorProps) {
+export function ProductModelsEditor({
+  productId,
+  models,
+  totalCost,
+}: ProductModelsEditorProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [, setEditingModel] = useState<ProductModel | null>(null)
   const queryClient = useQueryClient()
-  const { formatCurrency } = useCurrency()
+  const { currency, formatCurrency } = useCurrency()
 
   // Fetch available models for selection
   const { data: availableModels } = useQuery({
-    queryKey: ['models', { limit: 100 }],
-    queryFn: () => listModels({ limit: 100 }),
+    // Archived (deleted) models are not offered (bug model-soft-delete-listed).
+    queryKey: ['models', { limit: 100, is_active: true }],
+    queryFn: () => listModels({ limit: 100, is_active: true }),
   })
 
   const form = useForm<z.input<typeof modelFormSchema>, unknown, ModelFormValues>({
@@ -152,17 +164,12 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
   const selectableModels =
     availableModels?.models?.filter((m) => !existingModelIds.includes(m.id)) || []
 
-  // Calculate total cost
-  const totalModelsCost = models.reduce((total, pm) => {
-    const modelCost = parseFloat(pm.model_cost || '0')
-    return total + modelCost * pm.quantity
-  }, 0)
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-sm text-muted-foreground">
-          Total models cost: <span className="font-semibold">{formatCurrency(totalModelsCost)}</span>
+          Total models cost: <span className="font-semibold">{totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}</span>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
@@ -269,8 +276,8 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
           </TableHeader>
           <TableBody>
             {models.map((productModel) => {
-              const unitCost = parseFloat(productModel.model_cost || '0')
-              const totalCost = unitCost * productModel.quantity
+              const unitCost = productModel.model_cost ?? null
+              const totalCost = multiplyMoney(unitCost, productModel.quantity)
 
               return (
                 <TableRow key={productModel.id}>
@@ -300,7 +307,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {formatCurrency(unitCost)}
+                    {formatMoney(unitCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-1">
@@ -328,7 +335,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums font-semibold">
-                    {formatCurrency(totalCost)}
+                    {formatMoney(totalCost, currency.symbol)}
                   </TableCell>
                   <TableCell className="text-right">
                     <AlertDialog>
@@ -362,7 +369,7 @@ export function ProductModelsEditor({ productId, models }: ProductModelsEditorPr
                 Total Models Cost
               </TableCell>
               <TableCell className="text-right tabular-nums font-bold">
-                {formatCurrency(totalModelsCost)}
+                {totalCost != null ? formatMoney(totalCost, currency.symbol) : '—'}
               </TableCell>
               <TableCell></TableCell>
             </TableRow>

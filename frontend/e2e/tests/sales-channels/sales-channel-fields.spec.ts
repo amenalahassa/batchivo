@@ -11,9 +11,10 @@
  * - Select: platform_type
  */
 
-import { test, expect, Page } from '@playwright/test'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
 import { API_URL } from '../../config'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { isBackendAvailable, openDashboard } from '../../helpers'
 
 function generateCompleteSalesChannelData() {
   const timestamp = Date.now()
@@ -61,7 +62,6 @@ async function submitAndVerifySalesChannel(page: Page, verifyText: string): Prom
 test.describe('Sales Channel Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/sales-channels/new')
   })
 
@@ -91,7 +91,6 @@ test.describe('Sales Channel Field Validation - Required Fields', () => {
 test.describe('Sales Channel Field Validation - Select Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/sales-channels/new')
   })
 
@@ -137,7 +136,6 @@ test.describe('Sales Channel Field Validation - Select Fields', () => {
 test.describe('Sales Channel Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/sales-channels/new')
   })
 
@@ -187,7 +185,6 @@ test.describe('Sales Channel Field Validation - Numeric Fields', () => {
 test.describe('Sales Channel Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/sales-channels/new')
   })
 
@@ -225,7 +222,7 @@ test.describe('Sales Channel Field Validation - Boolean Fields', () => {
 test.describe('Sales Channel Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should create sales channel with all fields populated', async ({ page }) => {
@@ -296,7 +293,7 @@ test.describe('Sales Channel Field Validation - Complete Form', () => {
 test.describe('Sales Channel Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to sales channels page', async ({ page }) => {

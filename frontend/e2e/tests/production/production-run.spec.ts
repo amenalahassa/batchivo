@@ -1,19 +1,19 @@
 /**
  * E2E Test: Production Run Creation Workflow with Inventory Deduction
  *
- * This test verifies the complete production run workflow including:
- * 1. Creating a model with BOM materials
- * 2. Creating a production run
+ * Verifies the production run workflow including:
+ * 1. A model with BOM materials (seeded through the API)
+ * 2. Creating a production run through the wizard
  * 3. Completing the production run
- * 4. Verifying inventory (spool weights) are deducted correctly
+ * 4. Spool weights are deducted correctly
  *
- * Prerequisites:
- * - Backend API running on port 8000
- * - Frontend dev server running (Playwright starts automatically)
+ * Each test gets a fresh tenant, so the spool and model are seeded through
+ * the API rather than by clicking through other screens.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable } from '../../helpers'
 
 // Generate unique test identifiers
 const TIMESTAMP = Date.now()
@@ -21,8 +21,7 @@ const TIMESTAMP = Date.now()
 // Test spool data
 const TEST_SPOOL = {
   brand: `TestBrand-${TIMESTAMP}`,
-  color: `Blue-${TIMESTAMP}`,
-  materialType: 'PLA',
+  color: 'Blue',
   initialWeight: 1000, // grams
   currentWeight: 1000, // grams
 }
@@ -31,116 +30,98 @@ const TEST_SPOOL = {
 const TEST_MODEL = {
   name: `Test Model ${TIMESTAMP}`,
   sku: `TST-${TIMESTAMP}`,
-  printTimeMinutes: '120',
-  printsPerPlate: '1',
   materialWeightPerItem: 50, // grams per item
 }
 
 // Production run data
 const PRODUCTION_QUANTITY = 5 // Will use 250g total (50g × 5)
 
+type Api = Awaited<ReturnType<typeof apiAs>>
+
 /**
- * Helper: Create a test spool and return its ID
+ * Helper: Seed a spool and return its ID
  */
-async function createTestSpool(page: Page): Promise<string> {
-  await page.goto('/inventory')
-  await page.waitForLoadState('networkidle')
-
-  // Click Add Spool button
-  await page.getByRole('button', { name: /add spool/i }).click()
-  await expect(page.getByRole('dialog')).toBeVisible()
-
-  // Fill spool form
-  await page.waitForTimeout(500)
-  await page.fill('#brand', TEST_SPOOL.brand)
-  await page.fill('#color', TEST_SPOOL.color)
-  await page.fill('#initial_weight', TEST_SPOOL.initialWeight.toString())
-  await page.fill('#current_weight', TEST_SPOOL.currentWeight.toString())
-
-  // Submit form
-  const submitButton = page.getByRole('dialog').getByRole('button', { name: /create spool/i })
-  await submitButton.click()
-
-  // Wait for dialog to close
-  await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
-  await page.waitForLoadState('networkidle')
-
-  // Get spool ID from table row
-  const spoolRow = page.locator('table').locator('tr', { hasText: TEST_SPOOL.brand })
-  await expect(spoolRow).toBeVisible({ timeout: 10000 })
-
-  // Extract ID from row data attribute or link
-  const spoolLink = spoolRow.locator('a').first()
-  const href = await spoolLink.getAttribute('href')
-  const spoolId = href?.split('/').pop() || ''
-
-  return spoolId
+async function createTestSpool(
+  api: Api,
+  data: { brand: string; color: string; initialWeight: number; currentWeight: number }
+): Promise<string> {
+  const materials = await api.get<{ id: string; code: string }[]>('/api/v1/spools/material-types')
+  const pla = materials.find((m) => m.code === 'PLA') ?? materials[0]
+  const filamentType = await api.post<{ id: string }>('/api/v1/filament-types', {
+    material_type_id: pla.id,
+    brand: data.brand,
+    color: data.color,
+  })
+  const spool = await api.post<{ id: string }>('/api/v1/spools', {
+    spool_id: `E2E-${Math.random().toString(36).slice(2, 9)}`,
+    filament_type_id: filamentType.id,
+    initial_weight: data.initialWeight,
+    current_weight: data.currentWeight,
+    purchase_price: '25.00',
+  })
+  return spool.id
 }
 
 /**
- * Helper: Get current weight of a spool
+ * Helper: Get the current weight of a spool
  */
-async function getSpoolWeight(page: Page, spoolBrand: string): Promise<number> {
-  await page.goto('/inventory')
-  await page.waitForLoadState('networkidle')
-
-  // Find the spool row
-  const spoolRow = page.locator('table').locator('tr', { hasText: spoolBrand })
-  await expect(spoolRow).toBeVisible({ timeout: 10000 })
-
-  // Get weight from the row (look for weight column)
-  const weightCell = spoolRow.locator('td').nth(2) // Assuming weight is 3rd column
-  const weightText = await weightCell.textContent()
-
-  // Parse weight (remove 'g' suffix)
-  const weight = parseFloat(weightText?.replace(/[^\d.]/g, '') || '0')
-  return weight
+async function getSpoolWeight(api: Api, spoolId: string): Promise<number> {
+  const spool = await api.get<{ current_weight: number | string }>(`/api/v1/spools/${spoolId}`)
+  return Number(spool.current_weight)
 }
 
 /**
- * Helper: Create a test model with BOM
+ * Helper: Seed a model whose BOM uses the spool
  */
-async function createTestModel(page: Page, spoolId: string): Promise<string> {
-  await page.goto('/models')
-  await page.waitForLoadState('networkidle')
+async function createTestModel(api: Api, spoolId: string, gramsPerItem: number): Promise<string> {
+  const model = await api.post<{ id: string }>('/api/v1/models', {
+    sku: TEST_MODEL.sku,
+    name: TEST_MODEL.name,
+    prints_per_plate: 1,
+    print_time_minutes: 120,
+  })
+  await api.post(`/api/v1/models/${model.id}/materials`, {
+    spool_id: spoolId,
+    weight_grams: String(gramsPerItem),
+  })
+  return model.id
+}
 
-  // Click New Model button
-  await page.click('button:has-text("New Model")')
-  await page.waitForTimeout(500)
+/**
+ * Helper: Walk the wizard to the Materials step with the model and quantity
+ */
+async function wizardToMaterials(
+  page: Page,
+  modelSku: string,
+  quantity: number,
+  printHours?: number
+) {
+  await page.goto('/production-runs')
+  await page.getByRole('link', { name: 'New Production Run' }).click()
+  await expect(page.getByText('Step 1 of 4: Basic Info')).toBeVisible()
 
-  // Fill model basic info
-  await page.fill('input[name="name"]', TEST_MODEL.name)
-  await page.fill('input[name="sku"]', TEST_MODEL.sku)
-  await page.fill('input[name="print_time_minutes"]', TEST_MODEL.printTimeMinutes)
-  await page.fill('input[name="prints_per_plate"]', TEST_MODEL.printsPerPlate)
-
-  // Submit model
-  await page.click('button[type="submit"]:has-text("Create")')
-
-  // Wait for redirect to model detail page
-  await page.waitForURL(/\/models\/[a-f0-9-]+$/, { timeout: 15000 })
-
-  const url = page.url()
-  const modelId = url.split('/').pop()!
-
-  // Add BOM material
-  const addMaterialButton = page.locator('button:has-text("Add Material")')
-  if (await addMaterialButton.isVisible()) {
-    await addMaterialButton.click()
-    await page.waitForTimeout(500)
-
-    // Select spool and set weight
-    const spoolSelect = page.locator('select[name="spool_id"], [data-testid="spool-select"]')
-    if (await spoolSelect.isVisible()) {
-      await spoolSelect.selectOption({ value: spoolId })
-    }
-
-    await page.fill('input[name="weight_grams"]', TEST_MODEL.materialWeightPerItem.toString())
-    await page.click('button:has-text("Add to BOM"), button:has-text("Save")')
-    await page.waitForTimeout(500)
+  await page.getByRole('combobox').filter({ hasText: 'Select a printer' }).click()
+  await page.getByRole('option', { name: 'Bambu Lab P1S' }).click()
+  if (printHours !== undefined) {
+    await page.locator('#estimated_print_time_hours_part').fill(String(printHours))
   }
 
-  return modelId
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByText('Step 2 of 4: Models')).toBeVisible()
+
+  const picker = page.getByRole('combobox').filter({ hasText: 'Select a model' })
+  await expect(picker).toBeEnabled()
+  await picker.click()
+  await page
+    .getByRole('option')
+    .filter({ has: page.getByText(modelSku, { exact: true }) })
+    .click()
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
+  const row = page.getByRole('row').filter({ has: page.getByText(modelSku, { exact: true }) })
+  await row.getByRole('spinbutton').fill(quantity.toString())
+
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByText('Step 3 of 4: Materials')).toBeVisible()
 }
 
 /**
@@ -148,249 +129,134 @@ async function createTestModel(page: Page, spoolId: string): Promise<string> {
  */
 async function createAndCompleteProductionRun(
   page: Page,
-  modelName: string,
-  quantity: number
+  modelSku: string,
+  quantity: number,
+  printHours?: number
 ): Promise<string> {
-  await page.goto('/production-runs')
-  await page.waitForLoadState('networkidle')
+  await wizardToMaterials(page, modelSku, quantity, printHours)
 
-  // Click New Production Run button
-  await page.click('button:has-text("New"), button:has-text("Create")')
+  // Apply the material suggestions from the model's BOM
+  await page.getByRole('button', { name: 'Apply All Suggestions' }).click()
+  await expect(page.getByText('Selected Materials (1)')).toBeVisible()
 
-  // Wait for form/wizard
-  await page.waitForTimeout(1000)
-
-  // Fill production run details
-  const printerInput = page.locator('input[name="printer"], input[placeholder*="printer" i]')
-  if (await printerInput.isVisible()) {
-    await printerInput.fill('Test Printer')
-  }
-
-  // Navigate through wizard or fill form
-  const nextButton = page.locator('button:has-text("Next")')
-  if (await nextButton.isVisible()) {
-    await nextButton.click()
-    await page.waitForTimeout(500)
-  }
-
-  // Add model to production run
-  const modelSelect = page.locator('select[name="model_id"], input[placeholder*="model" i]')
-  if (await modelSelect.isVisible()) {
-    await modelSelect.fill(modelName)
-    await page.waitForTimeout(300)
-    const modelOption = page.locator(`text="${modelName}"`).first()
-    if (await modelOption.isVisible()) {
-      await modelOption.click()
-    }
-  }
-
-  // Set quantity
-  const quantityInput = page.locator('input[name="quantity"]')
-  if (await quantityInput.isVisible()) {
-    await quantityInput.fill(quantity.toString())
-  }
-
-  // Add model to list
-  const addButton = page.locator('button:has-text("Add")')
-  if (await addButton.isVisible()) {
-    await addButton.click()
-    await page.waitForTimeout(500)
-  }
-
-  // Navigate to materials step
-  if (await nextButton.isVisible()) {
-    await nextButton.click()
-    await page.waitForTimeout(500)
-  }
-
-  // Apply material suggestions if available
-  const applyButton = page.locator('button:has-text("Apply")')
-  if (await applyButton.isVisible()) {
-    await applyButton.click()
-    await page.waitForTimeout(500)
-  }
-
-  // Navigate to review
-  if (await nextButton.isVisible()) {
-    await nextButton.click()
-    await page.waitForTimeout(500)
-  }
-
-  // Submit production run
-  const createButton = page.locator('button:has-text("Create Production Run"), button:has-text("Submit")')
-  await createButton.click()
-
-  // Wait for redirect to production run detail
+  // Review and create
+  await page.getByRole('button', { name: 'Next', exact: true }).click()
+  await expect(page.getByText('Step 4 of 4: Review')).toBeVisible()
+  await page.getByRole('button', { name: 'Create Production Run' }).click()
   await page.waitForURL(/\/production-runs\/[a-f0-9-]+$/, { timeout: 15000 })
+  const runId = page.url().split('/').pop()!
 
-  const url = page.url()
-  const runId = url.split('/').pop()!
+  // Complete the production run, confirming the estimated weights as actual
+  await page.getByRole('button', { name: 'Complete Run' }).click()
+  const dialog = page.getByRole('dialog').filter({ hasText: 'Complete Production Run' })
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'Complete Run' }).click()
+  await expect(dialog).toBeHidden({ timeout: 30000 })
 
-  // Complete the production run
-  await page.click('button:has-text("Complete")')
-  await page.waitForTimeout(500)
-
-  // Confirm completion
-  const confirmButton = page.locator('button:has-text("Complete"), button:has-text("Confirm")')
-  if (await confirmButton.isVisible()) {
-    await confirmButton.click()
-  }
-
-  // Wait for status update
-  await expect(page.locator('text=Completed')).toBeVisible({ timeout: 10000 })
+  // Status badge in the header, beside the Edit Run button
+  await expect(
+    page.getByRole('button', { name: 'Edit Run' }).locator('..').getByText('Completed', { exact: true })
+  ).toBeVisible()
 
   return runId
 }
 
 test.describe('Production Run Workflow with Inventory Deduction', () => {
-  let spoolId: string
-  let modelId: string
-  let runId: string
-  let initialWeight: number
+  // Signup, API seeding and a multi-step wizard: more than the default 30 s
+  // when the shared stack is busy.
+  test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
   })
 
   test('should deduct inventory when production run is completed', async ({ page }) => {
+    const api = await apiAs(page)
+
     // Step 1: Create test spool
-    spoolId = await createTestSpool(page)
+    const spoolId = await createTestSpool(api, TEST_SPOOL)
     expect(spoolId).toBeTruthy()
 
     // Step 2: Record initial spool weight
-    initialWeight = await getSpoolWeight(page, TEST_SPOOL.brand)
+    const initialWeight = await getSpoolWeight(api, spoolId)
     expect(initialWeight).toBe(TEST_SPOOL.currentWeight)
 
     // Step 3: Create test model with BOM
-    modelId = await createTestModel(page, spoolId)
+    const modelId = await createTestModel(api, spoolId, TEST_MODEL.materialWeightPerItem)
     expect(modelId).toBeTruthy()
 
-    // Step 4: Create and complete production run
-    runId = await createAndCompleteProductionRun(page, TEST_MODEL.name, PRODUCTION_QUANTITY)
+    // Step 4: Create and complete production run, with a print time entered so
+    // the completion dialog sends a duration (the run without one is covered
+    // by the west-of-UTC test below).
+    const runId = await createAndCompleteProductionRun(
+      page,
+      TEST_MODEL.sku,
+      PRODUCTION_QUANTITY,
+      2
+    )
     expect(runId).toBeTruthy()
 
     // Step 5: Verify inventory was deducted
     const expectedDeduction = TEST_MODEL.materialWeightPerItem * PRODUCTION_QUANTITY // 50g × 5 = 250g
     const expectedFinalWeight = initialWeight - expectedDeduction // 1000g - 250g = 750g
 
-    const finalWeight = await getSpoolWeight(page, TEST_SPOOL.brand)
+    const finalWeight = await getSpoolWeight(api, spoolId)
 
     // Allow small floating point tolerance
     expect(finalWeight).toBeCloseTo(expectedFinalWeight, 1)
-
-    // Log for debugging
-    console.log(`Initial weight: ${initialWeight}g`)
-    console.log(`Expected deduction: ${expectedDeduction}g`)
-    console.log(`Expected final weight: ${expectedFinalWeight}g`)
-    console.log(`Actual final weight: ${finalWeight}g`)
   })
 
   test('should show warning when production run requires more material than available', async ({
     page,
   }) => {
-    // Create spool with low inventory
+    const api = await apiAs(page)
+
+    // A low stock spool: only 50g available
     const lowStockSpool = {
       brand: `LowStock-${Date.now()}`,
       color: 'Red',
       initialWeight: 100,
-      currentWeight: 50, // Only 50g available
+      currentWeight: 50,
     }
+    const spoolId = await createTestSpool(api, lowStockSpool)
+    await createTestModel(api, spoolId, TEST_MODEL.materialWeightPerItem)
 
-    await page.goto('/inventory')
-    await page.waitForLoadState('networkidle')
+    // 5 items need 250g: more than the 50g on the spool
+    await wizardToMaterials(page, TEST_MODEL.sku, PRODUCTION_QUANTITY)
 
-    // Create low stock spool
-    await page.getByRole('button', { name: /add spool/i }).click()
-    await expect(page.getByRole('dialog')).toBeVisible()
+    // The material suggestion carries a "Low Inventory" warning
+    const lowSuggestion = page
+      .locator('div.p-3.rounded-md.border')
+      .filter({ hasText: `${lowStockSpool.brand} - PLA - ${lowStockSpool.color}` })
+    await expect(lowSuggestion).toContainText('Suggested weight: 250.0g')
+    await expect(lowSuggestion).toContainText('Available: 50g')
+    await expect(lowSuggestion.getByText('Low Inventory', { exact: true })).toBeVisible()
+  })
+})
 
-    await page.waitForTimeout(500)
-    await page.fill('#brand', lowStockSpool.brand)
-    await page.fill('#color', lowStockSpool.color)
-    await page.fill('#initial_weight', lowStockSpool.initialWeight.toString())
-    await page.fill('#current_weight', lowStockSpool.currentWeight.toString())
+test.describe('Production Run completion west of UTC', () => {
+  test.describe.configure({ timeout: 90_000 })
 
-    const submitButton = page.getByRole('dialog').getByRole('button', { name: /create spool/i })
-    await submitButton.click()
-    await expect(page.getByRole('dialog')).toBeHidden({ timeout: 30000 })
+  // The browser runs behind UTC, as for an operator in North America.
+  test.use({ timezoneId: 'America/New_York' })
 
-    // Navigate to production runs
-    await page.goto('/production-runs')
-    await page.waitForLoadState('networkidle')
-
-    // Try to create production run with high quantity
-    // The UI should show a low inventory warning when quantity exceeds available material
-
-    // Click New Production Run
-    await page.click('button:has-text("New"), button:has-text("Create")')
-    await page.waitForTimeout(1000)
-
-    // Navigate to materials step and check for warnings
-    // Look for "Low Inventory" or "Insufficient" warnings
-    // Note: This test skeleton verifies the warning appears when selecting materials
-    // that exceed available inventory. The exact assertion depends on UI implementation.
-
-    // When a model is selected that uses more material than available,
-    // the UI should display a warning. This may appear as:
-    // - A "Low Inventory" badge on material suggestions
-    // - An "Insufficient" warning message
-    // - A red/destructive styled card
-
-    // Verify the page loads and we can navigate through the wizard
-    const wizardStep = page.locator('text=/step|basic info/i')
-    await expect(wizardStep).toBeVisible({ timeout: 5000 })
+  test.beforeEach(async () => {
+    test.skip(!(await isBackendAvailable()), 'Backend API not running')
   })
 
-  test.afterEach(async ({ page }) => {
-    // Cleanup: Delete created resources
-    // Note: In production, would delete in reverse order (run, model, spool)
-    if (runId) {
-      try {
-        await page.goto(`/production-runs/${runId}`)
-        const deleteButton = page.locator('button:has-text("Delete")')
-        if (await deleteButton.isVisible({ timeout: 2000 })) {
-          await deleteButton.click()
-          const confirmButton = page.locator('button:has-text("Confirm")')
-          if (await confirmButton.isVisible({ timeout: 2000 })) {
-            await confirmButton.click()
-          }
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
+  // Regression: .specify/bugs/complete-run-timezone-500 (the "Started" field
+  // mixed UTC and local time, which gave a negative duration and a 500)
+  test('completes a run that has no estimated print time', async ({ page }) => {
+    const api = await apiAs(page)
+    const spoolId = await createTestSpool(api, TEST_SPOOL)
+    await createTestModel(api, spoolId, TEST_MODEL.materialWeightPerItem)
 
-    if (modelId) {
-      try {
-        await page.goto(`/models/${modelId}`)
-        const deleteButton = page.locator('button:has-text("Delete")')
-        if (await deleteButton.isVisible({ timeout: 2000 })) {
-          await deleteButton.click()
-          const confirmButton = page.locator('button:has-text("Confirm")')
-          if (await confirmButton.isVisible({ timeout: 2000 })) {
-            await confirmButton.click()
-          }
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
+    // No print time entered: the completion dialog leaves the duration blank
+    await createAndCompleteProductionRun(page, TEST_MODEL.sku, 1)
 
-    if (spoolId) {
-      try {
-        await page.goto('/inventory')
-        const spoolRow = page.locator('table').locator('tr', { hasText: TEST_SPOOL.brand })
-        if (await spoolRow.isVisible({ timeout: 2000 })) {
-          const deleteButton = spoolRow.locator('button').last()
-          await deleteButton.click()
-          const confirmButton = page.locator('button:has-text("Confirm")')
-          if (await confirmButton.isVisible({ timeout: 2000 })) {
-            await confirmButton.click()
-          }
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
+    expect(await getSpoolWeight(api, spoolId)).toBeCloseTo(
+      TEST_SPOOL.currentWeight - TEST_MODEL.materialWeightPerItem,
+      1
+    )
   })
 })

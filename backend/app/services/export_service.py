@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, date
 from decimal import Decimal
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,8 @@ from sqlalchemy.orm import selectinload
 from app.models.order import Order, OrderStatus
 from app.models.product import Product
 from app.models.tenant import Tenant
+from app.services.refund_actuals import recorded_refund_totals
+from app.services.temporal_pricing import current_price, platform_price
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +44,16 @@ class ExportService:
     # Product Export (Shopify Product CSV Format)
     # ============================================
 
-    async def export_products_csv(self) -> str:
+    async def export_products_csv(self, channel_id: Optional[UUID] = None) -> str:
         """
         Export all products in Shopify CSV format.
+
+        The price is the one in force today at one unit, on ``channel_id`` when
+        given and otherwise on the tenant's Shopify channel; a product unpriced
+        there exports a blank price rather than another channel's, a superseded
+        one or a quantity tier (task T274, FR-039, research D6). "Cost per item"
+        is left blank: a cost belongs to the engine, never a figure typed beside
+        it (FR-048).
 
         Returns:
             CSV string ready for Shopify import
@@ -96,7 +106,7 @@ class ExportService:
             select(Product)
             .where(Product.tenant_id == self.tenant.id)
             .options(
-                selectinload(Product.pricing),
+                selectinload(Product.current_pricing),
                 selectinload(Product.images),
                 selectinload(Product.categories),
                 selectinload(Product.variants),
@@ -109,10 +119,11 @@ class ExportService:
             # Generate handle from SKU or name
             handle = self._generate_handle(product.sku or product.name)
 
-            # Get base price from first pricing entry
-            base_price = Decimal("0")
-            if product.pricing:
-                base_price = product.pricing[0].list_price or Decimal("0")
+            base_price = (
+                current_price(product, channel_id)
+                if channel_id is not None
+                else platform_price(product, "shopify")
+            )
 
             # Get primary image
             image_src = ""
@@ -173,7 +184,11 @@ class ExportService:
             if active_variants:
                 # Product has size variants — emit one row per variant
                 for i, variant in enumerate(active_variants):
-                    variant_price = base_price + Decimal(variant.price_adjustment_pence) / 100
+                    variant_price = (
+                        base_price + Decimal(variant.price_adjustment_pence) / 100
+                        if base_price is not None
+                        else None
+                    )
                     # Shopify inventory policy: deny if stock, continue if PTO
                     inventory_policy = "deny" if variant.fulfilment_type == "stock" else "continue"
                     row = {
@@ -190,17 +205,13 @@ class ExportService:
                         "Variant Inventory Qty": str(variant.units_in_stock or 0),
                         "Variant Inventory Policy": inventory_policy,
                         "Variant Fulfillment Service": "manual",
-                        "Variant Price": str(variant_price),
+                        "Variant Price": "" if variant_price is None else str(variant_price),
                         "Variant Compare At Price": "",
                         "Variant Requires Shipping": "TRUE",
                         "Variant Taxable": "TRUE",
                         "Variant Barcode": "",
                         "Variant Image": "",
-                        "Cost per item": (
-                            str(Decimal(variant.material_cost_pence) / 100)
-                            if variant.material_cost_pence
-                            else ""
-                        ),
+                        "Cost per item": "",
                     }
                     # Only include product-level fields (title, images) on first row
                     if i == 0:
@@ -230,7 +241,7 @@ class ExportService:
                     "Variant Inventory Qty": str(product.units_in_stock or 0),
                     "Variant Inventory Policy": "deny",
                     "Variant Fulfillment Service": "manual",
-                    "Variant Price": str(base_price),
+                    "Variant Price": "" if base_price is None else str(base_price),
                     "Variant Compare At Price": "",
                     "Variant Requires Shipping": "TRUE",
                     "Variant Taxable": "TRUE",
@@ -432,6 +443,10 @@ class ExportService:
         result = await self.db.execute(query)
         orders = result.scalars().all()
 
+        # What was actually refunded, per order, from the rows that record it
+        # (T189). An order absent from this mapping had no refund recorded.
+        refunds = await recorded_refund_totals(self.db, self.tenant, [o.id for o in orders])
+
         for order in orders:
             # Map our status to Shopify financial status
             financial_status = self._map_financial_status(order.status, order.payment_status)
@@ -451,8 +466,19 @@ class ExportService:
                     order.updated_at.strftime("%Y-%m-%d %H:%M:%S %z") if order.updated_at else ""
                 )
 
-            # Calculate taxes (assuming 20% VAT included in price)
-            taxes = Decimal("0")  # We include VAT in prices
+            # The sales tax this order actually collected, as recorded on the
+            # order itself. It used to be hardcoded to zero under the comment
+            # "we include VAT in prices", which told the operator's accountant
+            # that no tax was taken -- and contradicted its own premise, since
+            # a tax-inclusive price is exactly the case FR-028e requires the
+            # derived exclusive figure to be made visible for.
+            taxes = order.sales_tax_collected
+
+            # What was recorded as refunded, not the order total. A partial
+            # refund sets OrderStatus.REFUNDED just as a full one does, so
+            # substituting the total exported an £80 refund for a £5 one
+            # (FR-040, FR-048).
+            refunded = refunds.get(order.id)
 
             # Write a row for each line item
             for idx, item in enumerate(order.items):
@@ -514,8 +540,8 @@ class ExportService:
                     "Cancelled at": cancelled_at if is_first_item else "",
                     "Payment Method": order.payment_provider if is_first_item else "",
                     "Payment Reference": order.payment_id or "" if is_first_item else "",
-                    "Refunded Amount": str(order.total)
-                    if is_first_item and order.status == OrderStatus.REFUNDED
+                    "Refunded Amount": str(refunded)
+                    if is_first_item and refunded is not None
                     else "",
                     "Vendor": "Mystmereforge",
                     "Id": str(order.id) if is_first_item else "",
@@ -561,7 +587,15 @@ class ExportService:
             "Subtotal",
             "Shipping",
             "Discount",
+            # The tax the order collected, which this format carried no column
+            # for at all -- the one export an operator hands their accountant
+            # was silent about the figure `reconciliation` already reports as a
+            # liability where the operator remits it (FR-028a, FR-028d).
+            "Tax",
             "Total",
+            # What was recorded as refunded against this order, blank where
+            # nothing was recorded (FR-040).
+            "Refunded Amount",
             "Payment Status",
             "Payment Method",
             "Payment Reference",
@@ -601,8 +635,11 @@ class ExportService:
         result = await self.db.execute(query)
         orders = result.scalars().all()
 
+        refunds = await recorded_refund_totals(self.db, self.tenant, [o.id for o in orders])
+
         for order in orders:
             order_date = order.created_at.strftime("%Y-%m-%d") if order.created_at else ""
+            refunded = refunds.get(order.id)
 
             for idx, item in enumerate(order.items):
                 is_first_item = idx == 0
@@ -619,7 +656,11 @@ class ExportService:
                     "Subtotal": str(order.subtotal) if is_first_item else "",
                     "Shipping": str(order.shipping_cost) if is_first_item else "",
                     "Discount": str(order.discount_amount) if is_first_item else "",
+                    "Tax": str(order.sales_tax_collected) if is_first_item else "",
                     "Total": str(order.total) if is_first_item else "",
+                    "Refunded Amount": str(refunded)
+                    if is_first_item and refunded is not None
+                    else "",
                     "Payment Status": order.payment_status if is_first_item else "",
                     "Payment Method": order.payment_provider if is_first_item else "",
                     "Payment Reference": order.payment_id or "" if is_first_item else "",

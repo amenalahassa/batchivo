@@ -24,9 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.shop_resolver import resolve_tenant_by_slug
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, scope_session_to_tenant
+from app.services.channel_economics import ensure_economics_row
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.sales_channel import SalesChannel
+from app.services.sale_snapshot import write_sale_snapshot
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -110,6 +112,19 @@ def _extract_order_data(payload: dict) -> dict:
     total = Decimal(str(payload.get("total_price") or "0"))
     currency = payload.get("currency") or "GBP"
 
+    # Tax (task T230, FR-028a/c/e). Shopify reports what it collected in
+    # `total_tax`, and `taxes_included` says whether the prices above already
+    # contain it. Where they do, the tax comes out here so revenue is stored
+    # tax-exclusive like every other source's, and the order is marked so the
+    # derivation stays visible. Absent `total_tax`, the tax is unrecorded.
+    raw_tax = payload.get("total_tax")
+    sales_tax = Decimal(str(raw_tax)) if raw_tax not in (None, "") else None
+    taxes_included = bool(payload.get("taxes_included"))
+    shipping_tax = shipping_tax_of(shipping_lines)
+    if taxes_included and sales_tax:
+        subtotal -= sales_tax - shipping_tax
+        shipping_cost -= shipping_tax
+
     # Discount
     discount_codes = payload.get("discount_codes") or []
     discount_code = discount_codes[0].get("code") if discount_codes else None
@@ -142,6 +157,10 @@ def _extract_order_data(payload: dict) -> dict:
         "subtotal": subtotal,
         "total": total,
         "currency": currency,
+        "sales_tax_collected": sales_tax,
+        "tax_exclusive_derived": bool(taxes_included and sales_tax),
+        # Shopify does not know what the label cost; recorded when it is bought.
+        "postage_paid": None,
         "discount_code": discount_code,
         "discount_amount": discount_amount,
         "payment_provider": payment_gateway,
@@ -150,8 +169,34 @@ def _extract_order_data(payload: dict) -> dict:
     }
 
 
-async def _get_or_create_shopify_channel(db: AsyncSession, tenant_id, slug: str) -> Optional[str]:
-    """Return the Shopify sales channel ID for the tenant, creating if needed."""
+def shipping_tax_of(shipping_lines: list) -> Decimal:
+    """The tax Shopify charged on shipping, summed across its shipping lines."""
+    return sum(
+        (
+            Decimal(str(tax.get("price") or "0"))
+            for line in shipping_lines
+            for tax in (line.get("tax_lines") or [])
+        ),
+        Decimal("0"),
+    )
+
+
+def line_tax_of(item: dict) -> Decimal:
+    """The tax Shopify charged on one line item, across its tax lines."""
+    return sum(
+        (Decimal(str(tax.get("price") or "0")) for tax in (item.get("tax_lines") or [])),
+        Decimal("0"),
+    )
+
+
+async def _get_or_create_shopify_channel(db: AsyncSession, tenant, slug: str) -> Optional[str]:
+    """Return the Shopify sales channel ID for the tenant, creating if needed.
+
+    A channel created here gets its first economics period at once, as the
+    console's create path does, so its levers have a date and the
+    legacy-column fallback stays unreachable (task T216).
+    """
+    tenant_id = tenant.id
     result = await db.execute(
         select(SalesChannel).where(
             SalesChannel.tenant_id == tenant_id,
@@ -172,6 +217,7 @@ async def _get_or_create_shopify_channel(db: AsyncSession, tenant_id, slug: str)
     )
     db.add(channel)
     await db.flush()
+    await ensure_economics_row(db, tenant, channel)
     return channel.id
 
 
@@ -208,10 +254,29 @@ async def shopify_webhook(
         logger.warning("shopify_webhook_secret not set — skipping HMAC validation")
 
     # Resolve tenant
+    #
+    # This lookup is itself cross-tenant -- it searches `tenants` by slug -- so
+    # it runs before the session is scoped, exactly as `get_shop_tenant` does
+    # for the storefront.
     tenant = await resolve_tenant_by_slug(db, tenant_slug)
     if not tenant:
         logger.warning(f"Shopify webhook received for unknown tenant slug: {tenant_slug}")
         raise HTTPException(status_code=404, detail="Tenant not found")
+
+    # Engage row-level security, now that there is a tenant to engage it for
+    # (task T184, Constitution I).
+    #
+    # This handler creates the order, its line items and the FR-036 sale
+    # snapshot carrying `make_cost_at_sale`, `cost_breakdown_json`, `fees_json`
+    # and `fx_rate` -- every one of them written on a session with no
+    # `app.current_tenant_id` set, which left application-level filtering as
+    # the only belt on the path that records what a sale earned.
+    #
+    # A request-time dependency cannot do this: a webhook carries no JWT for
+    # `get_tenant_db` and no `X-Shop-Hostname` for `get_shop_db`, and the
+    # tenant is only known here, from the path segment. `SET LOCAL` is
+    # transaction-scoped and every write below shares this transaction.
+    await scope_session_to_tenant(db, tenant.id)
 
     if topic not in ("orders/create", "orders/updated"):
         logger.info(f"Ignoring Shopify topic: {topic}")
@@ -271,7 +336,7 @@ async def shopify_webhook(
             f"orders/updated received for unseen Shopify order {shopify_order_id} — creating"
         )
 
-    sales_channel_id = await _get_or_create_shopify_channel(db, tenant.id, tenant_slug)
+    sales_channel_id = await _get_or_create_shopify_channel(db, tenant, tenant_slug)
 
     order = Order(
         tenant_id=tenant.id,
@@ -287,15 +352,37 @@ async def shopify_webhook(
     for item in line_items:
         unit_price = Decimal(str(item.get("price") or "0"))
         qty = int(item.get("quantity") or 1)
+        total_price = unit_price * qty
+        if data.get("tax_exclusive_derived"):
+            # The line's own tax comes out of the line, so the totals the
+            # margin and the fee allocation weigh are tax-exclusive (FR-028a).
+            total_price -= line_tax_of(item)
+            unit_price = total_price / qty
         order_item = OrderItem(
             tenant_id=tenant.id,
             product_sku=item.get("sku") or item.get("variant_title") or "UNKNOWN",
             product_name=item.get("title") or "Unknown Product",
             quantity=qty,
             unit_price=unit_price,
-            total_price=unit_price * qty,
+            total_price=total_price,
         )
         order.items.append(order_item)
+
+    # Freeze what each line earned, as it stands (task T096, FR-036).
+    #
+    # A Shopify line carries no product_id -- it is matched by SKU and often
+    # not matched at all -- so most of these snapshots will be partial. That is
+    # the correct outcome and the reason the columns are nullable: an imported
+    # order whose product is unknown has an unknown cost, which must read as
+    # unknown rather than as zero (FR-019). The fees, the price and the rate
+    # are still frozen, which is what the margin needs.
+    await db.flush()
+    snapshot = await write_sale_snapshot(db, tenant, order)
+    if snapshot.incomplete:
+        logger.info(
+            f"Shopify order {batchivo_order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
+        )
 
     await db.commit()
     logger.info(

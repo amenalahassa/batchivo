@@ -8,6 +8,8 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.rls import set_rls_context
+from app.services.pricing_policy import seed_policy_row
 from app.auth.password import get_password_hash
 from app.core.security import create_access_token, create_refresh_token
 from app.models.email_verification import (
@@ -23,6 +25,7 @@ from app.schemas.onboarding import (
 )
 from app.schemas.tenant_settings import TenantSettings
 from app.services.email_service import get_email_service
+from app.services.onboarding_wizard import new_wizard_progress
 from app.services.tenant_module_service import TenantModuleService
 
 logger = logging.getLogger(__name__)
@@ -194,15 +197,22 @@ class OnboardingService:
             name=reg_data["business_name"],
             slug=reg_data["slug"],
             tenant_type=tenant_type.value,
-            settings=default_settings.model_dump(),
+            # A new tenant starts the setup wizard; one without this key predates it.
+            settings={**default_settings.model_dump(), "onboarding": new_wizard_progress()},
             is_active=True,
         )
         self.db.add(tenant)
         await self.db.flush()  # Get tenant.id
+        # Modules, the policy row and the membership are tenant rows: scope first.
+        await set_rls_context(self.db, tenant_id=tenant.id)
 
         # Initialize default modules for tenant based on tenant_type
         module_service = TenantModuleService(db=self.db)
         await module_service.initialize_tenant_modules(tenant.id)
+
+        # A dated, assumed policy row, so nothing is costed from a policy that
+        # exists nowhere (task T219).
+        await seed_policy_row(self.db, tenant)
 
         # Create user
         user = User(
@@ -311,6 +321,13 @@ class OnboardingService:
 
         logger.info(f"Verification email resent to {email}")
         return True
+
+    async def get_pending_verification_token(self, email: str) -> Optional[str]:
+        """Return the pending (unused, unexpired) verification token for an email, if any."""
+        token = await self._get_pending_token(email)
+        if token is None or not token.is_valid:
+            return None
+        return token.token
 
     async def _get_user_by_email(self, email: str) -> Optional[User]:
         """Get user by email address."""

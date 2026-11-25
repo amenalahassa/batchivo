@@ -4,6 +4,14 @@
  * Form for creating and editing models (printed items) with validation.
  */
 
+import {
+  filamentLabel,
+  formatPrintTime,
+  itemsHint,
+  parseItems,
+  runFigures,
+  type WeightSuggestion,
+} from './threeMfFigures'
 import { useState, useMemo, useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -12,9 +20,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Loader2, RefreshCw } from 'lucide-react'
 
-import { createModel, updateModel, listModels, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest } from '@/lib/api/models'
+import { createModel, updateModel, listModels, parse3mfFile, uploadModelFile, inferModelFileType, type ModelDetail, type ModelCreateRequest, type ModelUpdateRequest, type ThreeMFParseResponse } from '@/lib/api/models'
 import { listDesigners } from '@/lib/api/designers'
 import { useNextSKU } from '@/hooks/useSKU'
+import { useModelCostProfile } from '@/hooks/usePricing'
+import { ProvenanceBadge } from '@/components/pricing/ProvenanceBadge'
 
 // Predefined options for Source and Machine
 const PREDEFINED_SOURCES = [
@@ -52,6 +62,9 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
+import { AlertCircle, FileCheck2 } from 'lucide-react'
+
 
 const modelFormSchema = z.object({
   sku: z.string().min(1, 'SKU is required').max(100, 'SKU must be 100 characters or less'),
@@ -79,9 +92,48 @@ interface ModelFormProps {
   mode: 'create' | 'edit'
 }
 
+/**
+ * The Select's items, plus the field's current value when it is not one of
+ * them: a value typed after "+ Add new …" (or a designer no longer active).
+ * Without its item, Radix Select resets the value to '' and the save drops it.
+ */
+function withCurrentValue(
+  options: string[],
+  value: string | null | undefined,
+  typed: string
+): string[] {
+  // While "+ Add new" is open the item for the typed name is offered already,
+  // so it exists before the blur sets the field to it.
+  const current = value === '__custom__' ? typed.trim() : value
+  if (!current || options.includes(current)) return options
+  return [...options, current]
+}
+
 export function ModelForm({ model, mode }: ModelFormProps) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+
+  // Where the print time and batch size came from. Telemetry makes a print
+  // time observed, and an observed figure is refreshed from its source and
+  // never typed over (FR-004): the server refuses the save with 409, so the
+  // field is locked rather than offered (T262).
+  const { profile: costProfile } = useModelCostProfile(mode === 'edit' ? model?.id : undefined)
+  const originOf = (fieldName: string) =>
+    costProfile?.origins.find((entry) => entry.field_name === fieldName)
+  const isObserved = (fieldName: string) => originOf(fieldName)?.editable === false
+  const printTimeLocked = isObserved('print_time_minutes')
+  const printsPerPlateLocked = isObserved('prints_per_plate')
+  const originBadge = (fieldName: string) => {
+    const origin = originOf(fieldName)
+    return origin ? (
+      <ProvenanceBadge
+        source={origin.source}
+        asOf={origin.as_of}
+        isStale={origin.is_stale}
+        isDefault={!origin.as_of}
+      />
+    ) : null
+  }
 
   // Auto-generate SKU for new models
   const { nextSKU, isLoading: isLoadingSKU, refetch: refetchSKU } = useNextSKU('MOD', mode === 'create')
@@ -90,6 +142,28 @@ export function ModelForm({ model, mode }: ModelFormProps) {
   const [customDesigner, setCustomDesigner] = useState('')
   const [customSource, setCustomSource] = useState('')
   const [customMachine, setCustomMachine] = useState('')
+
+  // 3MF import auto-fill state (create and edit, spec 004 FR-005)
+  const [isParsing3mf, setIsParsing3mf] = useState(false)
+  // Keep the auto-fill file as a model file instead of discarding it (FR-005).
+  const [keepThreeMfFile, setKeepThreeMfFile] = useState(true)
+  // A measurable source file (.stl or project .3mf), uploaded after save (FR-001).
+  const [sourceFiles, setSourceFiles] = useState<File[]>([])
+  const [isAttaching, setIsAttaching] = useState(false)
+  const [parse3mfError, setParse3mfError] = useState<string | null>(null)
+  const [parsedWeight, setParsedWeight] = useState<WeightSuggestion | null>(null)
+  // How many finished items the chosen plates make; defaults to their object count.
+  const [itemsText, setItemsText] = useState('')
+  const [uploadedThreeMfFile, setUploadedThreeMfFile] = useState<File | null>(null)
+  const [threeMfResult, setThreeMfResult] = useState<ThreeMFParseResponse | null>(null)
+  const [threeMfApplied, setThreeMfApplied] = useState(false)
+  const [applySelection, setApplySelection] = useState({
+    printTime: true,
+    items: true,
+    weight: true,
+  })
+  // Which plates (by 1-based index) are included when combining a multi-plate file.
+  const [selectedPlateIndices, setSelectedPlateIndices] = useState<Set<number>>(new Set())
 
   // Fetch existing models to get unique values for sources/machines
   const { data: modelsData } = useQuery({
@@ -160,16 +234,139 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     mutationFn: (data: ModelCreateRequest) => createModel(data),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['models'] })
-      navigate({ to: '/models/$modelId', params: { modelId: data.id } })
+      if (parsedWeight != null) {
+        try {
+          // Carried client-side only (research.md §5) - BOMEditor reads and
+          // clears this the first time it opens for this model.
+          sessionStorage.setItem(`model-weight-suggestion:${data.id}`, JSON.stringify(parsedWeight))
+        } catch {
+          // sessionStorage unavailable (private browsing, etc.) - the
+          // suggestion is a convenience, not critical, so just skip it.
+        }
+      }
+      void attachFilesThenOpen(data.id)
     },
   })
+
+  /**
+   * Upload the chosen files to the saved model, then open it (FR-001, FR-005).
+   *
+   * They join the model's active version (the first upload of a new model
+   * makes version 1). A failed upload does not undo the save: the model page
+   * opens and the operator can upload again from its files card.
+   */
+  const filesToAttach = (): File[] => {
+    const out: File[] = []
+    out.push(...sourceFiles)
+    if (uploadedThreeMfFile && keepThreeMfFile && !sourceFiles.includes(uploadedThreeMfFile)) {
+      out.push(uploadedThreeMfFile)
+    }
+    return out
+  }
+
+  const attachFilesThenOpen = async (modelId: string) => {
+    const files = filesToAttach()
+    if (files.length > 0) {
+      setIsAttaching(true)
+      // One after another: the first upload of a new model makes its version 1,
+      // and two at once would both try to (uq_model_file_versions_model_sequence).
+      const failed: unknown[] = []
+      for (const file of files) {
+        try {
+          await uploadModelFile(modelId, file, inferModelFileType(file.name) ?? 'source_3mf')
+        } catch (err) {
+          failed.push(err)
+        }
+      }
+      if (failed.length > 0) {
+        console.error('Failed to attach files to the model:', failed)
+      }
+      queryClient.invalidateQueries({ queryKey: ['model-files', modelId] })
+      queryClient.invalidateQueries({ queryKey: ['model-file-versions', modelId] })
+      queryClient.invalidateQueries({ queryKey: ['model', modelId] })
+      setIsAttaching(false)
+    }
+    navigate({ to: '/models/$modelId', params: { modelId } })
+  }
+
+  const slicedSources = sourceFiles.filter((f) => inferModelFileType(f.name) === 'gcode')
+
+  const hasThreeMfPrefillData = (result: ThreeMFParseResponse) =>
+    result.print_time_minutes != null || result.plate_count != null || result.filament_weight_grams != null
+
+  const hasMultiplePlates = (result: ThreeMFParseResponse) => result.plates.length > 1
+
+  // The chosen plates form one print run (spec 004, T066): time and weight
+  // are their sums, and the run makes as many items as the plates print
+  // objects -- never the plate count. The maker confirms the item count.
+  const getEffectiveThreeMfValues = (result: ThreeMFParseResponse, selected: Set<number>) =>
+    runFigures(result, selected)
+
+  const handle3mfUpload = async (file: File) => {
+    setIsParsing3mf(true)
+    setParse3mfError(null)
+    setThreeMfResult(null)
+    setThreeMfApplied(false)
+    setParsedWeight(null)
+    try {
+      const result = await parse3mfFile(file)
+      const all = new Set(result.plates.map((p) => p.index))
+      setThreeMfResult(result)
+      setApplySelection({ printTime: true, items: true, weight: true })
+      setSelectedPlateIndices(all)
+      setItemsText(String(runFigures(result, all).itemCount ?? ''))
+    } catch (err) {
+      setParse3mfError(err instanceof Error ? err.message : 'Failed to parse 3MF file')
+    } finally {
+      setIsParsing3mf(false)
+    }
+  }
+
+  const togglePlateSelected = (index: number) => {
+    const next = new Set(selectedPlateIndices)
+    if (next.has(index)) {
+      next.delete(index)
+    } else {
+      next.add(index)
+    }
+    setSelectedPlateIndices(next)
+    // The default follows the selection; the maker can still change it.
+    if (threeMfResult) setItemsText(String(runFigures(threeMfResult, next).itemCount ?? ''))
+  }
+
+  const applyThreeMfResult = () => {
+    if (!threeMfResult) return
+    const dirtyFields = form.formState.dirtyFields
+    const effective = getEffectiveThreeMfValues(threeMfResult, selectedPlateIndices)
+
+    if (
+      applySelection.printTime &&
+      effective.printTimeMinutes != null &&
+      !dirtyFields.print_time_hours &&
+      !dirtyFields.print_time_minutes
+    ) {
+      form.setValue('print_time_hours', Math.floor(effective.printTimeMinutes / 60).toString())
+      form.setValue('print_time_minutes', (effective.printTimeMinutes % 60).toString())
+    }
+
+    const items = parseItems(itemsText)
+    if (applySelection.items && items != null && !dirtyFields.prints_per_plate) {
+      form.setValue('prints_per_plate', items.toString())
+    }
+
+    if (applySelection.weight && effective.weightGrams != null) {
+      setParsedWeight({ total: effective.weightGrams, filaments: effective.filaments })
+    }
+
+    setThreeMfApplied(true)
+  }
 
   const updateMutation = useMutation({
     mutationFn: (data: ModelUpdateRequest) => updateModel(model!.id, data),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['models'] })
       queryClient.invalidateQueries({ queryKey: ['model', model!.id] })
-      navigate({ to: '/models/$modelId', params: { modelId: data.id } })
+      void attachFilesThenOpen(data.id)
     },
   })
 
@@ -190,10 +387,13 @@ export function ModelForm({ model, mode }: ModelFormProps) {
       overhead_percentage: values.overhead_percentage || '0',
       designer: finalDesigner || undefined,
       source: finalSource || undefined,
-      print_time_minutes: (print_time_hours || print_time_minutes)
+      // A locked figure is not sent: it is the observed one, unchanged.
+      print_time_minutes: !printTimeLocked && (print_time_hours || print_time_minutes)
         ? (parseInt(print_time_hours || '0') * 60) + parseInt(print_time_minutes || '0')
         : undefined,
-      prints_per_plate: prints_per_plate ? parseInt(prints_per_plate) : 1,
+      prints_per_plate: printsPerPlateLocked
+        ? undefined
+        : prints_per_plate ? parseInt(prints_per_plate) : 1,
       machine: finalMachine || undefined,
       last_printed_date: values.last_printed_date || undefined,
       units_in_stock: values.units_in_stock ? parseInt(values.units_in_stock) : 0,
@@ -206,7 +406,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
     }
   }
 
-  const isPending = createMutation.isPending || updateMutation.isPending
+  const isPending = createMutation.isPending || updateMutation.isPending || isAttaching
 
   return (
     <Form {...form}>
@@ -340,7 +540,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueDesigners.map((designer) => (
+                      {withCurrentValue(uniqueDesigners, field.value, customDesigner).map((designer) => (
                         <SelectItem key={designer} value={designer}>
                           {designer}
                         </SelectItem>
@@ -391,7 +591,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueSources.map((source) => (
+                      {withCurrentValue(uniqueSources, field.value, customSource).map((source) => (
                         <SelectItem key={source} value={source}>
                           {source}
                         </SelectItem>
@@ -420,15 +620,242 @@ export function ModelForm({ model, mode }: ModelFormProps) {
             />
           </div>
 
+          <div className="rounded-md border border-dashed p-4 space-y-2">
+            <label htmlFor="model-source-file" className="text-sm font-medium">
+              Model files (.stl, project .3mf, .gcode, .gcode.3mf)
+            </label>
+            <Input
+              id="model-source-file"
+              type="file"
+              multiple
+              accept=".stl,.3mf,.gcode"
+              onChange={(e) => {
+                setSourceFiles(Array.from(e.target.files ?? []))
+              }}
+            />
+            <p className="text-sm text-muted-foreground">
+              Kept on the model and measured for its dimensions, uploaded when you{' '}
+              {mode === 'create' ? 'create the model' : 'save'}. Dimensions you entered are never
+              overwritten; a measurement is offered for you to adopt.
+            </p>
+            {slicedSources.length > 0 && slicedSources.length === sourceFiles.length && (
+              <p className="text-sm text-amber-600 flex items-start gap-1" role="status">
+                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>
+                  &quot;{slicedSources[0].name}&quot; is a sliced plate. It holds the print, not the
+                  part&apos;s shape, so it can&apos;t be measured. Choose the project .3mf (Bambu
+                  Studio: File → Save project) or the .stl to get dimensions; the sliced file will be
+                  kept as the print file.
+                </span>
+              </p>
+            )}
+          </div>
+
+            <div className="rounded-md border border-dashed p-4 space-y-2">
+              <label htmlFor="model-3mf-upload" className="text-sm font-medium">
+                Auto-fill from .3mf file (optional)
+              </label>
+              <Input
+                id="model-3mf-upload"
+                type="file"
+                accept=".3mf"
+                disabled={isParsing3mf}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) {
+                    // Captured regardless of parse outcome (FR-006) so it
+                    // can still be attached to the model after creation.
+                    setUploadedThreeMfFile(file)
+                    void handle3mfUpload(file)
+                  }
+                  e.target.value = ''
+                }}
+              />
+              <p className="text-sm text-muted-foreground">
+                Parses the slicer's embedded print time, plate count, and filament weight. After
+                parsing, you choose which values to apply to the form below.
+              </p>
+              {uploadedThreeMfFile && (
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={keepThreeMfFile}
+                    onCheckedChange={(checked) => setKeepThreeMfFile(checked === true)}
+                    aria-label="Keep this file on the model"
+                  />
+                  Keep this file on the model
+                </label>
+              )}
+              {isParsing3mf && (
+                <p className="text-sm text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Parsing file...
+                </p>
+              )}
+
+              {parse3mfError && (
+                <p className="text-sm text-destructive flex items-start gap-1">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>{parse3mfError}</span>
+                </p>
+              )}
+
+              {threeMfResult && !hasThreeMfPrefillData(threeMfResult) && (
+                <div className="rounded-md bg-muted p-3 text-sm space-y-1">
+                  <p className="font-medium flex items-center gap-1">
+                    <AlertCircle className="h-4 w-4 shrink-0" />
+                    No print data found in &quot;{uploadedThreeMfFile?.name}&quot;
+                  </p>
+                  <p className="text-muted-foreground">
+                    {threeMfResult.thumbnail_available
+                      ? 'A thumbnail was extracted, but no print time, plate count, or filament weight was found. '
+                      : 'Nothing could be extracted from this file. '}
+                    This usually means the file was exported directly from CAD software (e.g.
+                    Fusion 360) rather than sliced. To auto-fill these fields, open it in a
+                    slicer — Bambu Studio, OrcaSlicer, or PrusaSlicer — slice it, then upload the
+                    sliced .3mf here instead.
+                  </p>
+                </div>
+              )}
+
+              {threeMfResult && hasThreeMfPrefillData(threeMfResult) && (
+                <div className="rounded-md border p-3 space-y-3">
+                  <p className="text-sm font-medium flex items-center gap-1">
+                    <FileCheck2 className="h-4 w-4 shrink-0" />
+                    Found in &quot;{uploadedThreeMfFile?.name}&quot; — choose what to apply:
+                  </p>
+
+                  {hasMultiplePlates(threeMfResult) && (
+                    <div className="space-y-1.5 border-b pb-3">
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {threeMfResult.plates.length} plates found — select which to combine:
+                      </p>
+                      {threeMfResult.plates.map((plate) => (
+                        <label key={plate.index} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={selectedPlateIndices.has(plate.index)}
+                            disabled={threeMfApplied}
+                            onCheckedChange={() => togglePlateSelected(plate.index)}
+                          />
+                          Plate {plate.index}:{' '}
+                          {plate.print_time_minutes != null
+                            ? formatPrintTime(plate.print_time_minutes)
+                            : '—'}
+                          {plate.filament_weight_grams != null && ` · ${plate.filament_weight_grams}g`}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    {(() => {
+                      const effective = getEffectiveThreeMfValues(threeMfResult, selectedPlateIndices)
+                      const multi = hasMultiplePlates(threeMfResult)
+                      return (
+                        <>
+                          {effective.printTimeMinutes != null && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={applySelection.printTime}
+                                disabled={threeMfApplied}
+                                onCheckedChange={(checked) =>
+                                  setApplySelection((prev) => ({ ...prev, printTime: checked === true }))
+                                }
+                              />
+                              {multi ? 'Combined print' : 'Print'} time:{' '}
+                              {formatPrintTime(effective.printTimeMinutes)}
+                            </label>
+                          )}
+                          {effective.plateCount != null && (
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2 text-sm">
+                                <Checkbox
+                                  checked={applySelection.items}
+                                  disabled={threeMfApplied}
+                                  aria-label="Apply items per run"
+                                  onCheckedChange={(checked) =>
+                                    setApplySelection((prev) => ({ ...prev, items: checked === true }))
+                                  }
+                                />
+                                <label htmlFor="threemf-items">
+                                  How many finished items{' '}
+                                  {effective.plateCount > 1 ? 'do these plates' : 'does this plate'} make?
+                                </label>
+                                <Input
+                                  id="threemf-items"
+                                  type="number"
+                                  min={1}
+                                  step={1}
+                                  inputMode="numeric"
+                                  className="h-8 w-20"
+                                  value={itemsText}
+                                  disabled={threeMfApplied || !applySelection.items}
+                                  onChange={(e) => setItemsText(e.target.value)}
+                                />
+                              </div>
+                              <p className="text-xs text-muted-foreground pl-6">
+                                {itemsHint(effective, itemsText)}
+                              </p>
+                            </div>
+                          )}
+                          {effective.weightGrams != null && (
+                            <label className="flex items-center gap-2 text-sm">
+                              <Checkbox
+                                checked={applySelection.weight}
+                                disabled={threeMfApplied}
+                                onCheckedChange={(checked) =>
+                                  setApplySelection((prev) => ({ ...prev, weight: checked === true }))
+                                }
+                              />
+                              {multi ? 'Combined filament' : 'Filament'} weight: {effective.weightGrams}g
+                              {effective.filaments.length > 1 &&
+                                ` (${effective.filaments
+                                  .map((f) => `${filamentLabel(f)} ${f.grams}g`)
+                                  .join(', ')})`}
+                              {' '}(suggested on the next step, after saving)
+                            </label>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
+                  {threeMfApplied ? (
+                    <p className="text-sm text-muted-foreground">Applied to the form below.</p>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={applyThreeMfResult}
+                      disabled={
+                        (hasMultiplePlates(threeMfResult) && selectedPlateIndices.size === 0) ||
+                        (applySelection.items && itemsText.trim() !== '' && parseItems(itemsText) == null)
+                      }
+                    >
+                      Apply to form
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+
           <div className="grid gap-4 md:grid-cols-5">
             <FormField
               control={form.control}
               name="print_time_hours"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Plate Print Time</FormLabel>
+                  <FormLabel>
+                    <span className="flex items-center gap-2">
+                      <span>Plate Print Time</span>
+                      {originBadge('print_time_minutes')}
+                    </span>
+                  </FormLabel>
                   <FormControl>
-                    <Input type="number" min="0" placeholder="0" {...field} />
+                    <Input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      disabled={printTimeLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Hours</FormDescription>
                   <FormMessage />
@@ -443,7 +870,15 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                 <FormItem>
                   <FormLabel>&nbsp;</FormLabel>
                   <FormControl>
-                    <Input type="number" min="0" max="59" placeholder="0" {...field} />
+                    <Input
+                      type="number"
+                      min="0"
+                      max="59"
+                      placeholder="0"
+                      aria-label="Plate print time minutes"
+                      disabled={printTimeLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Minutes</FormDescription>
                   <FormMessage />
@@ -456,9 +891,20 @@ export function ModelForm({ model, mode }: ModelFormProps) {
               name="prints_per_plate"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Items per Plate</FormLabel>
+                  <FormLabel>
+                    <span className="flex items-center gap-2">
+                      <span>Items per Plate</span>
+                      {originBadge('prints_per_plate')}
+                    </span>
+                  </FormLabel>
                   <FormControl>
-                    <Input type="number" min="1" placeholder="1" {...field} />
+                    <Input
+                      type="number"
+                      min="1"
+                      placeholder="1"
+                      disabled={printsPerPlateLocked}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>Batch size</FormDescription>
                   <FormMessage />
@@ -489,7 +935,7 @@ export function ModelForm({ model, mode }: ModelFormProps) {
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      {uniqueMachines.map((machine) => (
+                      {withCurrentValue(uniqueMachines, field.value, customMachine).map((machine) => (
                         <SelectItem key={machine} value={machine}>
                           {machine}
                         </SelectItem>

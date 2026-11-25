@@ -17,6 +17,7 @@ from uuid import UUID
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy import select
 
+from app.core.rls import set_rls_context
 from app.database import async_session_maker
 from app.models.printer import Printer
 from app.models.printer_connection import PrinterConnection, ConnectionType
@@ -97,6 +98,7 @@ async def _build_printer_live_states(tenant_id: UUID) -> list[dict]:
     states: list[dict] = []
 
     async with async_session_maker() as db:
+        await set_rls_context(db, tenant_id=tenant_id)
         # Fetch all active printers + their connections for this tenant
         result = await db.execute(
             select(Printer)

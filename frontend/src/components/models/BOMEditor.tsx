@@ -4,7 +4,8 @@
  * Editor for managing model Bill of Materials (filament materials).
  */
 
-import { useState } from 'react'
+import { useCurrency } from '@/hooks/useCurrency'
+import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
@@ -12,7 +13,14 @@ import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
 import { HelpCircle, Info, Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { addModelMaterial, removeModelMaterial, type ModelMaterial } from '@/lib/api/models'
+import {
+  filamentLabel,
+  readWeightSuggestion,
+  type RunFilament,
+} from '@/components/models/threeMfFigures'
 import { spoolsApi } from '@/lib/api/spools'
+import { formatMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -47,11 +55,19 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { spoolLabel } from '@/lib/spool'
 
 const materialFormSchema = z.object({
   spool_id: z.string().uuid('Must select a spool'),
   weight_grams: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Must be a valid number'),
-  cost_per_gram: z.string().regex(/^\d+(\.\d{1,4})?$/, 'Must be a valid number'),
+  // Empty costs the line at the spool's landed per-gram figure, which the
+  // server derives with the purchase's shipping and tax (T254). A figure here
+  // is an override the operator owns.
+  cost_per_gram: z
+    .string()
+    .regex(/^(\d+(\.\d{1,4})?)?$/, 'Must be a valid number'),
 })
 
 type MaterialFormValues = z.infer<typeof materialFormSchema>
@@ -62,7 +78,15 @@ interface BOMEditorProps {
 }
 
 export function BOMEditor({ modelId, materials }: BOMEditorProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
+  // A viewer sees the bill of materials with its controls disabled (T238).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const [dialogOpen, setDialogOpen] = useState(false)
+  // Grams per filament from the print file, when it uses several (spec 004, T066).
+  const [fileFilaments, setFileFilaments] = useState<RunFilament[]>([])
   const queryClient = useQueryClient()
 
   // Fetch available spools (backend limits to 100 per page)
@@ -80,12 +104,34 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
     },
   })
 
+  // Consume a 3MF-parsed weight suggestion stashed by ModelForm (research.md §5),
+  // if any, pre-filling weight_grams exactly once. Never pre-selects a spool.
+  useEffect(() => {
+    const key = `model-weight-suggestion:${modelId}`
+    try {
+      const stored = sessionStorage.getItem(key)
+      if (stored === null) return
+      sessionStorage.removeItem(key)
+      const suggestion = readWeightSuggestion(stored)
+      if (suggestion == null) return
+      if (suggestion.filaments.length > 1) {
+        // One line per filament: the total would be wrong on any one line.
+        setFileFilaments(suggestion.filaments)
+      } else if (!form.formState.dirtyFields.weight_grams) {
+        form.setValue('weight_grams', suggestion.total.toString())
+      }
+    } catch {
+      // sessionStorage unavailable - no suggestion, falls back to manual entry
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId])
+
   const addMutation = useMutation({
     mutationFn: (data: MaterialFormValues) =>
       addModelMaterial(modelId, {
         spool_id: data.spool_id,
         weight_grams: data.weight_grams,
-        cost_per_gram: data.cost_per_gram,
+        ...(data.cost_per_gram ? { cost_per_gram: data.cost_per_gram } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['model', modelId] })
@@ -101,38 +147,32 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
     },
   })
 
+  // The spool's landed figure, as the server derived it, shown as the
+  // placeholder so the operator sees what an empty override means.
+  const selectedSpool = spoolsData?.spools.find((s) => s.id === form.watch('spool_id'))
+  const selectedLandedHint = selectedSpool?.cost_per_gram ?? '0.0000'
+
   const onSubmit = (values: MaterialFormValues) => {
     addMutation.mutate(values)
   }
 
-  // When a spool is selected, auto-fill cost_per_gram from spool data
-  const handleSpoolSelect = (spoolId: string) => {
-    const spool = spoolsData?.spools.find((s) => s.id === spoolId)
-    if (spool) {
-      // Calculate cost per gram from spool
-      const purchasePrice = spool.purchase_price || 0
-      const initialWeight = spool.initial_weight || 0
-      if (initialWeight > 0) {
-        const costPerGram = (purchasePrice / initialWeight).toFixed(4)
-        form.setValue('cost_per_gram', costPerGram)
-      }
-    }
-  }
-
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(4)}`
-  }
+  // Four places, because a per-gram filament cost is fractions of a penny. It
+  // renders the decimal string the API sent and never becomes a double
+  // (Constitution IV, task T151).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currency.symbol, { places: 4 })
 
   return (
     <div className="space-y-4">
       {/* Info card explaining what to enter */}
       <Alert className="border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
         <Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-        <AlertTitle className="text-blue-800 dark:text-blue-200">Per-Unit Filament Only</AlertTitle>
+        <AlertTitle className="text-blue-800 dark:text-blue-200">Filament for one plate run</AlertTitle>
         <AlertDescription className="text-blue-700 dark:text-blue-300">
-          Enter the filament weight for <strong>one unit</strong> of this model.
-          Only include the model's filament - purge tower and flush waste are tracked separately when you create a production run.
+          Enter the grams of each filament for <strong>one plate run</strong>, all its items
+          together: the cost divides them by Items per Plate. Only include the model&apos;s
+          filament - purge tower and flush waste are tracked separately when you create a
+          production run.
         </AlertDescription>
       </Alert>
 
@@ -140,7 +180,7 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
         <h3 className="text-lg font-medium">Bill of Materials</h3>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" disabled={!canEdit}>
               <Plus className="mr-2 h-4 w-4" />
               Add Material
             </Button>
@@ -164,7 +204,6 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                           value={field.value}
                           onValueChange={(value) => {
                             field.onChange(value)
-                            handleSpoolSelect(value)
                           }}
                           placeholder="Search for a spool..."
                         />
@@ -191,11 +230,12 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                             <div className="space-y-2">
                               <h4 className="font-medium">Multi-Color Example</h4>
                               <p className="text-sm text-muted-foreground">
-                                A dragon with 2 colors printed at 4 per plate:
+                                A dragon with 2 colors printed at 4 per plate (one line per colour,
+                                grams for the whole plate; the cost is divided by Items per Plate):
                               </p>
                               <ul className="text-sm text-muted-foreground space-y-1">
-                                <li>• Body (Blue PLA): <strong>45g per unit</strong></li>
-                                <li>• Wings (Gold PLA): <strong>12g per unit</strong></li>
+                                <li>• Body (Blue PLA): <strong>180g per plate</strong> (45g each)</li>
+                                <li>• Wings (Gold PLA): <strong>48g per plate</strong> (12g each)</li>
                               </ul>
                               <p className="text-sm text-muted-foreground pt-2 border-t">
                                 The purge tower (~15g) and flush waste are entered later when creating a production run.
@@ -207,7 +247,32 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                       <FormControl>
                         <Input type="number" step="0.01" placeholder="0.00" {...field} />
                       </FormControl>
-                      <FormDescription>Per-unit filament weight (model only, no tower/purge)</FormDescription>
+                      <FormDescription>
+                        Grams for one plate run, all its items together (model only, no
+                        tower/purge)
+                      </FormDescription>
+                      {fileFilaments.length > 1 && (
+                        <div className="space-y-1 text-sm" aria-label="Filaments in the print file">
+                          <p className="text-muted-foreground">
+                            The print file uses {fileFilaments.length} filaments: add one line for each.
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {fileFilaments.map((f) => (
+                              <Button
+                                key={`${f.type}|${f.color}`}
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() =>
+                                  form.setValue('weight_grams', f.grams.toString(), { shouldDirty: true })
+                                }
+                              >
+                                {filamentLabel(f)}: {f.grams}g
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -218,11 +283,14 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
                   name="cost_per_gram"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Cost per Gram (£)</FormLabel>
+                      <FormLabel>Cost per Gram override ({currency.symbol})</FormLabel>
                       <FormControl>
-                        <Input type="number" step="0.0001" placeholder="0.0000" {...field} />
+                        <Input type="number" step="0.0001" placeholder={selectedLandedHint} {...field} />
                       </FormControl>
-                      <FormDescription>Auto-filled from spool cost</FormDescription>
+                      <FormDescription>
+                        Leave empty to use the spool's landed cost per usable gram, which follows
+                        its price, purchase shipping and remainder.
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -252,26 +320,29 @@ export function BOMEditor({ modelId, materials }: BOMEditorProps) {
           {materials?.map((material) => {
             // Look up spool details from the spools data
             const spool = spoolsData?.spools.find((s) => s.id === material.spool_id)
-            const spoolDisplay = spool
-              ? `${spool.spool_id} - ${spool.material_type_name} (${spool.color})`
-              : material.spool_id
+            const spoolDisplay = spool ? spoolLabel(spool) : material.spool_id
             return (
             <div key={material.id} className="flex items-center justify-between rounded-lg border bg-card p-4">
               <div className="space-y-1">
                 <div className="font-medium">{spoolDisplay}</div>
                 <div className="text-sm text-muted-foreground">
-                  {parseFloat(material.weight_grams).toFixed(2)}g @ {formatCurrency(material.cost_per_gram)}/g
+                  {parseFloat(material.weight_grams).toFixed(2)}g @{' '}
+                  {material.resolved_cost_per_gram === null
+                    ? 'cost unknown'
+                    : `${formatCurrency(material.resolved_cost_per_gram)}/g`}
+                  {material.cost_per_gram !== null ? ' (override)' : ' (from spool)'}
                 </div>
               </div>
               <div className="flex items-center gap-4">
                 <div className="text-right">
                   <div className="font-semibold">
-                    {formatCurrency((parseFloat(material.weight_grams) * parseFloat(material.cost_per_gram)).toFixed(3))}
+                    {/* The server's figure: weight times the resolved per-gram cost (T254). */}
+                    {material.line_cost === null ? '—' : formatCurrency(material.line_cost)}
                   </div>
                 </div>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending}>
+                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending || !canEdit}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>

@@ -6,6 +6,19 @@ sidebar_position: 4
 
 Calculate accurate costs and optimize pricing for profitability.
 
+:::info How the figures are actually derived
+
+This page is the workflow and general pricing advice. For what Batchivo
+itself computes — the six make-cost lines, the failure premium, the fee
+rules, the margin basis, and how an estimate improves from observed
+outcomes — see [How Pricing Works](../pricing-model.md). Where the
+simplified formulas below differ from that page, that page is correct:
+the engine solves for a target margin rather than applying a markup, and
+it holds each marketplace fee as its own effective-dated rule rather than
+one blended percentage.
+
+:::
+
 ## Cost Components
 
 ### Material Cost

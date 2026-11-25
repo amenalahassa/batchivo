@@ -3,6 +3,7 @@ Tests for platform admin Pydantic schemas.
 """
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
@@ -40,6 +41,7 @@ class TestTenantResponse:
             "name": "Test Tenant",
             "slug": "test-tenant",
             "tenant_type": "three_d_print",
+            "currency_code": "GBP",
             "is_active": True,
             "created_at": _now(),
         }
@@ -67,6 +69,7 @@ class TestTenantDetailResponse:
             "name": "Big Shop",
             "slug": "big-shop",
             "tenant_type": "three_d_print",
+            "currency_code": "GBP",
             "is_active": True,
             "created_at": _now(),
         }
@@ -78,14 +81,23 @@ class TestTenantDetailResponse:
         assert t.user_count == 0
         assert t.product_count == 0
         assert t.order_count == 0
-        assert t.total_revenue == 0.0
+        assert t.total_revenue == Decimal("0")
 
     def test_with_stats(self):
         t = TenantDetailResponse(
-            **self._base(user_count=5, product_count=50, order_count=200, total_revenue=9999.99)
+            **self._base(
+                user_count=5,
+                product_count=50,
+                order_count=200,
+                total_revenue=Decimal("9999.99"),
+            )
         )
         assert t.user_count == 5
-        assert t.total_revenue == 9999.99
+        # `Decimal("9999.99") == 9999.99` is False, and this assertion read
+        # `== 9999.99` until the field stopped being a `float` (task T186).
+        # That it now fails against the float is the fix showing itself: a
+        # revenue total summed from `Numeric` columns crosses the wire exact.
+        assert t.total_revenue == Decimal("9999.99")
 
 
 class TestPaginatedTenantsResponse:
@@ -314,3 +326,18 @@ class TestTenantModulesResetResponse:
             message="Reset complete",
         )
         assert r.modules_reset == 5
+
+
+class TestTenantCurrency:
+    """A platform screen labels a tenant's money in its own currency (bug hardcoded-gbp-outside-pricing)."""
+
+    def test_the_currency_is_required(self):
+        with pytest.raises(ValidationError):
+            TenantResponse(
+                id=uuid4(),
+                name="T",
+                slug="t",
+                tenant_type="three_d_print",
+                is_active=True,
+                created_at=_now(),
+            )

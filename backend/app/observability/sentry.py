@@ -5,7 +5,9 @@ with Sentry. Integrates with FastAPI ASGI middleware for automatic request traci
 """
 
 import logging
+import re
 import subprocess
+from typing import Any
 
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -180,7 +182,33 @@ def before_send(event: dict, hint: dict) -> dict | None:
     event["tags"]["app.name"] = settings.app_name
     event["tags"]["storage.type"] = settings.storage_type
 
-    return event
+    # Spec 010 masks a personal API token as `bvt_****` first; spec 008 then
+    # removes any Replicate token or other bearer value (request body, frame locals).
+    from app.services.genai.logging import scrub
+
+    return scrub(mask_api_tokens(event))
+
+
+#: A personal API token (spec 010). Its secret must never reach a crash report (FR-010).
+_API_TOKEN = re.compile(r"bvt_[A-Za-z0-9_\-]+")
+API_TOKEN_MASK = "bvt_****"
+
+
+def mask_api_tokens(value: Any) -> Any:
+    """Replace every personal API token anywhere in an event by `bvt_****`.
+
+    In development `send_default_pii` sends request headers, the Authorization
+    header among them; headers, breadcrumbs, extra and messages are all walked.
+    """
+    if isinstance(value, str):
+        return _API_TOKEN.sub(API_TOKEN_MASK, value)
+    if isinstance(value, dict):
+        return {key: mask_api_tokens(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [mask_api_tokens(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(mask_api_tokens(item) for item in value)
+    return value
 
 
 def capture_exception(error: Exception, **extra) -> str | None:

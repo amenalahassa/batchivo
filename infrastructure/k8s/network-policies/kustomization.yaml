@@ -9,6 +9,7 @@
 #   kubectl apply -f 01-allow-dns.yaml
 #   kubectl apply -f 10-frontend-policy.yaml
 #   kubectl apply -f 20-backend-policy.yaml
+#   kubectl apply -f 25-celery-worker-policy.yaml
 #   kubectl apply -f 30-postgres-policy.yaml
 #   kubectl apply -f 40-redis-policy.yaml
 #   kubectl apply -f 50-minio-policy.yaml
@@ -25,6 +26,7 @@ resources:
   - 01-allow-dns.yaml
   - 10-frontend-policy.yaml
   - 20-backend-policy.yaml
+  - 25-celery-worker-policy.yaml
   - 30-postgres-policy.yaml
   - 40-redis-policy.yaml
   - 45-bucket-creator-policy.yaml

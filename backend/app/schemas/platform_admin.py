@@ -1,5 +1,6 @@
 """Pydantic schemas for platform admin API."""
 
+from decimal import Decimal
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -15,6 +16,9 @@ class TenantResponse(BaseModel):
     name: str
     slug: str
     tenant_type: str
+    #: The currency the tenant keeps its books in, so a platform screen labels
+    #: the tenant's money in it rather than in pounds.
+    currency_code: str
     is_active: bool
     created_at: datetime
     settings: dict[str, Any] | None = None
@@ -28,7 +32,10 @@ class TenantDetailResponse(TenantResponse):
     user_count: int = 0
     product_count: int = 0
     order_count: int = 0
-    total_revenue: float = 0.0
+    #: Exact, and so serialised as a decimal string like every other money
+    #: field on this API. It was a binary double over a `SUM` of `Numeric`
+    #: order totals (task T186, FR-047).
+    total_revenue: Decimal = Decimal("0")
 
 
 class PaginatedTenantsResponse(BaseModel):

@@ -4,17 +4,23 @@ Handles return approval, receiving, and completion workflow.
 Customer-facing return submission is in customer_account.py.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select, desc
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
-from app.database import get_db
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+)
+from app.services.refund_actuals import record_refund
 from app.models.return_request import (
     ReturnItem,
     ReturnRequest,
@@ -30,6 +36,8 @@ from app.schemas.return_request import (
     ReturnRequestReject,
     ReturnRequestUpdate,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -86,6 +94,7 @@ def _build_admin_response(return_request: ReturnRequest) -> ReturnRequestAdminRe
 
 @router.get("", response_model=ReturnRequestAdminListResponse)
 async def list_return_requests(
+    db: TenantDB,
     status_filter: Literal[
         "all", "requested", "approved", "received", "completed", "rejected", "cancelled"
     ] = Query("all", alias="status", description="Filter by status"),
@@ -94,7 +103,6 @@ async def list_return_requests(
     limit: int = Query(20, ge=1, le=100),
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """
     List all return requests for admin management.
@@ -148,9 +156,9 @@ async def list_return_requests(
 @router.get("/{return_id}", response_model=ReturnRequestAdminResponse)
 async def get_return_request(
     return_id: UUID,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Get a specific return request by ID."""
     result = await db.execute(
@@ -179,9 +187,10 @@ async def get_return_request(
 async def update_return_request(
     return_id: UUID,
     data: ReturnRequestUpdate,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Update a return request (admin notes, tracking, etc.)."""
     result = await db.execute(
@@ -222,9 +231,10 @@ async def update_return_request(
 async def approve_return_request(
     return_id: UUID,
     data: ReturnRequestApprove,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Approve a return request."""
     result = await db.execute(
@@ -289,9 +299,10 @@ async def approve_return_request(
 async def receive_return_items(
     return_id: UUID,
     data: ReturnRequestReceive,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Mark return items as received."""
     result = await db.execute(
@@ -349,11 +360,16 @@ async def receive_return_items(
 async def complete_return_request(
     return_id: UUID,
     data: ReturnRequestComplete,
+    _admin: RequireAdmin,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
-    """Complete a return request (issue refund/replacement)."""
+    """Complete a return request (issue refund/replacement).
+
+    Admin only, as `POST /orders/{id}/refund` is: completing writes a
+    `RefundActual`, which lowers the order's realised margin (FR-040, T241).
+    """
     result = await db.execute(
         select(ReturnRequest)
         .where(
@@ -384,6 +400,32 @@ async def complete_return_request(
     return_request.completed_by = user.id
     if data.refund_amount is not None:
         return_request.refund_amount = data.refund_amount
+
+        # Record it against the order as an actual, as well as on the RMA
+        # (task T189).
+        #
+        # `refund_amount` here is the RMA's own record of what was agreed; the
+        # pricing engine never opened this table, so a refunded order still
+        # reported the margin it earned at sale. Writing a `RefundActual`
+        # beside it is what makes `realised_margin` see the money going back
+        # (FR-040, SC-001). The RMA row keeps its own figure -- the two answer
+        # different questions and neither is derived from the other.
+        if return_request.order is not None:
+            await record_refund(
+                db,
+                tenant,
+                return_request.order,
+                amount=data.refund_amount,
+                source="entered",
+                reason=f"RMA {return_request.rma_number}",
+                recorded_by_user_id=user.id,
+            )
+        else:
+            logger.warning(
+                f"RMA {return_request.rma_number} recorded a refund of "
+                f"{data.refund_amount} with no order loaded, so nothing was "
+                f"recorded against a settled order (FR-040)"
+            )
     if data.refund_reference:
         return_request.refund_reference = data.refund_reference
     if data.replacement_order_id:
@@ -428,10 +470,12 @@ async def complete_return_request(
             customer_name=return_request.customer_name,
             rma_number=return_request.rma_number,
             order_number=return_request.order.order_number if return_request.order else "N/A",
-            refund_amount=float(return_request.refund_amount)
-            if return_request.refund_amount
-            else None,
+            # The column is `Numeric`, so the read is already exact; the
+            # `float()` was the one lossy step before the customer was told
+            # what they were refunded (task T190, FR-047).
+            refund_amount=return_request.refund_amount,
             replacement_order_number=replacement_order_number,
+            currency_symbol=tenant.currency_symbol if tenant else "£",
         )
     except Exception as e:
         import logging
@@ -445,9 +489,10 @@ async def complete_return_request(
 async def reject_return_request(
     return_id: UUID,
     data: ReturnRequestReject,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Reject a return request."""
     result = await db.execute(
@@ -507,9 +552,10 @@ async def reject_return_request(
 @router.delete("/{return_id}", status_code=204)
 async def delete_return_request(
     return_id: UUID,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
-    db: AsyncSession = Depends(get_db),
 ):
     """Delete a return request (only allowed for cancelled/rejected)."""
     result = await db.execute(

@@ -30,6 +30,8 @@ import {
   ImagePlus,
   Loader2,
   RotateCw,
+  ChevronDown,
+  Sparkles,
   Star,
   Trash2,
   Upload,
@@ -44,6 +46,7 @@ import {
   rotateProductImage,
   updateProductImage,
   type ProductImage,
+  type ProductImageOrigin,
 } from '@/lib/api/products'
 import { config } from '@/lib/config'
 
@@ -80,6 +83,35 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { AIBadge } from '@/components/genai/AIBadge'
+import { GenerateDialog } from '@/components/genai/GenerateDialog'
+import { JobHistory } from '@/components/genai/JobHistory'
+import { useGenAIRoles } from '@/components/genai/useGenAIRoles'
+import type { Capability } from '@/types/genai'
+
+/** What the per-image "AI" menu offers (spec 008, US3). Each makes a new picture; the original stays. */
+const IMAGE_AI_ACTIONS: { capability: Capability; label: string }[] = [
+  { capability: 'product_photo_enhance', label: 'Enhance photo' },
+  { capability: 'background_remove', label: 'Remove background' },
+  { capability: 'upscale', label: 'Upscale' },
+  { capability: 'lifestyle_scene', label: 'Lifestyle scene' },
+]
+
+interface ImageAIAction {
+  image: ProductImage
+  capability: Capability
+  label: string
+  nonce: number
+}
 
 interface ProductImagesEditorProps {
   productId: string
@@ -92,6 +124,11 @@ export function ProductImagesEditor({ productId }: ProductImagesEditorProps) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<ProductImage | null>(null)
   const [isReordering, setIsReordering] = useState(false)
+  const { canGenerate } = useGenAIRoles()
+  // The AI action chosen from an image's menu; its dialog opens once the menu has closed.
+  const [aiAction, setAiAction] = useState<ImageAIAction | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+
 
   // DnD sensors with keyboard support
   const sensors = useSensors(
@@ -145,6 +182,16 @@ export function ProductImagesEditor({ productId }: ProductImagesEditorProps) {
   // Rotate mutation
   const rotateMutation = useMutation({
     mutationFn: (imageId: string) => rotateProductImage(productId, imageId, 90),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['product-images', productId] })
+      queryClient.invalidateQueries({ queryKey: ['product', productId] })
+    },
+  })
+
+  // Origin mutation: photo or render; "ai" is only ever set by adopting a generation
+  const originMutation = useMutation({
+    mutationFn: ({ imageId, origin }: { imageId: string; origin: Exclude<ProductImageOrigin, 'ai'> }) =>
+      updateProductImage(productId, imageId, { origin }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product-images', productId] })
       queryClient.invalidateQueries({ queryKey: ['product', productId] })
@@ -339,6 +386,11 @@ export function ProductImagesEditor({ productId }: ProductImagesEditorProps) {
                   isSettingPrimary={setPrimaryMutation.isPending}
                   isDeleting={deleteMutation.isPending}
                   isRotating={rotateMutation.isPending}
+                  canGenerate={canGenerate}
+                  onOriginChange={(origin) => originMutation.mutate({ imageId: image.id, origin })}
+                  onAIAction={(capability, label) =>
+                    setAiAction((current) => ({ image, capability, label, nonce: (current?.nonce ?? 0) + 1 }))
+                  }
                 />
               ))}
             </div>
@@ -372,6 +424,49 @@ export function ProductImagesEditor({ productId }: ProductImagesEditorProps) {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* AI action dialog: the chosen image is an input; a result is adopted as a new image */}
+      {canGenerate && aiAction && (
+        <GenerateDialog
+          key={aiAction.nonce}
+          capability={aiAction.capability}
+          title={aiAction.label}
+          target={{ type: 'product', id: productId }}
+          adoptTarget={{ type: 'product', id: productId }}
+          inputAssets={[
+            {
+              ref: { type: 'product_image', id: aiAction.image.id },
+              label: aiAction.image.alt_text || 'Product image',
+              preview: (
+                <img
+                  src={getImageUrl(
+                    aiAction.image.thumbnail_url || aiAction.image.image_url,
+                    aiAction.image.updated_at
+                  )}
+                  alt=""
+                  className="h-full w-full object-cover"
+                />
+              ),
+            },
+          ]}
+          open
+          onOpenChange={(next) => !next && setAiAction(null)}
+        />
+      )}
+
+      {/* AI generations made for this product (spec 008, US5) */}
+      <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="gap-2">
+            <Sparkles className="h-4 w-4" aria-hidden />
+            AI generations
+            <ChevronDown className={cn('h-4 w-4 transition-transform', historyOpen && 'rotate-180')} aria-hidden />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pt-2">
+          <JobHistory targetType="product" targetId={productId} />
+        </CollapsibleContent>
+      </Collapsible>
     </div>
   )
 }
@@ -385,6 +480,9 @@ interface ImageCardProps {
   isSettingPrimary: boolean
   isDeleting: boolean
   isRotating: boolean
+  canGenerate: boolean
+  onOriginChange: (origin: Exclude<ProductImageOrigin, 'ai'>) => void
+  onAIAction: (capability: Capability, label: string) => void
 }
 
 /**
@@ -432,6 +530,9 @@ function ImageCard({
   isSettingPrimary,
   isDeleting,
   isRotating,
+  canGenerate,
+  onOriginChange,
+  onAIAction,
 }: ImageCardProps) {
   // Use thumbnail if available, otherwise full image (with API base URL and cache-busting)
   const displayUrl = getImageUrl(image.thumbnail_url || image.image_url, image.updated_at)
@@ -526,6 +627,48 @@ function ImageCard({
       {/* File info */}
       <div className="p-2 text-xs text-muted-foreground truncate">
         {image.original_filename || 'Image'}
+      </div>
+
+      {/* Origin and AI actions (spec 008, FR-017) */}
+      <div className="relative z-10 flex items-center justify-between gap-2 bg-card px-2 pb-2">
+        {image.origin === 'ai' ? (
+          <AIBadge />
+        ) : (
+          <select
+            aria-label="Image origin"
+            className="h-7 rounded-md border bg-background px-1 text-xs"
+            value={image.origin ?? 'photo'}
+            disabled={!canGenerate}
+            onChange={(e) => onOriginChange(e.target.value as Exclude<ProductImageOrigin, 'ai'>)}
+          >
+            <option value="photo">Photo</option>
+            <option value="render">Render</option>
+          </select>
+        )}
+        {canGenerate && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" aria-label="AI actions">
+                <Sparkles className="h-3 w-3" aria-hidden />
+                AI
+                <ChevronDown className="h-3 w-3" aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            {/* The chosen action opens a dialog: keep focus off the closing menu's trigger. */}
+            <DropdownMenuContent align="end" onCloseAutoFocus={(e) => e.preventDefault()}>
+              <DropdownMenuLabel>Make a new picture from this one</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {IMAGE_AI_ACTIONS.map((action) => (
+                <DropdownMenuItem
+                  key={action.capability}
+                  onSelect={() => onAIAction(action.capability, action.label)}
+                >
+                  {action.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   )

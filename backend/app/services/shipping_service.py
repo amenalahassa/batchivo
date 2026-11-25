@@ -5,13 +5,17 @@ Currently uses hardcoded rates, structured for Royal Mail API integration later.
 """
 
 import re
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
+from app.core.money import pounds_to_pence
 from app.schemas.shipping import (
     PostcodeValidationResponse,
     ShippingOption,
     ShippingRatesResponse,
 )
+
+if TYPE_CHECKING:
+    from app.services.channel_economics import ChannelEconomics
 
 
 # UK postcode regex pattern
@@ -151,10 +155,20 @@ class ShippingService:
     """Service for calculating shipping rates.
 
     Currently uses hardcoded UK rates. Structured for Royal Mail API integration.
+
+    The free-shipping threshold is not one of them. It is the operator's lever
+    on the sales channel (`SalesChannelEconomics.free_shipping_threshold`),
+    effective-dated and administrator-only (FR-007a), and the price solver
+    plans a margin against it. A class constant here used to decide what a
+    shopper actually paid, so the planned and realised figures disagreed by
+    construction (Constitution IV, task T208). A service built without a
+    threshold offers no free shipping rather than inventing one.
     """
 
-    # Configuration
-    FREE_SHIPPING_THRESHOLD_PENCE = 5000  # £50 for free shipping
+    # The surcharge and the `STANDARD_OPTIONS` rates below are deliberately
+    # hardcoded: they are shipping *revenue*, the price list a carrier
+    # integration will replace, and no requirement makes them an operator
+    # setting. The free-shipping threshold is different in kind -- see above.
     HIGHLAND_ISLAND_SURCHARGE_PENCE = 300  # £3 surcharge
 
     # Standard shipping options (mainland UK)
@@ -204,6 +218,28 @@ class ShippingService:
             is_signed=True,
         ),
     ]
+
+    def __init__(self, free_shipping_threshold_pence: Optional[int] = None) -> None:
+        """Build a service applying ``free_shipping_threshold_pence``, if any."""
+        self.free_shipping_threshold_pence = free_shipping_threshold_pence
+
+    @classmethod
+    def for_economics(cls, economics: "ChannelEconomics") -> "ShippingService":
+        """A service applying the threshold a channel's economics carry.
+
+        The threshold is held in major units, as the operator entered it; the
+        rates here are in pence, so it is converted once, at this edge.
+        """
+        threshold = economics.free_shipping_threshold
+        return cls(pounds_to_pence(threshold) if threshold is not None else None)
+
+    def qualifies_for_free_shipping(self, cart_total_pence: Optional[int]) -> bool:
+        """Whether a cart of ``cart_total_pence`` meets the channel's threshold."""
+        return (
+            self.free_shipping_threshold_pence is not None
+            and cart_total_pence is not None
+            and cart_total_pence >= self.free_shipping_threshold_pence
+        )
 
     def normalize_postcode(self, postcode: str) -> str:
         """Normalize a UK postcode to standard format (uppercase, with space)."""
@@ -425,14 +461,12 @@ class ShippingService:
             return ShippingRatesResponse(
                 options=[],
                 postcode_valid=False,
-                free_shipping_threshold_pence=self.FREE_SHIPPING_THRESHOLD_PENCE,
+                free_shipping_threshold_pence=self.free_shipping_threshold_pence,
                 qualifies_for_free_shipping=False,
             )
 
         # Check free shipping eligibility
-        qualifies_for_free = (
-            cart_total_pence is not None and cart_total_pence >= self.FREE_SHIPPING_THRESHOLD_PENCE
-        )
+        qualifies_for_free = self.qualifies_for_free_shipping(cart_total_pence)
 
         # Build options list
         options = []
@@ -486,7 +520,7 @@ class ShippingService:
         return ShippingRatesResponse(
             options=options,
             postcode_valid=True,
-            free_shipping_threshold_pence=self.FREE_SHIPPING_THRESHOLD_PENCE,
+            free_shipping_threshold_pence=self.free_shipping_threshold_pence,
             qualifies_for_free_shipping=qualifies_for_free,
         )
 
@@ -526,10 +560,8 @@ class ShippingService:
             price += self.HIGHLAND_ISLAND_SURCHARGE_PENCE
 
         # Apply free shipping if eligible
-        qualifies_for_free = (
-            cart_total_pence is not None
-            and cart_total_pence >= self.FREE_SHIPPING_THRESHOLD_PENCE
-            and shipping_method_id == "royal-mail-2nd"
+        qualifies_for_free = shipping_method_id == "royal-mail-2nd" and (
+            self.qualifies_for_free_shipping(cart_total_pence)
         )
 
         if qualifies_for_free:
@@ -538,13 +570,11 @@ class ShippingService:
         return (base_option.name, price)
 
 
-# Singleton instance for dependency injection
-_shipping_service: Optional[ShippingService] = None
-
-
 def get_shipping_service() -> ShippingService:
-    """Get the shipping service instance."""
-    global _shipping_service
-    if _shipping_service is None:
-        _shipping_service = ShippingService()
-    return _shipping_service
+    """A shipping service for a caller that has no sales channel.
+
+    Postcode validation and the carrier rates need no tenant. Free shipping
+    does, so this service offers none; a storefront route resolves its
+    channel's threshold through `ShippingService.for_economics` instead.
+    """
+    return ShippingService()

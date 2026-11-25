@@ -393,7 +393,7 @@ class TestProductionRunCompletion:
         run = await service.create_production_run(run_data, materials=[material_data])
 
         # Attempt to complete should raise error
-        with pytest.raises(ValueError, match="Insufficient weight"):
+        with pytest.raises(ValueError, match="Insufficient inventory"):
             await service.complete_production_run(run.id)
 
     @pytest.mark.asyncio
@@ -514,3 +514,223 @@ class TestVarianceCalculations:
         assert aggregate["aggregate_weight_variance"]["total_estimated_grams"] == 330.0  # 3 * 110
         assert aggregate["aggregate_weight_variance"]["total_actual_grams"] == 315.0  # 3 * 105
         assert aggregate["aggregate_time_variance"]["runs_with_data"] == 3
+
+
+class TestTelemetryDispatchOnCompletion:
+    """A finished run asks its machine what it used (task T159, FR-040/FR-042).
+
+    `telemetry.ingest_run` existed with no caller anywhere in `app/`, so
+    `actual_grams` and `actual_print_hours` were never observed from a machine
+    and no cost line could acquire an observed origin from one. Completion is
+    the moment worth asking: the printer still holds the finished job's
+    figures and a nightly sweep would ask after it had moved on.
+    """
+
+    @pytest.mark.asyncio
+    async def test_completion_queues_the_ingestion_for_the_run(
+        self, db_session, test_tenant, test_spool, monkeypatch
+    ):
+        from app.tasks import telemetry
+
+        dispatched: list[list[str]] = []
+
+        def fake_apply_async(args=None, **kwargs):
+            dispatched.append(list(args or []))
+            return type("Result", (), {"id": "task-1"})()
+
+        monkeypatch.setattr(telemetry.ingest_run_actuals_task, "apply_async", fake_apply_async)
+
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-TELEMETRY"),
+                started_at=datetime.now(),
+                status="in_progress",
+            ),
+            materials=[
+                ProductionRunMaterialCreate(
+                    spool_id=test_spool.id,
+                    estimated_model_weight_grams=Decimal("100.0"),
+                    estimated_flushed_grams=Decimal("10.0"),
+                    spool_weight_before_grams=Decimal("200.0"),
+                    spool_weight_after_grams=Decimal("95.0"),
+                    cost_per_gram=Decimal("0.025"),
+                )
+            ],
+        )
+
+        await service.complete_production_run(run.id)
+
+        assert dispatched == [[str(run.id)]], (
+            "a completed run must hand itself to the telemetry ingestion, or "
+            "no actual is ever observed from the machine"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_broker_does_not_fail_the_completion(
+        self, db_session, test_tenant, test_spool, monkeypatch
+    ):
+        """The run is already committed; losing the observation is not losing it."""
+        from app.tasks import telemetry
+
+        def explode(args=None, **kwargs):
+            raise ConnectionError("no broker here")
+
+        monkeypatch.setattr(telemetry.ingest_run_actuals_task, "apply_async", explode)
+
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-NOBROKER"),
+                started_at=datetime.now(),
+                status="in_progress",
+            ),
+            materials=[
+                ProductionRunMaterialCreate(
+                    spool_id=test_spool.id,
+                    estimated_model_weight_grams=Decimal("100.0"),
+                    estimated_flushed_grams=Decimal("10.0"),
+                    spool_weight_before_grams=Decimal("200.0"),
+                    spool_weight_after_grams=Decimal("95.0"),
+                    cost_per_gram=Decimal("0.025"),
+                )
+            ],
+        )
+
+        completed = await service.complete_production_run(run.id)
+
+        assert completed.status == "completed"
+
+
+class TestASuccessfulItemWeighsItsShareOfThePlate:
+    """The bill holds a whole plate run, so one item weighs a share of it."""
+
+    @pytest.mark.asyncio
+    async def test_the_bill_is_divided_by_items_per_plate(
+        self, db_session, test_tenant, test_spool, test_model
+    ):
+        from app.models.model_material import ModelMaterial
+
+        test_model.prints_per_plate = 5
+        db_session.add(
+            ModelMaterial(
+                id=uuid4(),
+                model_id=test_model.id,
+                spool_id=test_spool.id,
+                weight_grams=Decimal("50"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+        await db_session.commit()
+
+        service = ProductionRunService(db_session, test_tenant)
+        # Was 50 g -- the plate's grams taken for one item, five times too heavy.
+        assert await service._get_model_weight(test_model.id) == Decimal("10")
+
+    @pytest.mark.asyncio
+    async def test_the_run_printers_measured_weight_wins(
+        self, db_session, test_tenant, test_spool, test_model, test_printer
+    ):
+        """On a printer whose per-printer row has a weight, an item weighs that."""
+        from app.models.model_material import ModelMaterial
+        from app.models.model_printer_config import ModelPrinterConfig
+
+        test_model.prints_per_plate = 4
+        db_session.add_all(
+            [
+                ModelMaterial(
+                    id=uuid4(),
+                    model_id=test_model.id,
+                    spool_id=test_spool.id,
+                    weight_grams=Decimal("84"),
+                    cost_per_gram=Decimal("0.025"),
+                ),
+                ModelPrinterConfig(
+                    id=uuid4(),
+                    model_id=test_model.id,
+                    printer_id=test_printer.id,
+                    prints_per_plate=4,
+                    material_weight_grams=Decimal("18"),
+                ),
+            ]
+        )
+        await db_session.commit()
+
+        service = ProductionRunService(db_session, test_tenant)
+        assert await service._get_model_weight(test_model.id, test_printer.id) == Decimal("18")
+        # Printed elsewhere (no row for that printer): the bill's share.
+        assert await service._get_model_weight(test_model.id, uuid4()) == Decimal("21")
+
+    @pytest.mark.asyncio
+    async def test_another_tenants_model_weighs_nothing(self, db_session, test_tenant):
+        service = ProductionRunService(db_session, test_tenant)
+        assert await service._get_model_weight(uuid4()) == Decimal("0")
+
+
+class TestTheBackfillUsesTheOneArithmetic:
+    """Task T237: the backfill script records actuals through the service."""
+
+    @pytest.mark.asyncio
+    async def test_a_completed_run_without_actuals_gets_them(
+        self, db_session, test_tenant, test_spool, test_model
+    ):
+        from app.models.model_material import ModelMaterial
+
+        db_session.add(
+            ModelMaterial(
+                id=uuid4(),
+                model_id=test_model.id,
+                spool_id=test_spool.id,
+                weight_grams=Decimal("50"),
+                cost_per_gram=Decimal("0.025"),
+            )
+        )
+        await db_session.commit()
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-BACKFILL"),
+                started_at=datetime.now(),
+                status="completed",
+            ),
+            items=[
+                ProductionRunItemCreate(
+                    model_id=test_model.id, quantity=10, successful_quantity=9, failed_quantity=1
+                )
+            ],
+            materials=[
+                ProductionRunMaterialCreate(
+                    spool_id=test_spool.id,
+                    estimated_model_weight_grams=Decimal("100.0"),
+                    estimated_flushed_grams=Decimal("10.0"),
+                    spool_weight_before_grams=Decimal("200.0"),
+                    spool_weight_after_grams=Decimal("85.0"),
+                    cost_per_gram=Decimal("0.025"),
+                )
+            ],
+        )
+        run = await service.get_production_run(run.id)
+
+        recorded = await service.backfill_run_actuals(run)
+
+        assert recorded is True
+        # 115 g at 0.025 over the 9 x 50 g that survived, rounded once.
+        assert run.successful_weight_grams == Decimal("450")
+        assert run.cost_per_gram_actual == (Decimal("2.875") / Decimal("450")).quantize(
+            Decimal("0.000001")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_run_with_no_material_cost_is_skipped(self, db_session, test_tenant):
+        service = ProductionRunService(db_session, test_tenant)
+        run = await service.create_production_run(
+            ProductionRunCreate(
+                run_number=unique_run_number("TEST-BACKFILL-EMPTY"),
+                started_at=datetime.now(),
+                status="completed",
+            )
+        )
+        run = await service.get_production_run(run.id)
+
+        assert await service.backfill_run_actuals(run) is False
+        assert run.cost_per_gram_actual is None

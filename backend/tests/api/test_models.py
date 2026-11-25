@@ -580,6 +580,36 @@ class TestModelMaterials:
         assert data["weight_grams"] == "25.00"  # Decimal formatting
         assert data["cost_per_gram"] == "0.0300"  # Decimal(10,4) formatting
 
+    async def test_a_line_without_an_override_costs_at_the_spools_landed_figure(
+        self,
+        client: AsyncClient,
+        test_model,
+        test_spool,
+    ):
+        """T254: the server derives the per-gram figure; the browser no longer does."""
+        response = await client.post(
+            f"/api/v1/models/{test_model.id}/materials",
+            json={"spool_id": str(test_spool.id), "weight_grams": "25"},
+        )
+        assert response.status_code == 201, response.text
+        data = response.json()
+        assert data["cost_per_gram"] is None, "no override was typed, so none is stored"
+        # The fixture spool: 25.00 over 1000 usable grams.
+        assert Decimal(data["resolved_cost_per_gram"]) == Decimal("0.025")
+        assert Decimal(data["line_cost"]) == Decimal("0.625")
+
+    async def test_a_zero_override_is_refused(
+        self,
+        client: AsyncClient,
+        test_model,
+        test_spool,
+    ):
+        response = await client.post(
+            f"/api/v1/models/{test_model.id}/materials",
+            json={"spool_id": str(test_spool.id), "weight_grams": "25", "cost_per_gram": "0"},
+        )
+        assert response.status_code == 422
+
     async def test_add_material_model_not_found(
         self,
         client: AsyncClient,

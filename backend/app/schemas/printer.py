@@ -1,11 +1,13 @@
 """Pydantic schemas for Printer API."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from app.schemas.model_cost_profile import CostProfileFieldOrigin
 
 
 class PrinterBase(BaseModel):
@@ -16,6 +18,9 @@ class PrinterBase(BaseModel):
     )
     manufacturer: Optional[str] = Field(None, max_length=100, description="Manufacturer name")
     model: Optional[str] = Field(None, max_length=100, description="Model name")
+    serial_number: Optional[str] = Field(
+        None, max_length=100, description="Manufacturer serial number"
+    )
 
     # Bed size
     bed_size_x_mm: Optional[int] = Field(None, ge=1, description="Bed size X in millimeters")
@@ -60,6 +65,7 @@ class PrinterUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     manufacturer: Optional[str] = Field(None, max_length=100)
     model: Optional[str] = Field(None, max_length=100)
+    serial_number: Optional[str] = Field(None, max_length=100)
 
     bed_size_x_mm: Optional[int] = Field(None, ge=1)
     bed_size_y_mm: Optional[int] = Field(None, ge=1)
@@ -125,3 +131,122 @@ class PrinterModelResponse(BaseModel):
     connection_type: str
     has_toolhead_changer: bool
     has_ams: bool
+
+
+# ============================================================================
+# Machine cost policy (task T046, FR-010, FR-011, FR-018)
+# ============================================================================
+
+
+class PrinterCostPolicyUpdate(BaseModel):
+    """A change to a printer's machine cost policy.
+
+    Unknown keys are forbidden: a mistyped field that silently did nothing
+    would leave the operator believing they had entered a machine rate.
+    """
+
+    purchase_price: Optional[Decimal] = Field(
+        None, ge=0, description="All-in acquisition cost, the numerator of depreciation"
+    )
+    expected_lifetime_hours: Optional[int] = Field(
+        None, gt=0, description="Expected printing hours over the machine's life"
+    )
+    maintenance_reserve_total: Optional[Decimal] = Field(
+        None, ge=0, description="Nozzles, belts, plates and AMS parts over the whole life"
+    )
+    measured_watts: Optional[Decimal] = Field(
+        None, ge=0, description="Measured draw at the wall while printing, not the nameplate"
+    )
+    electricity_rate_per_kwh: Optional[Decimal] = Field(
+        None, ge=0, description="Per-printer rate; falls back to the tenant pricing policy"
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PrinterCostPolicyResponse(BaseModel):
+    """A printer's machine cost policy, its derived rate and the rate's parts.
+
+    ``machine_rate_per_hour`` is null when nothing could be derived — FR-019
+    reports a missing figure rather than a zero, because a zero makes a
+    40-hour print look free. ``components`` and ``missing`` are what let the
+    rate be explained without recomputing it (FR-018).
+    """
+
+    printer_id: UUID
+    purchase_price: Optional[Decimal] = None
+    expected_lifetime_hours: Optional[int] = None
+    maintenance_reserve_total: Optional[Decimal] = None
+    measured_watts: Optional[Decimal] = None
+    electricity_rate_per_kwh: Optional[Decimal] = Field(
+        None, description="This printer's own rate; null when it uses the tenant policy's"
+    )
+    effective_electricity_rate_per_kwh: Optional[Decimal] = Field(
+        None, description="The rate actually used, whether the printer's own or the tenant's"
+    )
+
+    machine_rate_per_hour: Optional[Decimal] = Field(
+        None, description="Derived hourly occupancy cost, or null when unknowable"
+    )
+    components: dict[str, Decimal] = Field(
+        default_factory=dict, description="The parts the rate is made of, each named"
+    )
+    missing: list[str] = Field(
+        default_factory=list, description="Inputs the operator has not supplied yet"
+    )
+    origins: list[CostProfileFieldOrigin] = Field(
+        default_factory=list,
+        description=(
+            "Where each policy figure came from; an observed draw is not editable (FR-004, T262)"
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PowerReadingIn(BaseModel):
+    """One smart-plug reading of a machine's draw (FR-042, task T159).
+
+    ``source_id`` identifies the reading, not the plug: FR-042d compares
+    proposals by the outcomes behind them, so a reading an operator already
+    rejected must stay identifiable or the same question is asked again
+    tomorrow.
+
+    ``watts`` is a `Decimal`, because the engine multiplies it by an
+    electricity rate to reach a machine cost (Constitution IV).
+    """
+
+    source_id: str = Field(..., min_length=1, max_length=120)
+    watts: Decimal = Field(..., gt=0, le=Decimal("100000"))
+    observed_on: Optional[date] = Field(
+        None, description="The day the reading was taken; today when omitted"
+    )
+
+
+class PowerReadingBatch(BaseModel):
+    """A set of readings for one machine."""
+
+    readings: list[PowerReadingIn] = Field(..., min_length=1, max_length=500)
+
+
+class PowerReadingResult(BaseModel):
+    """What the readings did to the machine's recorded draw.
+
+    A reading never simply overwrites the figure: it becomes a rolling average
+    once enough agree (FR-042a), is held as a proposal beyond the operator's
+    divergence threshold (FR-042b), and never touches a figure the operator
+    set themselves (FR-042g). The reason is in words because each of those
+    outcomes is something an operator will ask about.
+    """
+
+    printer_id: UUID
+    readings_accepted: int
+    applied: bool
+    reason: str
+    observed_value: Optional[Decimal] = None
+    divergence_pct: Optional[Decimal] = None
+    proposal_id: Optional[UUID] = None
+    superseded_proposal_id: Optional[UUID] = None
+    measured_watts: Optional[Decimal] = Field(
+        None, description="The draw in force after the readings were considered"
+    )

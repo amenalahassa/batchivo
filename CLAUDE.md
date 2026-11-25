@@ -3,12 +3,21 @@
 ## Critical Rules (MANDATORY)
 
 ### Deployment
-**Only workflow for deploying changes:**
+Every image is built by Woodpecker CI from `main`. **NEVER manually build/push Docker images.**
+
+**Project cluster (k3s) — only workflow:**
 1. Push to GitHub (main branch)
 2. Woodpecker CI builds Docker images → pushes to k3s registry
 3. ArgoCD auto-syncs within 3 minutes
 
-**NEVER manually build/push Docker images. NEVER `kubectl apply` directly.**
+**NEVER `kubectl apply` directly.**
+
+**Customer VPS instances (single-tenant edition, `specs/005-single-tenant-vps`):**
+- Run a versioned release published by CI, pinned — never `latest`
+- Install and update only with the documented install/update commands, run by the provider;
+  an update backs up the database before migrating
+- Never edit, rebuild or patch containers on a VPS; secrets live in the instance config file
+  on the server (owner-only permissions), never in the repo
 
 - **CI**: https://ci.techize.co.uk (Woodpecker)
 - **CD**: https://argocd.techize.co.uk (ArgoCD)
@@ -22,7 +31,7 @@
 ### Code Quality
 - **All code MUST have tests** — no exceptions
 - Before committing: `cd backend && poetry run pytest && poetry run ruff check`
-- Frontend: `cd frontend && npm test && npm run lint`
+- Frontend: `cd frontend && npm test && npm run lint && npm run typecheck`
 
 ### Multi-Tenant Security
 - Every table has `tenant_id` — **NEVER** query without tenant scope
@@ -37,6 +46,41 @@ async def list_items(
 ):
     pass  # Queries auto-scoped via RLS
 ```
+
+---
+
+### Pricing, Costing and Money
+
+The pricing engine has its own constitution at `.specify/memory/constitution.md`.
+These are the rules a change to it must not break:
+
+- **One implementation.** Material, machine, labour, overhead, packaging, fees,
+  tax and the margin each have exactly one authority: `app/services/costing.py`,
+  `fee_engine.py`, `pricing_solver.py`, `cost_resolution.py`. Never recompute a
+  figure beside the engine — not in a route, not in a report, not in the
+  frontend. A second copy drifts, and then two screens disagree about one price.
+- **Money is exact.** `Decimal` end to end, `Numeric` in the database, and
+  decimal **strings** across the wire. Never `float`, never JavaScript numbers
+  for an amount. Round once, at the edge, to the currency's own precision.
+- **Nothing derived is stored.** A cost or margin is computed on read from
+  inputs and the policy in force. The exceptions are deliberate and immutable:
+  a `PriceSnapshot` (what a customer was quoted) and a realised margin's
+  recorded actuals. If you are adding a column for a number the engine can
+  already derive, you are adding a figure that will go stale.
+- **Every input says where it came from.** Writing a cost input means writing
+  its provenance (`observed` / `measured` / `policy` / `assumed`) with it. A
+  screen showing a cost shows how much of it is evidence and how much is a
+  guess. Never relabel an operator's figure as observed.
+- **History is immutable.** Fee rules, policies and snapshots are
+  effective-dated — supersede, never update in place. A past order's figures
+  must not move because today's rate changed.
+- **Telemetry proposes, it does not reprice.** A reading from a printer or a
+  plug goes to `variance_service.consider_outcomes`, which raises a proposal an
+  operator accepts. A faulty sensor must never move a price on its own.
+- **A scenario writes nothing.** Catalogue sweeps run inside a savepoint that
+  is always rolled back (`app/services/scenario_service.py`).
+
+Operator-facing explanation of the model: `docs-site/docs/pricing-model.md`.
 
 ---
 
@@ -395,7 +439,7 @@ A focused refinement of Batchivo's filament tracking system. The current system 
 ## Architectural Constraints
 - **Threading:** FastAPI async (asyncio single-threaded event loop). All DB operations are async via `sqlalchemy.ext.asyncio`. WebSocket connections handled in same event loop.
 - **Global state:** `engine` and `async_session_maker` are module-level singletons in `backend/app/database.py`. Settings cached with `@lru_cache` in `backend/app/config.py`.
-- **RLS toggle:** `settings.rls_enabled` (default `False` in dev, `True` in production). When disabled, tenant isolation relies on application-level `tenant_id` filtering. `get_tenant_db` dependency is required (not `get_db`) for RLS to function.
+- **RLS toggle:** `settings.rls_enabled` (default `False`; also `"false"` in the production manifest until it is switched on — see `docs-site/docs/self-hosting/kubernetes.md#row-level-security`). When disabled, tenant isolation relies on application-level `tenant_id` filtering. `get_tenant_db` dependency is required (not `get_db`) for RLS to function.
 - **Module gating (frontend):** `ModuleGuard` calls `useRouteAccess` hook (`frontend/src/hooks/useModules.ts`), which queries `/api/v1/modules` to check if the current tenant has the feature enabled.
 - **Circular imports:** Module system defers router imports inside `register_routes` to avoid circular import at startup (see `backend/app/modules/base.py:54`).
 ## Anti-Patterns

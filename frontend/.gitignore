@@ -35,3 +35,5 @@ storybook-static
 
 # CI-generated JUnit evidence
 test-results.xml
+# Signed-in sessions the pricing e2e setup writes (T266)
+/e2e/.auth/

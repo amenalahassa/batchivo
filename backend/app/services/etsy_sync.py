@@ -7,6 +7,7 @@ Batchivo is ALWAYS the source of truth - sync overwrites Etsy, never merges.
 Uses etsyv3 library for Etsy API v3 integration.
 """
 
+from decimal import Decimal
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -15,10 +16,13 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.temporal_pricing import platform_price
 from app.core.encryption import safe_decrypt
 from app.models.external_listing import ExternalListing
+from app.core.money import pence_to_pounds, pounds_to_pence
 from app.models.product import Product
 from app.models.tenant import Tenant
+from app.services.item_dimensions import effective_dimensions
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +215,7 @@ class EtsySyncService:
                         property_values=v["property_values"],
                         offerings=[
                             {
-                                "price": int(v["price"] * 100),
+                                "price": pounds_to_pence(v["price"]),
                                 "quantity": v["quantity"] or 1,
                                 "is_enabled": True,
                             }
@@ -221,7 +225,9 @@ class EtsySyncService:
                 ]
             else:
                 # Single variant: use product-level price/quantity
-                price_in_cents = int(listing_data["price"] * 100)  # Convert to cents
+                # Rounded half-up to the nearest cent, once, here at the
+                # boundary where Etsy's API requires an integer (task T191).
+                price_in_cents = pounds_to_pence(listing_data["price"])
                 etsy_products = [
                     EtsyProduct(
                         sku=listing_data["sku"] or "",
@@ -329,7 +335,7 @@ class EtsySyncService:
                             property_values=v["property_values"],
                             offerings=[
                                 {
-                                    "price": int(v["price"] * 100),
+                                    "price": pounds_to_pence(v["price"]),
                                     "quantity": v["quantity"] or 1,
                                     "is_enabled": True,
                                 }
@@ -338,7 +344,7 @@ class EtsySyncService:
                         for v in listing_data["variants"]
                     ]
                 else:
-                    price_in_cents = int(listing_data["price"] * 100)
+                    price_in_cents = pounds_to_pence(listing_data["price"])
                     etsy_products = [
                         EtsyProduct(
                             sku=listing_data["sku"] or "",
@@ -410,7 +416,13 @@ class EtsySyncService:
         specs = []
         if product.weight_grams:
             specs.append(f"Weight: {product.weight_grams}g")
-        if product.size_cm:
+        # The measured or entered dimensions when there are some (research
+        # D12); otherwise the free-text size the listing always carried.
+        dims, _ = effective_dimensions(product)
+        if dims is not None:
+            d = dims.quantize()
+            specs.append(f"Size: {d.length} × {d.width} × {d.height} mm")
+        elif product.size_cm:
             specs.append(f"Size: {product.size_cm}cm")
         if product.print_time_hours:
             specs.append(f"Print time: {product.print_time_hours} hours")
@@ -427,21 +439,22 @@ class EtsySyncService:
             elif product.images:
                 primary_image_url = product.images[0].image_url
 
-        # Get price from first active pricing (Etsy channel preferred)
-        price = None
-        if product.pricing:
-            etsy_pricing = [
-                p
-                for p in product.pricing
-                if p.is_active and p.sales_channel.platform_type == "etsy"
-            ]
-            if etsy_pricing:
-                price = float(etsy_pricing[0].list_price)
-            elif product.pricing:
-                # Fall back to first active pricing
-                active_pricing = [p for p in product.pricing if p.is_active]
-                if active_pricing:
-                    price = float(active_pricing[0].list_price)
+        # Get price from the CURRENT active pricing (Etsy channel preferred).
+        #
+        # `current_pricing` rather than `pricing`: since Tier 3 the second is
+        # the full price history, and publishing a superseded price to a live
+        # marketplace listing would undercharge every customer who bought at
+        # it (task T097, FR-039). Read through `current_rows`, which falls
+        # back to filtering the history where the relationship is absent --
+        # reading the attribute directly made a sync raise on any product
+        # handed over without it.
+        #
+        # The Etsy channel's own price at one unit (task T274): no fall-back to
+        # another channel's listing and no quantity tier published as the price
+        # of one. `None` is reported as "no price configured". The price stays a
+        # `Decimal` all the way to the one conversion Etsy's API requires (task
+        # T191, Constitution IV).
+        price = platform_price(product, "etsy")
 
         # Build per-size variant data for Etsy inventory offerings
         # Etsy property_id 100 = "Size" (standard Etsy taxonomy property)
@@ -452,7 +465,13 @@ class EtsySyncService:
             key=lambda v: v.display_order,
         )
         for variant in active_variants:
-            variant_price = float(price or 0) + (variant.price_adjustment_pence / 100)
+            # Two lossy steps in one line before T191: an exact column read
+            # through `float()`, plus `int / 100` for the adjustment, which is
+            # binary division. The price offered to a customer was therefore
+            # two approximations away from the figure the operator set.
+            variant_price = (price or Decimal("0")) + pence_to_pounds(
+                variant.price_adjustment_pence
+            )
             variants_data.append(
                 {
                     "sku": variant.sku or f"{product.sku}-{variant.size}",

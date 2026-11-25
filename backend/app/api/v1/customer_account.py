@@ -2,6 +2,13 @@
 
 Handles customer profile, addresses, and order history.
 All endpoints require customer authentication.
+
+Every handler queries on `get_customer_db`, the session scoped to the tenant
+the customer's access token was issued for. Four of these serve a customer
+their own order money -- the order list, the order detail, the returns list and
+the return request -- and on the un-scoped session their only protection was an
+application-level `Order.tenant_id == customer.tenant_id` filter and a
+lowercase email match (Constitution I).
 """
 
 import logging
@@ -15,8 +22,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.customer_dependencies import CurrentCustomer
-from app.database import get_db
+from app.auth.customer_dependencies import CurrentCustomer, get_customer_db
 from app.models.customer import Customer, CustomerAddress
 from app.models.order import Order
 from app.models.return_request import ReturnItem, ReturnRequest, ReturnStatus
@@ -44,7 +50,7 @@ router = APIRouter(dependencies=[Depends(legacy_customer_write_guard)])
 @router.get("/profile", response_model=CustomerWithAddresses)
 async def get_profile(
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Get current customer profile with addresses."""
     # Reload with addresses
@@ -60,7 +66,7 @@ async def get_profile(
 async def update_profile(
     data: CustomerUpdate,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Update customer profile."""
     if data.full_name is not None:
@@ -87,7 +93,7 @@ async def update_profile(
 @router.get("/addresses", response_model=CustomerAddressListResponse)
 async def list_addresses(
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """List all customer addresses."""
     result = await db.execute(
@@ -107,7 +113,7 @@ async def list_addresses(
 async def create_address(
     data: CustomerAddressCreate,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Create a new address."""
     # If this is marked as default, unset other defaults
@@ -148,7 +154,7 @@ async def create_address(
 async def get_address(
     address_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Get a specific address."""
     result = await db.execute(
@@ -173,7 +179,7 @@ async def update_address(
     address_id: UUID,
     data: CustomerAddressUpdate,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Update an address."""
     result = await db.execute(
@@ -235,7 +241,7 @@ async def update_address(
 async def delete_address(
     address_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Delete an address."""
     result = await db.execute(
@@ -260,7 +266,7 @@ async def delete_address(
 async def set_default_address(
     address_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Set an address as the default."""
     result = await db.execute(
@@ -306,7 +312,7 @@ async def list_orders(
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     customer: CurrentCustomer = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """
     List customer's order history.
@@ -351,7 +357,7 @@ async def list_orders(
 async def get_order(
     order_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Get a specific order."""
     result = await db.execute(
@@ -424,7 +430,7 @@ def _build_customer_return_response(return_request: ReturnRequest) -> CustomerRe
 @router.get("/returns", response_model=CustomerReturnListResponse)
 async def list_returns(
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
@@ -460,7 +466,7 @@ async def list_returns(
 async def get_return(
     return_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Get a specific return request."""
     result = await db.execute(
@@ -491,7 +497,7 @@ async def create_return_request(
     order_id: UUID,
     data: ReturnRequestCreate,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """
     Create a return request for an order.
@@ -630,7 +636,7 @@ async def create_return_request(
 async def cancel_return_request(
     return_id: UUID,
     customer: CurrentCustomer,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_customer_db),
 ):
     """Cancel a return request (only if still in requested status)."""
     result = await db.execute(

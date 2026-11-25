@@ -3,6 +3,8 @@
  */
 
 import { api } from '@/lib/api'
+import type { Money } from '@/types/pricing'
+import type { TenantType } from '@/types/modules'
 
 const API_V1_PREFIX = '/api/v1'
 
@@ -11,7 +13,7 @@ export interface TenantRegistrationRequest {
   password: string
   full_name: string
   business_name: string
-  tenant_type?: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING'
+  tenant_type?: TenantType
 }
 
 export interface TenantRegistrationResponse {
@@ -99,7 +101,7 @@ export async function updateOnboardingStep1(data: {
  * Update onboarding step 2 - Business type
  */
 export async function updateOnboardingStep2(data: {
-  tenant_type: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING'
+  tenant_type: TenantType
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {
   const response = await api.put(`${API_V1_PREFIX}/onboarding/wizard/step/2`, data)
   return response.data
@@ -111,6 +113,9 @@ export async function updateOnboardingStep2(data: {
 export async function updateOnboardingStep3(data: {
   shop_display_name?: string
   currency?: string
+  currency_symbol?: string
+  /** ISO 3166-1 alpha-2; chooses the postage carrier only (spec 006). */
+  country?: string | null
   timezone?: string
   primary_color?: string
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {
@@ -125,9 +130,39 @@ export async function updateOnboardingStep4(data: {
   skip?: boolean
   product_name?: string
   product_description?: string
-  product_price?: number
+  product_price?: Money
 }): Promise<{ message: string; step_completed: number; next_step: number | null; is_completed: boolean }> {
   const response = await api.put(`${API_V1_PREFIX}/onboarding/wizard/step/4`, data)
+  return response.data
+}
+
+export interface OnboardingStep5Request {
+  skip?: boolean
+  /** Null adds the whole catalogue; an empty list adds none. */
+  packaging_keys?: string[] | null
+  /** Null proposes the shop's own carrier (country, else currency). */
+  carrier?: string | null
+  /** Null adds all of the carrier's services; an empty list none. */
+  services?: string[] | null
+  default_service?: string | null
+}
+
+export interface OnboardingStep5Response {
+  message: string
+  step_completed: number
+  next_step: number | null
+  is_completed: boolean
+  /** What could not be seeded; setup still completes. */
+  warnings: string[]
+}
+
+/**
+ * Update onboarding step 5 - Standard packaging and carrier postage (spec 006)
+ */
+export async function updateOnboardingStep5(
+  data: OnboardingStep5Request,
+): Promise<OnboardingStep5Response> {
+  const response = await api.put(`${API_V1_PREFIX}/onboarding/wizard/step/5`, data)
   return response.data
 }
 

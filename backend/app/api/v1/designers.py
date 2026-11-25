@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin, RequireMember
 from app.database import get_db
 from app.models.designer import Designer
 from app.models.product import Product
@@ -130,6 +130,7 @@ async def create_designer(
     designer_data: DesignerCreate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new designer."""
@@ -191,6 +192,7 @@ async def update_designer(
     designer_data: DesignerUpdate,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _member: RequireMember,
     db: AsyncSession = Depends(get_db),
 ):
     """Update an existing designer."""
@@ -257,6 +259,7 @@ async def delete_designer(
     designer_id: UUID,
     tenant: CurrentTenant,
     user: CurrentUser,
+    _admin: RequireAdmin,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a designer."""

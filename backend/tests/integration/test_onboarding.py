@@ -180,6 +180,9 @@ class TestEmailVerification:
         assert tenant is not None
         assert tenant.name == "Verified Shop"
         assert tenant.tenant_type == "three_d_print"
+        # A new tenant opens the setup wizard at step 1 (bug onboarding-wizard-steps-missing)
+        assert tenant.settings["onboarding"]["is_completed"] is False
+        assert tenant.settings["onboarding"]["current_step"] == 1
 
         # Verify user was created
         result = await db_session.execute(select(User).where(User.email == "verified@example.com"))

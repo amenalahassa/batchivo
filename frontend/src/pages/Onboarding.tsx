@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect } from 'react'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -14,14 +14,19 @@ import { Step1BusinessInfo } from '@/components/onboarding/Step1BusinessInfo'
 import { Step2CraftType } from '@/components/onboarding/Step2CraftType'
 import { Step3ShopSetup } from '@/components/onboarding/Step3ShopSetup'
 import { Step4FirstProduct } from '@/components/onboarding/Step4FirstProduct'
+import { PackagingPostageStep } from '@/components/onboarding/PackagingPostageStep'
 import {
   getOnboardingStatus,
   updateOnboardingStep1,
   updateOnboardingStep2,
   updateOnboardingStep3,
   updateOnboardingStep4,
+  updateOnboardingStep5,
   type OnboardingStatusResponse,
 } from '@/lib/api/onboarding'
+import { apiErrorDetail } from '@/lib/apiError'
+import { symbolForCurrency } from '@/lib/money'
+import type { TenantType } from '@/types/modules'
 
 export function Onboarding() {
   const navigate = useNavigate()
@@ -60,7 +65,7 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -74,21 +79,29 @@ export function Onboarding() {
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
   const step3Mutation = useMutation({
-    mutationFn: updateOnboardingStep3,
+    // The symbol travels with the code, as on the settings screen.
+    mutationFn: (data: Parameters<typeof updateOnboardingStep3>[0]) =>
+      updateOnboardingStep3({
+        ...data,
+        currency_symbol: data.currency ? symbolForCurrency(data.currency) : undefined,
+      }),
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['onboarding-status'] })
+      // Step 5 suggests the carrier from the country and currency just saved.
+      queryClient.invalidateQueries({ queryKey: ['postage'] })
+      queryClient.invalidateQueries({ queryKey: ['packaging-catalogue'] })
       if (data.next_step) {
         setCurrentStep(data.next_step)
       }
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -99,11 +112,29 @@ export function Onboarding() {
       if (data.is_completed) {
         // Onboarding complete - redirect to dashboard
         navigate({ to: '/dashboard' })
+      } else if (data.next_step) {
+        setCurrentStep(data.next_step)
       }
       setError(null)
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to save. Please try again.')
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
+    },
+  })
+
+  // Step 5 (spec 006): what could not be seeded is a warning; setup still finishes.
+  const step5Mutation = useMutation({
+    mutationFn: updateOnboardingStep5,
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['onboarding-status'] })
+      queryClient.invalidateQueries({ queryKey: ['consumables'] })
+      queryClient.invalidateQueries({ queryKey: ['fees', 'shipping-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['catalogue-notice'] })
+      setError(null)
+      if (data.is_completed) navigate({ to: '/dashboard' })
+    },
+    onError: (err) => {
+      setError(apiErrorDetail(err) || 'Failed to save. Please try again.')
     },
   })
 
@@ -126,7 +157,8 @@ export function Onboarding() {
     step1Mutation.isPending ||
     step2Mutation.isPending ||
     step3Mutation.isPending ||
-    step4Mutation.isPending
+    step4Mutation.isPending ||
+    step5Mutation.isPending
 
   // Show loading state while fetching status
   if (isLoadingStatus) {
@@ -182,7 +214,7 @@ export function Onboarding() {
 
             {currentStep === 2 && (
               <Step2CraftType
-                initialData={stepData.step_2 as { tenant_type?: 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING' } | undefined}
+                initialData={stepData.step_2 as { tenant_type?: TenantType } | undefined}
                 onSubmit={step2Mutation.mutate}
                 onBack={goBack}
                 isLoading={isLoading}
@@ -200,11 +232,19 @@ export function Onboarding() {
 
             {currentStep === 4 && (
               <Step4FirstProduct
-                initialData={stepData.step_4 as { product_name?: string; product_description?: string; product_price?: number } | undefined}
+                initialData={stepData.step_4 as { product_name?: string; product_description?: string; product_price?: string } | undefined}
                 onSubmit={step4Mutation.mutate}
                 onBack={goBack}
                 isLoading={isLoading}
                 currency={(stepData.step_3 as Record<string, string>)?.currency}
+              />
+            )}
+
+            {currentStep === 5 && (
+              <PackagingPostageStep
+                onSubmit={step5Mutation.mutate}
+                onBack={goBack}
+                isLoading={isLoading}
               />
             )}
           </CardContent>
@@ -212,7 +252,10 @@ export function Onboarding() {
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground mt-6">
-          Your progress is saved automatically. You can come back to finish setup anytime.
+          Your progress is saved automatically. You can come back to finish setup anytime.{' '}
+          <Link to="/dashboard" className="underline">
+            Finish later
+          </Link>
         </p>
       </div>
     </div>

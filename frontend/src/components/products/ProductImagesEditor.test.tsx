@@ -15,6 +15,8 @@ import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ProductImagesEditor } from './ProductImagesEditor'
 import * as productsApi from '@/lib/api/products'
+import { within } from '@testing-library/react'
+import { capabilities } from '@/components/genai/genaiTestData'
 
 // Mock the products API
 vi.mock('@/lib/api/products', () => ({
@@ -25,6 +27,26 @@ vi.mock('@/lib/api/products', () => ({
   rotateProductImage: vi.fn(),
   updateProductImage: vi.fn(),
 }))
+
+// The signed-in role decides whether the AI controls are offered (spec 008).
+const auth = vi.hoisted(() => ({ role: 'viewer' }))
+vi.mock('@/contexts/AuthContext', () => {
+  const session = () => ({ user: { email: 'operator@example.com', role: auth.role }, logout: vi.fn() })
+  return { useAuth: session, useOptionalAuth: session }
+})
+
+const genai = vi.hoisted(() => ({
+  capabilities: vi.fn(),
+  estimate: vi.fn(),
+  createJob: vi.fn(),
+  getJob: vi.fn(),
+  listJobs: vi.fn(),
+  cancelJob: vi.fn(),
+  adopt: vi.fn(),
+  upload: vi.fn(),
+  getBlob: vi.fn(() => new Promise(() => {})),
+}))
+vi.mock('@/lib/api/genai', () => ({ genaiApi: genai }))
 
 // Mock config
 vi.mock('@/lib/config', () => ({
@@ -45,6 +67,7 @@ const mockImages: productsApi.ProductImage[] = [
     display_order: 0,
     created_at: '2024-01-01T00:00:00Z',
     updated_at: '2024-01-01T00:00:00Z',
+    origin: 'photo',
   },
   {
     id: 'img-2',
@@ -57,6 +80,7 @@ const mockImages: productsApi.ProductImage[] = [
     display_order: 1,
     created_at: '2024-01-02T00:00:00Z',
     updated_at: '2024-01-02T00:00:00Z',
+    origin: 'photo',
   },
   {
     id: 'img-3',
@@ -69,6 +93,7 @@ const mockImages: productsApi.ProductImage[] = [
     display_order: 2,
     created_at: '2024-01-03T00:00:00Z',
     updated_at: '2024-01-03T00:00:00Z',
+    origin: 'photo',
   },
 ]
 
@@ -94,6 +119,7 @@ function renderWithQueryClient(component: React.ReactNode) {
 describe('ProductImagesEditor', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    auth.role = 'viewer'
   })
 
   describe('Loading State', () => {
@@ -235,7 +261,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.setPrimaryImage).mockResolvedValue(mockImages[1])
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -263,7 +289,7 @@ describe('ProductImagesEditor', () => {
     it('shows confirmation dialog before deleting', async () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -288,7 +314,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.deleteProductImage).mockResolvedValue(undefined)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -319,7 +345,7 @@ describe('ProductImagesEditor', () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
       vi.mocked(productsApi.rotateProductImage).mockResolvedValue(mockImages[0])
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -343,7 +369,7 @@ describe('ProductImagesEditor', () => {
     it('opens preview dialog when eye button is clicked', async () => {
       vi.mocked(productsApi.getProductImages).mockResolvedValue(mockImages)
 
-      const user = userEvent.setup()
+      const user = userEvent.setup({ delay: null })
 
       renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
 
@@ -364,5 +390,87 @@ describe('ProductImagesEditor', () => {
         expect(dialogImages.length).toBe(1)
       })
     })
+  })
+})
+
+// ============================================
+// Generative AI (spec 008, US3, FR-017)
+// ============================================
+
+describe('ProductImagesEditor generative AI', () => {
+  const withAI: productsApi.ProductImage[] = [
+    mockImages[0],
+    { ...mockImages[1], origin: 'ai' },
+  ]
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    auth.role = 'member'
+    vi.mocked(productsApi.getProductImages).mockResolvedValue(withAI)
+    vi.mocked(productsApi.updateProductImage).mockResolvedValue({ ...mockImages[0], origin: 'render' })
+    genai.getBlob.mockImplementation(() => new Promise(() => {}))
+    genai.capabilities.mockResolvedValue(capabilities())
+    genai.estimate.mockResolvedValue({
+      estimated_cost: '0.0030',
+      month_to_date: '1.2000',
+      budget: '10.00',
+      would_exceed_budget: false,
+      currency: 'USD',
+    })
+  })
+
+  it('marks an AI image with the badge and offers no origin select for it', async () => {
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    expect(await screen.findByLabelText('AI: made with generative AI')).toBeInTheDocument()
+    // Only the photo keeps an origin select; "ai" is never chosen by hand.
+    const selects = screen.getAllByLabelText('Image origin')
+    expect(selects).toHaveLength(1)
+    expect(screen.queryByRole('option', { name: 'AI' })).not.toBeInTheDocument()
+  })
+
+  it('patches the origin when a photo is marked as a render', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    const select = await screen.findByLabelText('Image origin')
+    await user.selectOptions(select, 'render')
+    await waitFor(() =>
+      expect(productsApi.updateProductImage).toHaveBeenCalledWith('prod-1', 'img-1', { origin: 'render' })
+    )
+  })
+
+  it('offers the AI menu to a member', async () => {
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    await screen.findByText('product-front.jpg')
+    expect(screen.getAllByRole('button', { name: 'AI actions' })).toHaveLength(withAI.length)
+  })
+
+  it('hides the AI menu from a viewer', async () => {
+    auth.role = 'viewer'
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    await screen.findByText('product-front.jpg')
+    expect(screen.queryByRole('button', { name: 'AI actions' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Image origin')).toBeDisabled()
+  })
+
+  it('opens the generate dialog with that image when Remove background is chosen', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    await screen.findByText('product-front.jpg')
+    await user.click(screen.getAllByRole('button', { name: 'AI actions' })[0])
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove background' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: /Remove background/ })).toBeInTheDocument()
+    expect(await within(dialog).findByRole('button', { name: 'Product front view' })).toBeInTheDocument()
+    // The original is never changed by an AI action.
+    expect(productsApi.updateProductImage).not.toHaveBeenCalled()
+  })
+
+  it('lists the product generations in a collapsible section', async () => {
+    genai.listJobs.mockResolvedValue({ items: [], total: 0 })
+    const user = userEvent.setup({ delay: null })
+    renderWithQueryClient(<ProductImagesEditor productId="prod-1" />)
+    await screen.findByText('product-front.jpg')
+    await user.click(screen.getByRole('button', { name: /AI generations/ }))
+    expect(await screen.findByText('No AI generations yet.')).toBeInTheDocument()
   })
 })

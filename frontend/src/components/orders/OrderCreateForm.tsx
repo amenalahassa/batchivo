@@ -27,6 +27,8 @@ import {
 } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { Textarea } from '@/components/ui/textarea'
+import { ZERO, addMoney, formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 
 type OrderLine = {
   product_id: string
@@ -40,9 +42,22 @@ const emptyLine = (): OrderLine => ({
   unit_price: '',
 })
 
-function toMoney(value: string): number {
-  const parsed = Number.parseFloat(value)
-  return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0
+/**
+ * A typed figure as an exact decimal string, to two places.
+ *
+ * It used to be `Math.round(Number.parseFloat(value) * 100) / 100`, a number,
+ * and the order it created crossed the wire as a JSON number. Every money
+ * field on this API is a decimal string now (T201), so the amount stays in
+ * string space from the keystroke to the request -- never through a binary
+ * double (Constitution IV, FR-047).
+ *
+ * An unreadable entry is zero, as before: the field is validated by the API,
+ * and a half-typed amount must not blank the running total beside it.
+ */
+function toMoney(value: string): Money {
+  const trimmed = value.trim()
+  if (trimmed === '' || !/^[-+]?\d*\.?\d*$/.test(trimmed)) return ZERO
+  return formatMoney(trimmed, '')
 }
 
 function toQuantity(value: string): number {
@@ -90,11 +105,17 @@ export function OrderCreateForm() {
   const products = productsQuery.data?.products ?? []
   const channels = channelsQuery.data?.channels ?? []
 
+  // Summed in decimal string space, not as floats: this is the figure the
+  // operator checks before placing the order, and it has to be the one the
+  // API will compute from the same lines (Constitution IV).
   const subtotal = useMemo(
-    () => lines.reduce((sum, line) => sum + toMoney(line.unit_price) * toQuantity(line.quantity), 0),
+    () =>
+      sumMoney(
+        lines.map((line) => multiplyMoney(toMoney(line.unit_price), toQuantity(line.quantity))),
+      ),
     [lines],
   )
-  const total = subtotal + toMoney(shippingCost)
+  const total = addMoney(subtotal, toMoney(shippingCost))
 
   const mutation = useMutation({
     mutationFn: (data: CreateOrderRequest) => createOrder(data),

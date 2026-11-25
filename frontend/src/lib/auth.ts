@@ -2,6 +2,7 @@
  * Authentication utilities and types for JWT-based auth
  */
 import { config } from "./config";
+import { detailText } from "./apiError";
 
 // API base URL - supports runtime config (container env vars) with build-time fallback
 const API_BASE_URL = config.apiUrl;
@@ -9,6 +10,9 @@ const API_V1_PREFIX = '/api/v1'
 const TOKEN_STORAGE_KEY = 'batchivo_auth_tokens'
 const REMEMBER_ME_KEY = 'batchivo_remember_me'
 const TOKEN_REFRESH_THRESHOLD = 5 * 60 * 1000 // 5 minutes
+
+/** A user's role within their tenant, as `/users/me` reports it. */
+export type TenantRole = 'owner' | 'admin' | 'member' | 'viewer'
 
 export interface User {
   id: string
@@ -19,6 +23,11 @@ export interface User {
   currency_code: string
   currency_symbol: string
   is_platform_admin: boolean
+  /**
+   * The role in `tenant_id`. Null for a user with no tenant membership, and
+   * absent from a token minted before the field existed.
+   */
+  role?: TenantRole | null
 }
 
 export interface AuthState {
@@ -60,7 +69,7 @@ export async function register(data: RegisterData): Promise<AuthTokens> {
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Registration failed')
+    throw new Error(detailText(error.detail) ?? 'Registration failed')
   }
 
   const tokens = await response.json()
@@ -83,7 +92,7 @@ export async function login(credentials: LoginCredentials, rememberMe = true): P
 
   if (!response.ok) {
     const error = await response.json()
-    throw new Error(error.detail || 'Login failed')
+    throw new Error(detailText(error.detail) ?? 'Login failed')
   }
 
   const tokens = await response.json()

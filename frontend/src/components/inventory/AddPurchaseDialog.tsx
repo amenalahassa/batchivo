@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
+import { useCurrency } from '@/hooks/useCurrency'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { consumablesApi } from '@/lib/api/consumables'
+import { divideMoney, formatMoney } from '@/lib/money'
 import type { ConsumablePurchaseCreate } from '@/types/consumable'
 import {
   Dialog,
@@ -21,6 +23,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Loader2 } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface AddPurchaseDialogProps {
   open: boolean
@@ -29,6 +32,8 @@ interface AddPurchaseDialogProps {
 }
 
 export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurchaseDialogProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
   const queryClient = useQueryClient()
 
   // Fetch consumable details if ID provided
@@ -49,7 +54,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
   const [formData, setFormData] = useState<Partial<ConsumablePurchaseCreate>>({
     consumable_type_id: '',
     quantity_purchased: 1,
-    total_cost: 0,
+    total_cost: '0',
     supplier: '',
     order_reference: '',
     purchase_url: '',
@@ -63,7 +68,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
       setFormData({
         consumable_type_id: consumableId || '',
         quantity_purchased: 1,
-        total_cost: 0,
+        total_cost: '0',
         supplier: consumable?.preferred_supplier || '',
         order_reference: '',
         purchase_url: consumable?.supplier_url || '',
@@ -73,11 +78,14 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
     }
   }, [open, consumableId, consumable])
 
-  // Calculate cost per unit
+  // The per-unit cost this purchase implies, divided exactly. It used to be a
+  // float division rendered with `toFixed(4)`, which rounds a figure that was
+  // already approximate (Constitution IV); `divideMoney` rounds once, at the
+  // four places shown.
   const costPerUnit =
-    formData.total_cost && formData.quantity_purchased && formData.quantity_purchased > 0
-      ? (formData.total_cost / formData.quantity_purchased).toFixed(4)
-      : '0.0000'
+    formData.quantity_purchased && formData.quantity_purchased > 0
+      ? divideMoney(formData.total_cost, formData.quantity_purchased, 4)
+      : null
 
   // Create mutation
   const createMutation = useMutation({
@@ -100,7 +108,9 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
     createMutation.mutate(formData as ConsumablePurchaseCreate)
   }
 
-  const handleInputChange = (field: keyof ConsumablePurchaseCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumablePurchaseCreate>(field: K, value: ConsumablePurchaseCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -172,7 +182,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
 
             <div className="space-y-2">
               <Label htmlFor="total_cost">
-                Total Cost (£) <span className="text-destructive">*</span>
+                Total Cost ({currency.symbol}) <span className="text-destructive">*</span>
               </Label>
               <Input
                 id="total_cost"
@@ -181,7 +191,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
                 min="0"
                 value={formData.total_cost || ''}
                 onChange={(e) =>
-                  handleInputChange('total_cost', parseFloat(e.target.value) || 0)
+                  handleInputChange('total_cost', e.target.value)
                 }
                 required
               />
@@ -189,7 +199,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
           </div>
 
           <div className="text-sm text-muted-foreground">
-            Cost per unit: <span className="font-mono">£{costPerUnit}</span>
+            Cost per unit: <span className="font-mono">{formatMoney(costPerUnit, currency.symbol)}</span>
           </div>
 
           <div className="space-y-2">
@@ -251,7 +261,7 @@ export function AddPurchaseDialog({ open, onOpenChange, consumableId }: AddPurch
             <div className="bg-destructive/10 border border-destructive rounded-md p-3">
               <p className="text-sm text-destructive">
                 Failed to record purchase:{' '}
-                {createMutation.error instanceof Error ? createMutation.error.message : 'Unknown error'}
+                {apiErrorDetail(createMutation.error)}
               </p>
             </div>
           )}

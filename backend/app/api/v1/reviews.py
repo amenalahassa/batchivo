@@ -13,7 +13,7 @@ from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireAdmin
 from app.database import get_db
 from app.models.product import Product
 from app.models.review import Review
@@ -188,6 +188,7 @@ async def get_review(
 async def update_review(
     review_id: UUID,
     data: ReviewUpdate,
+    _admin: RequireAdmin,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -246,6 +247,7 @@ async def update_review(
 @router.post("/{review_id}/approve", response_model=ReviewAdminResponse)
 async def approve_review(
     review_id: UUID,
+    _admin: RequireAdmin,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -293,6 +295,7 @@ async def approve_review(
 async def reject_review(
     review_id: UUID,
     data: ReviewReject,
+    _admin: RequireAdmin,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
@@ -336,6 +339,7 @@ async def reject_review(
 @router.delete("/{review_id}", status_code=204)
 async def delete_review(
     review_id: UUID,
+    _admin: RequireAdmin,
     tenant: CurrentTenant = None,
     user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),

@@ -34,7 +34,12 @@ import { ProductionRuns } from '@/pages/ProductionRuns'
 import { ProductionRunDetailPage } from '@/pages/ProductionRunDetailPage'
 import { ProductionRunCreatePage } from '@/pages/ProductionRunCreatePage'
 import { Consumables } from '@/pages/Consumables'
+import { Packaging } from '@/pages/Packaging'
 import { SalesChannels } from '@/pages/SalesChannels'
+import { Scenarios } from '@/pages/Scenarios'
+import { Ideas } from '@/pages/Ideas'
+import { IdeaDetailPage } from '@/pages/IdeaDetailPage'
+import { QueueProfitability } from '@/pages/QueueProfitability'
 import { SalesChannelDetailPage } from '@/pages/SalesChannelDetailPage'
 import { SalesChannelCreatePage } from '@/pages/SalesChannelCreatePage'
 import { SalesChannelEditPage } from '@/pages/SalesChannelEditPage'
@@ -299,6 +304,19 @@ const consumablesRoute = new Route({
   ),
 })
 
+// Packaging route (spec 006): boxes, mailers, void fill and wrap
+const packagingRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/packaging',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Packaging />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
 // Models routes (printed items with BOM)
 const modelsRoute = new Route({
   getParentRoute: () => rootRoute,
@@ -423,6 +441,58 @@ const salesChannelsRoute = new Route({
   component: () => (
     <ProtectedRoute>
       <SalesChannels />
+    </ProtectedRoute>
+  ),
+})
+
+// A catalogue-wide shock (FR-044). It reads products and writes nothing, so it
+// sits behind the same module gate the catalogue does.
+const scenariosRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/scenarios',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Scenarios />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
+// Product ideas (spec 007): board/list, then one idea.
+const ideasRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/ideas',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <Ideas />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
+const ideaDetailRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/ideas/$ideaId',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <IdeaDetailPage />
+      </ModuleGuard>
+    </ProtectedRoute>
+  ),
+})
+
+// The queue by profit per machine-hour (T234, FR-043).
+const queueProfitabilityRoute = new Route({
+  getParentRoute: () => rootRoute,
+  path: '/queue',
+  component: () => (
+    <ProtectedRoute>
+      <ModuleGuard>
+        <QueueProfitability />
+      </ModuleGuard>
     </ProtectedRoute>
   ),
 })
@@ -700,6 +770,7 @@ const routeTree = rootRoute.addChildren([
   productEditRoute,    // /products/$productId/edit before /products/$productId
   productDetailRoute,  // Dynamic route last
   consumablesRoute,    // Consumables inventory
+  packagingRoute,      // Packaging (spec 006)
   modelsRoute,         // Models catalog (printed items with BOM)
   modelCreateRoute,    // Static route first
   modelEditRoute,      // /models/$modelId/edit before /models/$modelId
@@ -714,6 +785,10 @@ const routeTree = rootRoute.addChildren([
   salesChannelCreateRoute,   // Static route first
   salesChannelEditRoute,     // /sales-channels/$channelId/edit before /sales-channels/$channelId
   salesChannelDetailRoute,   // Dynamic route last
+  scenariosRoute,            // Catalogue-wide price-shock scenarios
+  ideasRoute,                // Product ideas board and list (static first)
+  ideaDetailRoute,           // One idea (dynamic last)
+  queueProfitabilityRoute,   // The queue by profit per machine-hour
   categoriesRoute,           // Categories list
   designersRoute,            // Designers list
   printerDashboardRoute,     // Printer fleet monitoring dashboard

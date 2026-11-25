@@ -1,27 +1,71 @@
 """Orders API endpoints for managing customer orders."""
 
+import logging
 from datetime import datetime, timezone, date
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select, desc, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
 from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order_parcel import OrderParcel
 from app.models.product import Product
+from app.schemas.packaging import (
+    ConfirmParcelsRequest,
+    ConfirmParcelsResponse,
+    EstimatedPostageOut,
+    OrderPackagingSuggestionsResponse,
+    OrderParcelOut,
+    OrderParcelSuggestionOut,
+    OrderWarningOut,
+    ParcelContentOut,
+    SizeOut,
+    StockWarningOut,
+    VoidFillOut,
+)
+from app.services.order_parcel_service import (
+    InvalidParcels,
+    OrderParcelService,
+    ParcelRequest,
+    ParcelsAlreadyConfirmed,
+)
 from app.models.sales_channel import SalesChannel
-from app.auth.dependencies import CurrentTenant, RequireAdmin
+from app.models.user import User
+from app.core.money import pence_to_pounds, pounds_to_pence
+from app.services.refund_actuals import record_refund
+from app.auth.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    TenantDB,
+)
 from app.services.commerce_order_ownership import (
     dispatch_native_commerce,
     reject_native_commerce_mutation,
 )
+from app.services.sale_snapshot import write_sale_snapshot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _record_actuals(order: Order, user: User) -> None:
+    """Mark the order's postage and tax as entered by this person (T241).
+
+    They are the realised margin's postage and the P&L's tax liability, so who
+    set them is kept beside them, as a fee actual keeps it (FR-041e). Imports
+    and the storefront record their own origin.
+    """
+    order.actuals_source = "entered"
+    order.actuals_recorded_by_user_id = user.id
+    order.actuals_recorded_at = datetime.now(timezone.utc)
 
 
 # ============================================
@@ -37,10 +81,52 @@ class OrderItemResponse(BaseModel):
     product_sku: str
     product_name: str
     quantity: int
-    unit_price: float
-    total_price: float
+    # Exact, and a decimal string on the wire. These were `float` until T201
+    # -- pinned by name in the float ban's route-layer allow-list rather than
+    # fixed, because correcting them changes the wire format the order screens
+    # read (FR-047, Constitution IV).
+    unit_price: Decimal
+    total_price: Decimal
+    # The rate frozen at sale, with its day and where it came from (FR-028g,
+    # FR-028h, task T232), and why the snapshot was incomplete. Null on a line
+    # sold before snapshots existed, which recorded none of it.
+    fx_rate: Optional[Decimal] = None
+    fx_rate_date: Optional[date] = None
+    fx_rate_source: Optional[str] = None
+    fx_quote_currency: Optional[str] = None
+    fx_rate_is_stale: Optional[bool] = None
+    snapshot_incomplete: list[str] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+
+def _fx_rate_is_stale(item: OrderItem, order: Order) -> Optional[bool]:
+    """Whether the frozen rate is older than the day the order was placed.
+
+    Derived on read from the two dates rather than stored (Constitution V).
+    """
+    if item.fx_rate_date is None or order.created_at is None:
+        return None
+    return item.fx_rate_date < order.created_at.date()
+
+
+def _item_response(item: OrderItem, order: Order) -> OrderItemResponse:
+    """One order line as every order read serves it, frozen-rate provenance included."""
+    return OrderItemResponse(
+        id=str(item.id),
+        product_id=str(item.product_id) if item.product_id else None,
+        product_sku=item.product_sku,
+        product_name=item.product_name,
+        quantity=item.quantity,
+        unit_price=item.unit_price,
+        total_price=item.total_price,
+        fx_rate=item.fx_rate,
+        fx_rate_date=item.fx_rate_date,
+        fx_rate_source=item.fx_rate_source,
+        fx_quote_currency=item.fx_quote_currency,
+        fx_rate_is_stale=_fx_rate_is_stale(item, order),
+        snapshot_incomplete=list(item.snapshot_incomplete or []),
+    )
 
 
 class OrderResponse(BaseModel):
@@ -59,9 +145,29 @@ class OrderResponse(BaseModel):
     shipping_postcode: str
     shipping_country: str
     shipping_method: str
-    shipping_cost: float
-    subtotal: float
-    total: float
+    shipping_cost: Decimal
+    # ------------------------------------------------------------------
+    # What the operator actually paid and actually owes (task T150)
+    #
+    # `shipping_cost` above is revenue: what the customer was charged. These
+    # two are the other side of the sale, and Tier 2 added the columns without
+    # anything to fill or read them -- so the realised shipping-margin line
+    # (FR-024) and the operator's tax liability (FR-028d) reported zero on
+    # every order while `reconciliation.py` dutifully summed them.
+    #
+    # `Decimal`, as every money field on this response now is. The three
+    # around them -- `shipping_cost`, `subtotal`, `total` -- were `float` when
+    # these arrived and were corrected by T201.
+    # ------------------------------------------------------------------
+    # Null where the source did not record it -- unrecorded, not zero (T230).
+    postage_paid: Optional[Decimal] = None
+    sales_tax_collected: Optional[Decimal] = None
+    tax_exclusive_derived: bool = False
+    # How postage and tax arrived and who entered them (T241, FR-041e).
+    actuals_source: Optional[str] = None
+    actuals_recorded_by_user_id: Optional[str] = None
+    subtotal: Decimal
+    total: Decimal
     currency: str
     payment_provider: str
     payment_id: Optional[str] = None
@@ -76,6 +182,11 @@ class OrderResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     items: list[OrderItemResponse] = []
+    # The parcels confirmed at dispatch, as stored (packaging advisor, D10).
+    parcels: list[OrderParcelOut] = []
+    # True while no parcel is confirmed and the postage is the system's
+    # derivation from the products' packaging -- an estimate, not a label.
+    postage_is_estimate: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -97,6 +208,19 @@ class UpdateOrderRequest(BaseModel):
     tracking_number: Optional[str] = None
     tracking_url: Optional[str] = None
     internal_notes: Optional[str] = None
+    # A label that cost more than expected, or a tax figure read off a
+    # marketplace statement a fortnight later. Correcting these is not
+    # restating history: they are *actuals* recorded against the order, and the
+    # order-line snapshot they sit beside is untouched by either (FR-037).
+    postage_paid: Optional[Decimal] = Field(
+        None, ge=Decimal("0.00"), decimal_places=2, description="What posting this order cost"
+    )
+    sales_tax_collected: Optional[Decimal] = Field(
+        None,
+        ge=Decimal("0.00"),
+        decimal_places=2,
+        description="Sales tax taken from the customer; never revenue (FR-028c)",
+    )
 
 
 class CreateOrderItemRequest(BaseModel):
@@ -120,7 +244,33 @@ class CreateOrderRequest(BaseModel):
     shipping_postcode: str = Field(..., min_length=1, max_length=20)
     shipping_country: str = Field("United Kingdom", min_length=1, max_length=100)
     shipping_method: str = Field(..., min_length=1, max_length=100)
-    shipping_cost: Decimal = Field(Decimal("0.00"), ge=Decimal("0.00"), decimal_places=2)
+    shipping_cost: Decimal = Field(
+        Decimal("0.00"),
+        ge=Decimal("0.00"),
+        decimal_places=2,
+        description="Shipping REVENUE charged to the customer, not postage paid (FR-024)",
+    )
+    postage_paid: Decimal = Field(
+        Decimal("0.00"),
+        ge=Decimal("0.00"),
+        decimal_places=2,
+        description=(
+            "What the operator paid to post it, where that is known at sale. "
+            "Kept apart from shipping revenue so their difference is its own "
+            "margin line, positive or negative (FR-024). Usually recorded at "
+            "shipping instead, when the label is actually bought."
+        ),
+    )
+    sales_tax_collected: Decimal = Field(
+        Decimal("0.00"),
+        ge=Decimal("0.00"),
+        decimal_places=2,
+        description=(
+            "Sales tax taken from the customer. Never revenue and never profit "
+            "under either remitter (FR-028c); a liability where the operator "
+            "remits it, reportable per period (FR-028d)."
+        ),
+    )
     sales_channel_id: UUID
     payment_provider: str = Field("manual", min_length=1, max_length=50)
     payment_status: str = Field("completed", min_length=1, max_length=50)
@@ -135,6 +285,16 @@ class ShipOrderRequest(BaseModel):
 
     tracking_number: Optional[str] = None
     tracking_url: Optional[str] = None
+    # The natural moment for this figure. At sale the operator is guessing what
+    # postage will cost; here they have just bought the label and know. Omitted,
+    # whatever was recorded at sale stands -- shipping must never silently zero
+    # a figure already entered.
+    postage_paid: Optional[Decimal] = Field(
+        None,
+        ge=Decimal("0.00"),
+        decimal_places=2,
+        description="What the label actually cost (FR-024)",
+    )
 
 
 class OrderCountsResponse(BaseModel):
@@ -171,9 +331,13 @@ async def _generate_order_number(db: AsyncSession, tenant: CurrentTenant) -> str
     return f"{order_prefix}-{today}-{order_seq:03d}"
 
 
-def _order_response(order: Order) -> OrderResponse:
+def _order_response(order: Order, parcels: Sequence[OrderParcel] = ()) -> OrderResponse:
     """Convert an order model into the API response shape."""
     return OrderResponse(
+        parcels=[OrderParcelOut.of(parcel) for parcel in parcels],
+        postage_is_estimate=(
+            not parcels and order.postage_paid is not None and order.actuals_source == "derived"
+        ),
         id=str(order.id),
         order_number=order.order_number,
         status=order.status,
@@ -187,9 +351,16 @@ def _order_response(order: Order) -> OrderResponse:
         shipping_postcode=order.shipping_postcode,
         shipping_country=order.shipping_country,
         shipping_method=order.shipping_method,
-        shipping_cost=float(order.shipping_cost),
-        subtotal=float(order.subtotal),
-        total=float(order.total),
+        shipping_cost=order.shipping_cost,
+        postage_paid=order.postage_paid,
+        sales_tax_collected=order.sales_tax_collected,
+        tax_exclusive_derived=bool(order.tax_exclusive_derived),
+        actuals_source=order.actuals_source,
+        actuals_recorded_by_user_id=(
+            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+        ),
+        subtotal=order.subtotal,
+        total=order.total,
         currency=order.currency,
         payment_provider=order.payment_provider,
         payment_id=order.payment_id,
@@ -203,18 +374,7 @@ def _order_response(order: Order) -> OrderResponse:
         internal_notes=order.internal_notes,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=float(item.unit_price),
-                total_price=float(item.total_price),
-            )
-            for item in order.items
-        ],
+        items=[_item_response(item, order) for item in order.items],
     )
 
 
@@ -222,8 +382,9 @@ def _order_response(order: Order) -> OrderResponse:
 async def create_order(
     request: CreateOrderRequest,
     tenant: CurrentTenant,
+    user: CurrentUser,
     _: RequireAdmin,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """Create a manual admin order for the current tenant."""
     payment_statuses = {"pending", "completed"}
@@ -271,6 +432,11 @@ async def create_order(
         shipping_country=request.shipping_country,
         shipping_method=request.shipping_method,
         shipping_cost=request.shipping_cost,
+        postage_paid=request.postage_paid,
+        # Not added into `total`: the total is what the customer paid, and tax
+        # is collected within it rather than on top of it. Adding it here would
+        # count it as revenue, which is the one thing FR-028c forbids.
+        sales_tax_collected=request.sales_tax_collected,
         subtotal=subtotal,
         total=total,
         currency="GBP",
@@ -280,6 +446,7 @@ async def create_order(
         customer_notes=request.customer_notes,
         internal_notes=request.internal_notes,
     )
+    _record_actuals(order, user)
     db.add(order)
     await db.flush()
 
@@ -298,6 +465,21 @@ async def create_order(
             )
         )
 
+    # Freeze what each line earned, as it stands (task T096, FR-036).
+    #
+    # Inside the sale's own transaction, before the commit: a snapshot of an
+    # order that rolled back would be a frozen margin for a sale that never
+    # happened. An order the snapshot cannot fully cost is still recorded --
+    # the gaps are reported, never costed at zero (FR-019).
+    await db.flush()
+    await db.refresh(order, ["items"])
+    snapshot = await write_sale_snapshot(db, tenant, order)
+    if snapshot.incomplete:
+        logger.warning(
+            f"Order {order.order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
+        )
+
     await db.commit()
 
     result = await db.execute(
@@ -311,6 +493,7 @@ async def create_order(
 
 @router.get("", response_model=OrderListResponse)
 async def list_orders(
+    db: TenantDB,
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(
         None, description="Search by order number, customer name, or email"
@@ -319,7 +502,6 @@ async def list_orders(
     date_to: Optional[date] = Query(None, description="Filter orders to this date (inclusive)"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
     tenant: CurrentTenant = None,
 ):
     """List all orders for the current tenant with filtering options."""
@@ -390,9 +572,18 @@ async def list_orders(
                 shipping_postcode=order.shipping_postcode,
                 shipping_country=order.shipping_country,
                 shipping_method=order.shipping_method,
-                shipping_cost=float(order.shipping_cost),
-                subtotal=float(order.subtotal),
-                total=float(order.total),
+                shipping_cost=order.shipping_cost,
+                postage_paid=order.postage_paid,
+                sales_tax_collected=order.sales_tax_collected,
+                tax_exclusive_derived=bool(order.tax_exclusive_derived),
+                actuals_source=order.actuals_source,
+                actuals_recorded_by_user_id=(
+                    str(order.actuals_recorded_by_user_id)
+                    if order.actuals_recorded_by_user_id
+                    else None
+                ),
+                subtotal=order.subtotal,
+                total=order.total,
                 currency=order.currency,
                 payment_provider=order.payment_provider,
                 payment_id=order.payment_id,
@@ -406,18 +597,7 @@ async def list_orders(
                 internal_notes=order.internal_notes,
                 created_at=order.created_at,
                 updated_at=order.updated_at,
-                items=[
-                    OrderItemResponse(
-                        id=str(item.id),
-                        product_id=str(item.product_id) if item.product_id else None,
-                        product_sku=item.product_sku,
-                        product_name=item.product_name,
-                        quantity=item.quantity,
-                        unit_price=float(item.unit_price),
-                        total_price=float(item.total_price),
-                    )
-                    for item in order.items
-                ],
+                items=[_item_response(item, order) for item in order.items],
             )
             for order in orders
         ],
@@ -430,7 +610,7 @@ async def list_orders(
 
 @router.get("/counts", response_model=OrderCountsResponse)
 async def get_order_counts(
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """Get order counts by status for the current tenant."""
@@ -465,7 +645,7 @@ async def get_order_counts(
 @router.get("/{order_id}", response_model=OrderResponse)
 async def get_order(
     order_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """Get a specific order by ID."""
@@ -479,48 +659,123 @@ async def get_order(
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
 
-    return OrderResponse(
-        id=str(order.id),
-        order_number=order.order_number,
-        status=order.status,
-        customer_email=order.customer_email,
-        customer_name=order.customer_name,
-        customer_phone=order.customer_phone,
-        shipping_address_line1=order.shipping_address_line1,
-        shipping_address_line2=order.shipping_address_line2,
-        shipping_city=order.shipping_city,
-        shipping_county=order.shipping_county,
-        shipping_postcode=order.shipping_postcode,
-        shipping_country=order.shipping_country,
-        shipping_method=order.shipping_method,
-        shipping_cost=float(order.shipping_cost),
-        subtotal=float(order.subtotal),
-        total=float(order.total),
-        currency=order.currency,
-        payment_provider=order.payment_provider,
-        payment_id=order.payment_id,
-        payment_status=order.payment_status,
-        tracking_number=order.tracking_number,
-        tracking_url=order.tracking_url,
-        shipped_at=order.shipped_at,
-        delivered_at=order.delivered_at,
-        fulfilled_at=order.fulfilled_at,
-        customer_notes=order.customer_notes,
-        internal_notes=order.internal_notes,
-        created_at=order.created_at,
-        updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=float(item.unit_price),
-                total_price=float(item.total_price),
+    return _order_response(order, await _parcels_of(db, tenant, order))
+
+
+async def _parcels_of(db: AsyncSession, tenant: CurrentTenant, order: Order) -> list[OrderParcel]:
+    rows = await db.execute(
+        select(OrderParcel)
+        .where(OrderParcel.order_id == order.id, OrderParcel.tenant_id == tenant.id)
+        .order_by(OrderParcel.sequence)
+    )
+    return list(rows.scalars().all())
+
+
+async def _order_or_404(db: AsyncSession, tenant: CurrentTenant, order_id: UUID) -> Order:
+    order = (
+        await db.execute(
+            select(Order)
+            .where(Order.id == order_id, Order.tenant_id == tenant.id)
+            .options(selectinload(Order.items))
+        )
+    ).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+@router.get("/{order_id}/packaging-suggestions", response_model=OrderPackagingSuggestionsResponse)
+async def get_order_packaging_suggestions(
+    order_id: UUID,
+    db: TenantDB,
+    tenant: CurrentTenant = None,
+) -> OrderPackagingSuggestionsResponse:
+    """How the order's units would be packed and what posting them would cost (US6).
+
+    Computed on read and never stored (FR-022); the postage is an estimate
+    until the parcels are confirmed.
+    """
+    order = await _order_or_404(db, tenant, order_id)
+    suggestion = await OrderParcelService(db, tenant).suggest(order)
+    lines = suggestion.lines
+    parcels = []
+    for planned in suggestion.plan.parcels:
+        fill = next(((c, q) for c, q in planned.packing if c.packaging_kind == "void_fill"), None)
+        outer = planned.parcel.outer
+        parcels.append(
+            OrderParcelSuggestionOut(
+                consumable_id=planned.container.id,
+                name=planned.container.name,
+                contents=[
+                    ParcelContentOut(
+                        product_id=lines[index][0].id,  # type: ignore[union-attr]
+                        sku=lines[index][2],
+                        quantity=quantity,
+                    )
+                    for index, quantity in planned.contents
+                ],
+                outer_mm=(
+                    SizeOut(length_mm=outer.length, width_mm=outer.width, height_mm=outer.height)
+                    if outer is not None
+                    else None
+                ),
+                packed_weight_grams=planned.parcel.grams,
+                void_fill=(
+                    VoidFillOut(consumable_id=fill[0].id, name=fill[0].name, quantity=fill[1])
+                    if fill is not None
+                    else None
+                ),
+                notes=list(planned.parcel.reasons),
             )
-            for item in order.items
-        ],
+        )
+    estimate = suggestion.estimate
+    return OrderPackagingSuggestionsResponse(
+        parcels=parcels,
+        estimated_postage=EstimatedPostageOut(
+            amount=estimate.amount,
+            zone=estimate.zone,
+            reason=estimate.reason,
+            notes=list(estimate.notes),
+        ),
+        warnings=[OrderWarningOut(**w) for w in suggestion.plan.warnings],
+    )
+
+
+@router.post("/{order_id}/parcels", response_model=ConfirmParcelsResponse, status_code=201)
+async def confirm_order_parcels(
+    order_id: UUID,
+    body: ConfirmParcelsRequest,
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
+    tenant: CurrentTenant = None,
+) -> ConfirmParcelsResponse:
+    """Record the parcels the order was sent in, once (FR-028, D10).
+
+    Takes their packaging from stock and sets the postage they determine,
+    unless an operator entered the postage.
+    """
+    order = await _order_or_404(db, tenant, order_id)
+    requests = [
+        ParcelRequest(
+            items=[(item.consumable_id, item.quantity) for item in parcel.items],
+            contents=([(c.sku, c.quantity) for c in parcel.contents] if parcel.contents else None),
+        )
+        for parcel in body.parcels
+    ]
+    try:
+        confirmed = await OrderParcelService(db, tenant, user).confirm(order, requests)
+    except ParcelsAlreadyConfirmed as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidParcels as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    found = confirmed.postage
+    return ConfirmParcelsResponse(
+        parcels=[OrderParcelOut.of(parcel) for parcel in confirmed.parcels],
+        postage=EstimatedPostageOut(
+            amount=found.amount, zone=found.zone, reason=found.reason, is_estimate=False
+        ),
+        warnings=[StockWarningOut(**w) for w in confirmed.warnings],
     )
 
 
@@ -528,7 +783,9 @@ async def get_order(
 async def update_order(
     order_id: UUID,
     request: UpdateOrderRequest,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """Update an order (status, tracking, notes)."""
@@ -571,6 +828,14 @@ async def update_order(
     if request.internal_notes is not None:
         order.internal_notes = request.internal_notes
 
+    if request.postage_paid is not None:
+        order.postage_paid = request.postage_paid
+
+    if request.sales_tax_collected is not None:
+        order.sales_tax_collected = request.sales_tax_collected
+    if request.postage_paid is not None or request.sales_tax_collected is not None:
+        _record_actuals(order, user)
+
     order.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(order)
@@ -589,9 +854,16 @@ async def update_order(
         shipping_postcode=order.shipping_postcode,
         shipping_country=order.shipping_country,
         shipping_method=order.shipping_method,
-        shipping_cost=float(order.shipping_cost),
-        subtotal=float(order.subtotal),
-        total=float(order.total),
+        shipping_cost=order.shipping_cost,
+        postage_paid=order.postage_paid,
+        sales_tax_collected=order.sales_tax_collected,
+        tax_exclusive_derived=bool(order.tax_exclusive_derived),
+        actuals_source=order.actuals_source,
+        actuals_recorded_by_user_id=(
+            str(order.actuals_recorded_by_user_id) if order.actuals_recorded_by_user_id else None
+        ),
+        subtotal=order.subtotal,
+        total=order.total,
         currency=order.currency,
         payment_provider=order.payment_provider,
         payment_id=order.payment_id,
@@ -605,18 +877,7 @@ async def update_order(
         internal_notes=order.internal_notes,
         created_at=order.created_at,
         updated_at=order.updated_at,
-        items=[
-            OrderItemResponse(
-                id=str(item.id),
-                product_id=str(item.product_id) if item.product_id else None,
-                product_sku=item.product_sku,
-                product_name=item.product_name,
-                quantity=item.quantity,
-                unit_price=float(item.unit_price),
-                total_price=float(item.total_price),
-            )
-            for item in order.items
-        ],
+        items=[_item_response(item, order) for item in order.items],
     )
 
 
@@ -624,7 +885,9 @@ async def update_order(
 async def ship_order(
     order_id: UUID,
     request: ShipOrderRequest,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -693,6 +956,12 @@ async def ship_order(
         order.tracking_number = request.tracking_number
     if request.tracking_url:
         order.tracking_url = request.tracking_url
+    # What the label actually cost, which is knowable now and was a guess at
+    # sale (FR-024). `is not None`, not a truthiness test: free postage on a
+    # collected order is zero, and zero is a figure.
+    if request.postage_paid is not None:
+        order.postage_paid = request.postage_paid
+        _record_actuals(order, user)
     order.updated_at = datetime.now(timezone.utc)
 
     await db.commit()
@@ -804,7 +1073,9 @@ async def _sync_shopify_fulfillment(
 @router.post("/{order_id}/deliver")
 async def deliver_order(
     order_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -872,7 +1143,9 @@ class FulfillOrderResponse(BaseModel):
 @router.post("/{order_id}/fulfill", response_model=FulfillOrderResponse)
 async def fulfill_order(
     order_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -957,7 +1230,11 @@ class RefundOrderRequest(BaseModel):
     """Request to refund an order."""
 
     reason: Optional[str] = None
-    amount: Optional[float] = None  # Optional partial refund amount in pounds
+    #: An optional partial refund, in pounds. `Decimal`, because the handler
+    #: turns it into pence with `int(amount * 100)` and `int(79.99 * 100)` is
+    #: 7998 -- a float refund was a penny short of what was asked for
+    #: (task T182, FR-047).
+    amount: Optional[Decimal] = None
 
 
 class RefundOrderResponse(BaseModel):
@@ -966,7 +1243,7 @@ class RefundOrderResponse(BaseModel):
     message: str
     refund_id: Optional[str] = None
     refund_status: Optional[str] = None
-    refund_amount: Optional[float] = None
+    refund_amount: Optional[Decimal] = None
 
 
 class ResendEmailRequest(BaseModel):
@@ -987,8 +1264,9 @@ async def refund_order(
     order_id: UUID,
     request: RefundOrderRequest,
     tenant: CurrentTenant,
+    user: CurrentUser,
     _: RequireAdmin,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ):
     """
     Refund an order through Square.
@@ -1036,18 +1314,29 @@ async def refund_order(
             detail=f"Refunds only supported for Square payments (provider: {order.payment_provider})",
         )
 
-    # Calculate refund amount (in pence)
+    # Calculate refund amount (in pence). `int(x * 100)` truncated, so a
+    # £10.999 refund asked Square for £10.99 and the half-penny vanished;
+    # `pounds_to_pence` rounds half-up, once.
     if request.amount:
         # Partial refund
-        refund_amount_pence = int(request.amount * 100)
-        if refund_amount_pence > int(order.total * 100):
+        refund_amount_pence = pounds_to_pence(request.amount)
+        if refund_amount_pence > pounds_to_pence(order.total):
             raise HTTPException(
                 status_code=400,
-                detail=f"Refund amount £{request.amount} exceeds order total £{order.total}",
+                detail=(
+                    f"Refund amount {tenant.currency_symbol}{request.amount} exceeds "
+                    f"order total {tenant.currency_symbol}{order.total}"
+                ),
             )
     else:
         # Full refund
-        refund_amount_pence = int(order.total * 100)
+        refund_amount_pence = pounds_to_pence(order.total)
+
+    # The exact pounds figure, used by the recorded actual, the email and the
+    # response alike, so the three cannot disagree. Quantised to the currency's
+    # own precision here, at the edge, and nowhere after: the wire carries
+    # "10.00" rather than "10" (Constitution IV).
+    refunded = pence_to_pounds(refund_amount_pence).quantize(Decimal("0.01"))
 
     logger.info(
         f"Processing refund for order {order.order_number}: "
@@ -1095,6 +1384,28 @@ async def refund_order(
             order.internal_notes = f"[Refunded] {request.reason}"
     order.updated_at = datetime.now(timezone.utc)
 
+    # Record what went back, as an actual against this order (task T189).
+    #
+    # The status said "refunded" and the amount went only into a payment log,
+    # so `realised_margin` kept reading the order's full total as its revenue
+    # and a refunded order still reported the margin it earned at sale. The
+    # snapshot is untouched: a refund reduces what was realised, it does not
+    # restate what was priced (FR-040, FR-038, SC-001).
+    #
+    # Inside the same transaction as the status change, and keyed on Square's
+    # own refund id so the `refund.created` webhook that follows this call
+    # recognises it as already recorded rather than subtracting it twice.
+    await record_refund(
+        db,
+        tenant,
+        order,
+        amount=refunded,
+        source="entered",
+        provider_refund_id=refund_result.get("refund_id"),
+        reason=request.reason,
+        recorded_by_user_id=getattr(user, "id", None),
+    )
+
     await db.commit()
 
     # Send refund confirmation email
@@ -1104,7 +1415,7 @@ async def refund_order(
             to_email=order.customer_email,
             customer_name=order.customer_name,
             order_number=order.order_number,
-            refund_amount=refund_amount_pence / 100,
+            refund_amount=refunded,
             currency=order.currency,
             reason=request.reason,
         )
@@ -1112,7 +1423,9 @@ async def refund_order(
         logger.error(f"Failed to send refund confirmation email: {e}")
         # Don't fail the request - refund was successful
 
-    message = f"Order {order.order_number} has been refunded (£{refund_amount_pence / 100:.2f})"
+    message = (
+        f"Order {order.order_number} has been refunded ({tenant.currency_symbol}{refunded:.2f})"
+    )
     if inventory_reverted:
         message += " and inventory restored"
 
@@ -1120,7 +1433,7 @@ async def refund_order(
         message=message,
         refund_id=refund_result.get("refund_id"),
         refund_status=refund_result.get("status"),
-        refund_amount=refund_amount_pence / 100,
+        refund_amount=refunded,
     )
 
 
@@ -1128,7 +1441,9 @@ async def refund_order(
 async def cancel_order(
     order_id: UUID,
     request: CancelOrderRequest,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -1203,7 +1518,9 @@ async def cancel_order(
 async def resend_order_email(
     order_id: UUID,
     request: ResendEmailRequest,
-    db: AsyncSession = Depends(get_db),
+    user: CurrentUser,
+    _member: RequireMember,
+    db: TenantDB,
     tenant: CurrentTenant = None,
 ):
     """
@@ -1248,13 +1565,21 @@ async def resend_order_email(
                     {
                         "name": item.product_name,
                         "quantity": item.quantity,
-                        "price": float(item.unit_price) / 100,
+                        "price": item.unit_price,
                     }
                     for item in order.items
                 ],
-                subtotal=float(order.subtotal) / 100 if order.subtotal else 0,
-                shipping_cost=float(order.shipping_cost) / 100 if order.shipping_cost else 0,
-                total=float(order.total) / 100 if order.total else 0,
+                # These four columns are already in pounds -- every write path
+                # divides by a hundred before storing -- so the `/ 100` here
+                # was a second division, and a resent confirmation quoted the
+                # customer £0.80 for an £79.99 order. The `float()` around it
+                # was the other half: an exact `Numeric` read pushed through a
+                # binary double on its way to the figure a customer reconciles
+                # against (task T182, FR-047).
+                subtotal=order.subtotal or Decimal("0"),
+                shipping_cost=order.shipping_cost or Decimal("0"),
+                total=order.total or Decimal("0"),
+                currency_symbol=tenant.currency_symbol if tenant else "£",
                 shipping_address={
                     "address_line1": order.shipping_address_line1 or "",
                     "address_line2": order.shipping_address_line2 or "",

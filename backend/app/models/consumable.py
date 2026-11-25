@@ -1,10 +1,21 @@
 """Consumable inventory models for tracking magnets, inserts, hardware, etc."""
 
 import uuid
+from decimal import Decimal
 from datetime import date
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -15,6 +26,11 @@ if TYPE_CHECKING:
     from app.models.model_component import ModelComponent
     from app.models.production_run import ProductionRun
     from app.models.tenant import Tenant
+
+#: The kinds of packaging a consumable can be (research D5).
+PACKAGING_KINDS = ("box", "mailer", "void_fill", "wrap")
+#: The kinds an item is packed *in*; only these can be accepted as packaging.
+CONTAINER_KINDS = ("box", "mailer")
 
 
 class ConsumableType(Base, UUIDMixin, TimestampMixin):
@@ -70,7 +86,7 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
     )
 
     # Current pricing (updated from latest purchase)
-    current_cost_per_unit: Mapped[Optional[float]] = mapped_column(
+    current_cost_per_unit: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Current cost per unit from latest purchase",
@@ -130,6 +146,80 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
         comment="Whether this consumable type is active",
     )
 
+    # Packaging attributes (packaging advisor, research D5). All optional, so a
+    # consumable that is not packaging is untouched (FR-013). A box or mailer
+    # missing an inner dimension is incomplete and never suggested.
+    packaging_kind: Mapped[Optional[str]] = mapped_column(
+        String(12),
+        nullable=True,
+        comment="Packaging kind: box, mailer, void_fill, wrap (null = not packaging)",
+    )
+    inner_length_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Inner length in mm"
+    )
+    inner_width_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1), nullable=True, comment="Inner width in mm"
+    )
+    inner_height_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(7, 1),
+        nullable=True,
+        comment="Inner height in mm (a mailer's maximum usable thickness)",
+    )
+    wall_mm: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 1),
+        nullable=True,
+        comment="Wall thickness in mm; outer size = inner + 2 x wall (absent = 0)",
+    )
+    empty_weight_grams: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(8, 1), nullable=True, comment="Weight of one unit, empty, in grams"
+    )
+    fill_volume_ml: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(10, 1),
+        nullable=True,
+        comment="Void fill only: the volume one unit fills, in ml",
+    )
+
+    # The catalogue entry a row was seeded from (spec 006, research D3). NULL
+    # for every row an operator created; seeding never updates a keyed row.
+    catalogue_key: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Key of the packaging catalogue entry this row was seeded from",
+    )
+    catalogue_version: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Packaging catalogue version that seeded this row",
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_consumable_types_tenant_catalogue_key",
+            "tenant_id",
+            "catalogue_key",
+            unique=True,
+            postgresql_where=text("catalogue_key IS NOT NULL"),
+            sqlite_where=text("catalogue_key IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "packaging_kind IS NULL OR packaging_kind IN ('box', 'mailer', 'void_fill', 'wrap')",
+            name="ck_consumable_types_packaging_kind",
+        ),
+        CheckConstraint(
+            "(inner_length_mm IS NULL AND inner_width_mm IS NULL AND inner_height_mm IS NULL)"
+            " OR (inner_length_mm IS NOT NULL AND inner_width_mm IS NOT NULL"
+            " AND inner_height_mm IS NOT NULL AND inner_length_mm > 0"
+            " AND inner_width_mm > 0 AND inner_height_mm > 0)",
+            name="ck_consumable_types_inner_dims",
+        ),
+        CheckConstraint(
+            "(wall_mm IS NULL OR wall_mm >= 0)"
+            " AND (empty_weight_grams IS NULL OR empty_weight_grams >= 0)"
+            " AND (fill_volume_ml IS NULL OR fill_volume_ml >= 0)",
+            name="ck_consumable_types_packaging_non_negative",
+        ),
+    )
+
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant")
     purchases: Mapped[list["ConsumablePurchase"]] = relationship(
@@ -157,12 +247,9 @@ class ConsumableType(Base, UUIDMixin, TimestampMixin):
             return False
         return self.quantity_on_hand <= self.reorder_point
 
-    @property
-    def stock_value(self) -> float:
-        """Calculate total value of stock on hand."""
-        if self.current_cost_per_unit is None:
-            return 0.0
-        return self.quantity_on_hand * float(self.current_cost_per_unit)
+    # `stock_value` stood here, valuing stock at the stored unit cost. The unit
+    # cost is derived from the purchases on read (task T273), so the value is
+    # too: `consumable_type_to_response` in `app/api/v1/consumables.py`.
 
 
 class ConsumablePurchase(Base, UUIDMixin, TimestampMixin):
@@ -198,14 +285,14 @@ class ConsumablePurchase(Base, UUIDMixin, TimestampMixin):
         comment="Quantity purchased",
     )
 
-    total_cost: Mapped[float] = mapped_column(
+    total_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         comment="Total cost of purchase",
     )
 
     # Calculated field (stored for performance)
-    cost_per_unit: Mapped[float] = mapped_column(
+    cost_per_unit: Mapped[Decimal] = mapped_column(
         Numeric(10, 4),
         nullable=False,
         comment="Cost per unit (total_cost / quantity_purchased)",
@@ -301,6 +388,15 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         comment="Model that used this consumable",
     )
 
+    # Packaging an order consumed at dispatch, recorded with usage_type
+    # 'shipping' (packaging advisor, research D10).
+    order_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("orders.id", ondelete="SET NULL", name="fk_consumable_usage_order"),
+        nullable=True,
+        index=True,
+        comment="Order whose parcels used this consumable (usage_type='shipping')",
+    )
+
     # Usage details
     quantity_used: Mapped[int] = mapped_column(
         Integer,
@@ -308,7 +404,7 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         comment="Quantity used (positive) or adjusted (negative for returns)",
     )
 
-    cost_at_use: Mapped[Optional[float]] = mapped_column(
+    cost_at_use: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(10, 4),
         nullable=True,
         comment="Cost per unit at time of use (snapshot for historical accuracy)",
@@ -346,8 +442,8 @@ class ConsumableUsage(Base, UUIDMixin, TimestampMixin):
         return f"<ConsumableUsage(type={self.consumable_type_id}, qty={self.quantity_used})>"
 
     @property
-    def total_cost(self) -> float:
+    def total_cost(self) -> Decimal:
         """Calculate total cost of this usage."""
         if self.cost_at_use is None:
-            return 0.0
-        return self.quantity_used * float(self.cost_at_use)
+            return Decimal("0")
+        return Decimal(str(self.quantity_used)) * Decimal(str(self.cost_at_use))

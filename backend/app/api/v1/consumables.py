@@ -1,15 +1,30 @@
 """Consumables inventory API endpoints."""
 
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import CurrentTenant, CurrentUser
-from app.database import get_db
-from app.models.consumable import ConsumablePurchase, ConsumableType, ConsumableUsage
+from app.api.provenance_http import record_operator_origins, refuse_observed_or_409
+from app.auth.dependencies import CurrentTenant, CurrentUser, RequireMember, TenantDB
+from app.models.consumable import (
+    CONTAINER_KINDS,
+    PACKAGING_KINDS,
+    ConsumablePurchase,
+    ConsumableType,
+    ConsumableUsage,
+)
+from app.models.shipping_profile import ShippingProfile
+from app.services.dims import Dims
+from app.services.costing import consumable_unit_cost, pricing_purchase
+from app.services.packaging_usage import everything_using, products_using
+from app.services.postage import services_fitting
+from app.services.provenance import origins_for, origins_for_entity, record_origin
 from app.schemas.consumable import (
     ConsumablePurchaseCreate,
     ConsumablePurchaseListResponse,
@@ -36,12 +51,137 @@ router = APIRouter()
 
 
 def consumable_type_to_response(consumable: ConsumableType) -> dict:
-    """Convert ConsumableType model to response dict."""
+    """Convert ConsumableType model to response dict.
+
+    The unit cost served is the one the engine prices a packaging line at --
+    the latest purchase's exact quotient, or the typed figure when there is no
+    purchase (task T273) -- so this screen and every cost agree. Callers load
+    `purchases` first (`_load_purchases`).
+    """
+    unit_cost = consumable_unit_cost(consumable)
+    purchase = pricing_purchase(consumable)
     return {
         **{k: v for k, v in consumable.__dict__.items() if not k.startswith("_")},
+        "current_cost_per_unit": unit_cost,
+        "priced_by_purchase_id": purchase.id if purchase is not None else None,
+        "priced_by_purchase_date": purchase.purchase_date if purchase is not None else None,
         "is_low_stock": consumable.is_low_stock,
-        "stock_value": consumable.stock_value,
+        "stock_value": Decimal(consumable.quantity_on_hand or 0) * unit_cost,
+        # A box or mailer without all three inner dimensions is never
+        # suggested; the list says so (spec edge case, research D5).
+        "packaging_incomplete": consumable.packaging_kind in CONTAINER_KINDS
+        and Dims.from_row(consumable, prefix="inner_") is None,
+        # Seeded from the standard catalogue (spec 006, research D3).
+        "from_catalogue": consumable.catalogue_key is not None,
     }
+
+
+#: A container's figures whose origin the operator states (FR-038): measured
+#: with a ruler and scale, or assumed from a supplier listing.
+PACKAGING_PROVENANCE_FIELDS = (
+    "inner_length_mm",
+    "inner_width_mm",
+    "inner_height_mm",
+    "wall_mm",
+    "empty_weight_grams",
+)
+
+
+async def _record_packaging_origins(
+    db: AsyncSession,
+    tenant,
+    user,
+    consumable: ConsumableType,
+    fields: list[str],
+    provenance: Optional[dict],
+) -> None:
+    """Record where each packaging figure just saved came from -- never ``observed``."""
+    source = (provenance or {}).get("source") or "assumed"
+    for name in fields:
+        await record_origin(
+            db,
+            tenant,
+            entity_type="consumable_type",
+            entity_id=consumable.id,
+            field_name=name,
+            source=source,
+            measured_by_user_id=user.id if user is not None and source == "measured" else None,
+        )
+
+
+#: A void fill's or wrap's figures whose origin the Packaging page shows (spec 006).
+FILLER_PROVENANCE_FIELDS = ("fill_volume_ml", "empty_weight_grams")
+
+
+def _provenance_fields(consumable: ConsumableType) -> tuple[str, ...]:
+    if consumable.packaging_kind in CONTAINER_KINDS:
+        return PACKAGING_PROVENANCE_FIELDS
+    if consumable.packaging_kind is not None:
+        return FILLER_PROVENANCE_FIELDS
+    return ()
+
+
+async def _packaging_provenance(
+    db: AsyncSession, tenant, consumable: ConsumableType
+) -> dict[str, Optional[str]]:
+    """Each packaging figure's origin, for the response; absent figures have none."""
+    fields = _provenance_fields(consumable)
+    if not fields:
+        return {}
+    origins = await origins_for_entity(db, tenant, "consumable_type", consumable.id)
+    return {
+        name: origins[name].source if getattr(consumable, name) is not None else None
+        for name in fields
+    }
+
+
+async def _packaging_extras(
+    db: AsyncSession, tenant, consumables: list[ConsumableType]
+) -> dict[UUID, dict]:
+    """What the Packaging page shows per item, for a whole page in a few queries.
+
+    The services each container fits (derived on read from the profiles in
+    force, research D11), the products that ship in it, and where each figure
+    and the unit cost came from -- one query each, never one per row.
+    """
+    packaging = [c for c in consumables if c.packaging_kind is not None]
+    if not packaging:
+        return {}
+    profiles = list(
+        (await db.execute(select(ShippingProfile).where(ShippingProfile.tenant_id == tenant.id)))
+        .scalars()
+        .all()
+    )
+    users = await products_using(db, tenant, [c.id for c in packaging])
+    recorded = await origins_for(db, tenant, [("consumable_type", c.id) for c in packaging])
+    extras: dict[UUID, dict] = {}
+    for consumable in packaging:
+
+        def source(name: str, c: ConsumableType = consumable) -> Optional[str]:
+            if getattr(c, name) is None:
+                return None
+            origin = recorded.get(("consumable_type", c.id, name))
+            return origin.source if origin is not None else "assumed"
+
+        extras[consumable.id] = {
+            "fits_services": services_fitting(consumable, profiles),
+            "used_by_products": [u.as_dict() for u in users.get(consumable.id, [])],
+            "packaging_provenance": {name: source(name) for name in _provenance_fields(consumable)},
+            "cost_provenance": source("current_cost_per_unit"),
+        }
+    return extras
+
+
+async def _load_purchases(db: AsyncSession, consumable: ConsumableType) -> ConsumableType:
+    """Load the purchases that price the unit, so nothing lazy-loads under asyncio."""
+    await db.refresh(consumable, attribute_names=["purchases"])
+    return consumable
+
+
+async def _response(db: AsyncSession, tenant, consumable: ConsumableType) -> ConsumableTypeResponse:
+    """One consumable as served, with its packaging extras when it is packaging."""
+    extras = (await _packaging_extras(db, tenant, [consumable])).get(consumable.id, {})
+    return ConsumableTypeResponse(**{**consumable_type_to_response(consumable), **extras})
 
 
 def purchase_to_response(purchase: ConsumablePurchase) -> dict:
@@ -67,7 +207,8 @@ async def create_consumable_type(
     consumable_data: ConsumableTypeCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Create a new consumable type."""
     # Check for duplicate SKU
@@ -100,28 +241,72 @@ async def create_consumable_type(
         supplier_url=consumable_data.supplier_url,
         typical_lead_days=consumable_data.typical_lead_days,
         is_active=consumable_data.is_active,
+        packaging_kind=consumable_data.packaging_kind,
+        inner_length_mm=consumable_data.inner_length_mm,
+        inner_width_mm=consumable_data.inner_width_mm,
+        inner_height_mm=consumable_data.inner_height_mm,
+        wall_mm=consumable_data.wall_mm,
+        empty_weight_grams=consumable_data.empty_weight_grams,
+        fill_volume_ml=consumable_data.fill_volume_ml,
     )
 
     db.add(consumable)
+    if consumable.current_cost_per_unit is not None:
+        # The unit cost prices a packaging line, so it says who entered it (T249).
+        await db.flush()
+        await record_operator_origins(
+            db,
+            tenant,
+            entity_type="consumable_type",
+            entity_id=consumable.id,
+            fields=["current_cost_per_unit"],
+            user=user,
+        )
+    packaging_fields = [
+        name for name in PACKAGING_PROVENANCE_FIELDS if getattr(consumable, name) is not None
+    ]
+    if packaging_fields:
+        await db.flush()
+        provenance = consumable_data.packaging_provenance
+        await _record_packaging_origins(
+            db,
+            tenant,
+            user,
+            consumable,
+            packaging_fields,
+            provenance.model_dump() if provenance is not None else None,
+        )
     await db.commit()
     await db.refresh(consumable)
 
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    await _load_purchases(db, consumable)
+    return await _response(db, tenant, consumable)
 
 
 @router.get("/types", response_model=ConsumableTypeListResponse)
 async def list_consumable_types(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search by SKU or name"),
     category: Optional[str] = Query(None, description="Filter by category"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
     low_stock_only: bool = Query(False, description="Show only low stock items"),
+    packaging_kind: Optional[str] = Query(
+        None, description="Comma-separated packaging kinds, e.g. 'box,mailer'"
+    ),
+    exclude_packaging: bool = Query(
+        False, description="Only consumables that are not packaging (the Consumables page)"
+    ),
 ) -> ConsumableTypeListResponse:
-    """List all consumable types for current tenant."""
+    """List all consumable types for current tenant.
+
+    The Packaging page asks for ``packaging_kind=box,mailer,void_fill,wrap``
+    and the Consumables page for ``exclude_packaging=true`` (spec 006, D1):
+    one table, two views.
+    """
     # Base query
     query = select(ConsumableType).where(ConsumableType.tenant_id == tenant.id)
 
@@ -139,6 +324,19 @@ async def list_consumable_types(
     if is_active is not None:
         query = query.where(ConsumableType.is_active == is_active)
 
+    if packaging_kind:
+        kinds = [kind.strip() for kind in packaging_kind.split(",") if kind.strip()]
+        unknown = sorted(set(kinds) - set(PACKAGING_KINDS))
+        if unknown:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Unknown packaging kind: {', '.join(unknown)}",
+            )
+        query = query.where(ConsumableType.packaging_kind.in_(kinds))
+
+    if exclude_packaging:
+        query = query.where(ConsumableType.packaging_kind.is_(None))
+
     # Count total
     count_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(count_query)
@@ -148,16 +346,17 @@ async def list_consumable_types(
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size).order_by(ConsumableType.sku)
 
-    # Execute
-    result = await db.execute(query)
+    # Execute, with the purchases that price each unit (T273)
+    result = await db.execute(query.options(selectinload(ConsumableType.purchases)))
     consumables = result.scalars().all()
 
     # Apply low_stock filter and convert to response
-    responses = []
-    for consumable in consumables:
-        if low_stock_only and not consumable.is_low_stock:
-            continue
-        responses.append(ConsumableTypeResponse(**consumable_type_to_response(consumable)))
+    kept = [c for c in consumables if not (low_stock_only and not c.is_low_stock)]
+    extras = await _packaging_extras(db, tenant, kept)
+    responses = [
+        ConsumableTypeResponse(**{**consumable_type_to_response(c), **extras.get(c.id, {})})
+        for c in kept
+    ]
 
     return ConsumableTypeListResponse(
         total=total,
@@ -172,7 +371,7 @@ async def get_consumable_type(
     consumable_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Get a specific consumable type by ID."""
     result = await db.execute(
@@ -189,7 +388,8 @@ async def get_consumable_type(
             detail=f"Consumable type {consumable_id} not found",
         )
 
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    await _load_purchases(db, consumable)
+    return await _response(db, tenant, consumable)
 
 
 @router.put("/types/{consumable_id}", response_model=ConsumableTypeResponse)
@@ -198,7 +398,8 @@ async def update_consumable_type(
     consumable_data: ConsumableTypeUpdate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Update a consumable type."""
     # Get existing
@@ -218,15 +419,50 @@ async def update_consumable_type(
 
     # Update fields
     update_data = consumable_data.model_dump(exclude_unset=True)
+    packaging_provenance = update_data.pop("packaging_provenance", None)
+    if "current_cost_per_unit" in update_data:
+        # A purchase on record prices the unit (T273), so a typed figure would
+        # be stored and ignored. Refuse it and say which purchase to change
+        # (task T277).
+        await _load_purchases(db, consumable)
+        purchase = pricing_purchase(consumable)
+        if purchase is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "The unit cost comes from the purchase of "
+                    f"{purchase.purchase_date or 'an undated day'} "
+                    f"({purchase.quantity_purchased} for {purchase.total_cost}); "
+                    "record a new purchase or delete that one to change it"
+                ),
+            )
+    fields = await refuse_observed_or_409(
+        db, tenant, entity_type="consumable_type", entity=consumable, changes=update_data
+    )
     for field, value in update_data.items():
         if field == "sku" and value:
             value = value.upper()
         setattr(consumable, field, value)
 
+    # A container's figures carry the origin the operator states (FR-038);
+    # every other figure is recorded as the operator's measurement.
+    packaging_fields = [f for f in fields if f in PACKAGING_PROVENANCE_FIELDS]
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="consumable_type",
+        entity_id=consumable.id,
+        fields=[f for f in fields if f not in PACKAGING_PROVENANCE_FIELDS],
+        user=user,
+    )
+    await _record_packaging_origins(
+        db, tenant, user, consumable, packaging_fields, packaging_provenance
+    )
     await db.commit()
     await db.refresh(consumable)
 
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    await _load_purchases(db, consumable)
+    return await _response(db, tenant, consumable)
 
 
 @router.delete("/types/{consumable_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -234,9 +470,14 @@ async def delete_consumable_type(
     consumable_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> None:
-    """Delete a consumable type."""
+    """Delete a consumable type, unless a product or model still uses it (FR-005).
+
+    The operator is told which ones, so they can move them to other packaging
+    first; a consumable confirmed in a dispatched parcel is never deleted.
+    """
     result = await db.execute(
         select(ConsumableType).where(
             ConsumableType.id == consumable_id,
@@ -251,8 +492,23 @@ async def delete_consumable_type(
             detail=f"Consumable type {consumable_id} not found",
         )
 
-    await db.delete(consumable)
-    await db.commit()
+    users = await everything_using(db, tenant, consumable.id)
+    if users:
+        names = ", ".join(f"{u.name} ({u.sku})" for u in users[:10])
+        more = f" and {len(users) - 10} more" if len(users) > 10 else ""
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{consumable.name} is used by {names}{more}; change their packaging first",
+        )
+    try:
+        await db.delete(consumable)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{consumable.name} is recorded in a dispatched parcel and cannot be deleted",
+        ) from None
 
 
 @router.post("/types/{consumable_id}/adjust-stock", response_model=ConsumableTypeResponse)
@@ -261,7 +517,8 @@ async def adjust_stock(
     adjustment: StockAdjustment,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> ConsumableTypeResponse:
     """Adjust stock level for a consumable type."""
     result = await db.execute(
@@ -296,7 +553,7 @@ async def adjust_stock(
         quantity_used=abs(adjustment.quantity_adjustment)
         if adjustment.quantity_adjustment < 0
         else -adjustment.quantity_adjustment,
-        cost_at_use=consumable.current_cost_per_unit,
+        cost_at_use=consumable_unit_cost(await _load_purchases(db, consumable)),
         usage_type="adjustment",
         notes=f"{adjustment.reason}. {adjustment.notes or ''}".strip(),
     )
@@ -305,7 +562,8 @@ async def adjust_stock(
     await db.commit()
     await db.refresh(consumable)
 
-    return ConsumableTypeResponse(**consumable_type_to_response(consumable))
+    await _load_purchases(db, consumable)
+    return await _response(db, tenant, consumable)
 
 
 # =============================================================================
@@ -317,15 +575,17 @@ async def adjust_stock(
 async def get_low_stock_alerts(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> list[LowStockAlert]:
     """Get all consumables that are below their reorder point."""
     result = await db.execute(
-        select(ConsumableType).where(
+        select(ConsumableType)
+        .where(
             ConsumableType.tenant_id == tenant.id,
             ConsumableType.is_active.is_(True),
             ConsumableType.reorder_point.isnot(None),
         )
+        .options(selectinload(ConsumableType.purchases))
     )
     consumables = result.scalars().all()
 
@@ -341,7 +601,8 @@ async def get_low_stock_alerts(
                     reorder_point=consumable.reorder_point,
                     reorder_quantity=consumable.reorder_quantity,
                     preferred_supplier=consumable.preferred_supplier,
-                    stock_value=consumable.stock_value,
+                    stock_value=Decimal(consumable.quantity_on_hand or 0)
+                    * consumable_unit_cost(consumable),
                 )
             )
 
@@ -360,7 +621,8 @@ async def create_purchase(
     purchase_data: ConsumablePurchaseCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> ConsumablePurchaseResponse:
     """Record a new consumable purchase."""
     # Verify consumable type exists
@@ -398,9 +660,21 @@ async def create_purchase(
 
     db.add(purchase)
 
-    # Update consumable stock and cost
+    # Update consumable stock. The unit cost is not copied onto the type: it is
+    # derived from this purchase on read, exactly, and stops applying when the
+    # purchase is deleted (task T273).
     consumable.quantity_on_hand += purchase_data.quantity_purchased
-    consumable.current_cost_per_unit = cost_per_unit
+    # A purchase the operator recorded is their figure, not an observation
+    # from a feed (FR-001, T249).
+    await record_operator_origins(
+        db,
+        tenant,
+        entity_type="consumable_type",
+        entity_id=consumable.id,
+        fields=["current_cost_per_unit"],
+        user=user,
+        as_of=purchase_data.purchase_date,
+    )
 
     await db.commit()
     await db.refresh(purchase)
@@ -412,7 +686,7 @@ async def create_purchase(
 async def list_purchases(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     consumable_type_id: Optional[UUID] = Query(None, description="Filter by consumable type"),
@@ -462,7 +736,7 @@ async def get_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> ConsumablePurchaseWithType:
     """Get a specific purchase by ID."""
     result = await db.execute(
@@ -493,7 +767,8 @@ async def delete_purchase(
     purchase_id: UUID,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> None:
     """Delete a purchase record (also reverses stock increase)."""
     result = await db.execute(
@@ -537,7 +812,8 @@ async def record_usage(
     usage_data: ConsumableUsageCreate,
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    _member: RequireMember,
+    db: TenantDB,
 ) -> ConsumableUsageResponse:
     """Record consumable usage (deduct from stock)."""
     # Verify consumable type exists
@@ -569,7 +845,7 @@ async def record_usage(
         production_run_id=usage_data.production_run_id,
         product_id=usage_data.product_id,
         quantity_used=usage_data.quantity_used,
-        cost_at_use=consumable.current_cost_per_unit,
+        cost_at_use=consumable_unit_cost(await _load_purchases(db, consumable)),
         usage_type=usage_data.usage_type,
         notes=usage_data.notes,
     )
@@ -589,7 +865,7 @@ async def record_usage(
 async def list_usage(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     consumable_type_id: Optional[UUID] = Query(None, description="Filter by consumable type"),
@@ -644,7 +920,7 @@ async def list_usage(
 async def list_categories(
     user: CurrentUser,
     tenant: CurrentTenant,
-    db: AsyncSession = Depends(get_db),
+    db: TenantDB,
 ) -> list[str]:
     """Get all unique categories used by this tenant."""
     result = await db.execute(

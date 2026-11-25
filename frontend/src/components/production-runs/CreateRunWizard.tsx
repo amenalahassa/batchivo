@@ -41,6 +41,9 @@ import type {
   ProductionRunMaterialCreate,
 } from '@/types/production-run'
 import type { SpoolResponse } from '@/types/spool'
+import type { Money } from '@/types/pricing'
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney, multiplyMoney, sumMoney } from '@/lib/money'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -73,6 +76,7 @@ import { Progress } from '@/components/ui/progress'
 import { SearchableSpoolSelect } from '@/components/inventory/SearchableSpoolSelect'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { spoolMaterialName, spoolName } from '@/lib/spool'
 
 
 // Wizard step type
@@ -117,7 +121,10 @@ interface WizardFormData {
     estimated_model_weight_grams: number
     estimated_flushed_grams: number
     estimated_tower_grams: number
-    cost_per_gram: number
+    // A per-gram filament price is money, and fractions of a penny at that.
+    // It is a decimal string from the server through the estimate to the
+    // payload, so nothing in this wizard rounds or derives it (T163, T254).
+    cost_per_gram: Money | null
     current_weight: number
   }>
 }
@@ -189,7 +196,8 @@ export function CreateRunWizard() {
         estimated_model_weight_grams: mat.estimated_model_weight_grams,
         estimated_flushed_grams: mat.estimated_flushed_grams,
         estimated_tower_grams: mat.estimated_tower_grams,
-        cost_per_gram: mat.cost_per_gram,
+        // Omitted when unknown, so the server derives it or says why not.
+        ...(mat.cost_per_gram !== null ? { cost_per_gram: mat.cost_per_gram } : {}),
       }))
 
       return createProductionRun(runData, items, materials)
@@ -207,10 +215,20 @@ export function CreateRunWizard() {
       (sum, mat) => sum + mat.estimated_model_weight_grams + mat.estimated_flushed_grams + mat.estimated_tower_grams,
       0
     )
-    const totalMaterialCost = formData.materials.reduce(
-      (sum, mat) =>
-        sum + (mat.estimated_model_weight_grams + mat.estimated_flushed_grams + mat.estimated_tower_grams) * mat.cost_per_gram,
-      0
+    // Multiplied in decimal, not as doubles. The material line is
+    // `costing.py`'s to own; what this shows is the operator's own estimate
+    // of the filament this run will consume, before the run exists for the
+    // engine to cost -- and it must at least not disagree with the engine in
+    // the fourth decimal place (Constitution IV, task T163).
+    const totalMaterialCost = sumMoney(
+      formData.materials.map((mat) =>
+        multiplyMoney(
+          mat.cost_per_gram,
+          mat.estimated_model_weight_grams +
+            mat.estimated_flushed_grams +
+            mat.estimated_tower_grams,
+        ),
+      ),
     )
     return { totalItems, totalMaterialWeight, totalMaterialCost }
   }, [formData.items, formData.materials])
@@ -224,7 +242,7 @@ export function CreateRunWizard() {
       color: string
       color_hex?: string
       total_weight_grams: number
-      cost_per_gram: number
+      cost_per_gram: Money | null
       current_weight: number
       is_active: boolean
       models: Array<{ model_name: string; model_sku: string; quantity: number; weight_grams: number }>
@@ -238,7 +256,8 @@ export function CreateRunWizard() {
       // For each material in the model's BOM
       defaults.bom_materials.forEach((bomMaterial) => {
         const spoolId = bomMaterial.spool_id
-        const weightGrams = parseFloat(bomMaterial.weight_grams) * item.quantity
+        // The bill holds a whole plate run; the server gives one item's share.
+        const weightGrams = parseFloat(bomMaterial.weight_grams_per_item) * item.quantity
 
         if (!suggestions[spoolId]) {
           // First time seeing this spool - create entry
@@ -249,7 +268,7 @@ export function CreateRunWizard() {
             color: bomMaterial.color,
             color_hex: bomMaterial.color_hex,
             total_weight_grams: weightGrams,
-            cost_per_gram: parseFloat(bomMaterial.cost_per_gram),
+            cost_per_gram: bomMaterial.cost_per_gram,
             current_weight: parseFloat(bomMaterial.current_weight),
             is_active: bomMaterial.is_active,
             models: [{
@@ -371,11 +390,11 @@ export function CreateRunWizard() {
   const addMaterial = (spool: SpoolResponse) => {
     if (formData.materials.some((mat) => mat.spool_id === spool.id)) return
 
-    // Calculate cost per gram from purchase price if available
-    const costPerGram =
-      spool.purchase_price && spool.initial_weight
-        ? spool.purchase_price / spool.initial_weight
-        : 0.02 // Default fallback
+    // The spool's landed cost per usable gram, as the server derived it with
+    // the purchase's shipping and tax (T254). Null when it cannot be derived:
+    // the run is then refused with the reason rather than costed as free
+    // filament (FR-019).
+    const costPerGram = spool.cost_per_gram ?? null
 
     setFormData({
       ...formData,
@@ -383,8 +402,8 @@ export function CreateRunWizard() {
         ...formData.materials,
         {
           spool_id: spool.id,
-          spool_name: `${spool.brand} ${spool.color}`,
-          material_type: spool.material_type_name,
+          spool_name: spoolName(spool),
+          material_type: spoolMaterialName(spool),
           // Split filament tracking per spool
           estimated_model_weight_grams: 0,
           estimated_flushed_grams: 0,
@@ -647,13 +666,14 @@ function Step1BasicInfo({
     formData.items.forEach((item) => {
       const defaults = modelDefaults[item.model_id]
       if (defaults) {
-        // Time: (print_time_minutes / prints_per_plate) * quantity
-        const timePerItem = (defaults.print_time_minutes ?? 0) / Math.max(1, defaults.prints_per_plate)
+        // Time: one item's print minutes, from the server (the printer's own plate
+        // time and items per plate first, as the cost reads them) * quantity
+        const timePerItem = parseFloat(defaults.print_minutes_per_item ?? '0')
         totalTime += (timePerItem * item.quantity) / 60 // Convert to hours
 
-        // Weight: Sum of BOM materials * quantity
+        // Weight: one item's share of each bill line (the bill is a whole plate run) * quantity
         const weightPerItem = defaults.bom_materials.reduce(
-          (sum, mat) => sum + parseFloat(mat.weight_grams),
+          (sum, mat) => sum + parseFloat(mat.weight_grams_per_item),
           0
         )
         totalWeight += weightPerItem * item.quantity
@@ -1132,7 +1152,7 @@ function Step3Materials({
     color: string
     color_hex?: string
     total_weight_grams: number
-    cost_per_gram: number
+    cost_per_gram: Money | null
     current_weight: number
     is_active: boolean
     models: Array<{ model_name: string; model_sku: string; quantity: number; weight_grams: number }>
@@ -1146,6 +1166,7 @@ function Step3Materials({
   ) => void
   removeMaterial: (spoolId: string) => void
 }) {
+  const { currency } = useCurrency()
   const [selectedSpoolId, setSelectedSpoolId] = useState<string>('')
 
   const availableSpools = spools.filter(
@@ -1374,7 +1395,7 @@ function Step3Materials({
               <TableBody>
                 {formData.materials.map((mat) => {
                   const totalWeight = mat.estimated_model_weight_grams + mat.estimated_flushed_grams + mat.estimated_tower_grams
-                  const estCost = totalWeight * mat.cost_per_gram
+                  const estCost = multiplyMoney(mat.cost_per_gram, totalWeight)
                   return (
                     <TableRow key={mat.spool_id}>
                       <TableCell>
@@ -1440,7 +1461,7 @@ function Step3Materials({
                         <span className="text-sm font-medium">{totalWeight.toFixed(1)}g</span>
                       </TableCell>
                       <TableCell>
-                        <span className="text-sm font-medium">£{estCost.toFixed(2)}</span>
+                        <span className="text-sm font-medium">{formatMoney(estCost, currency.symbol)}</span>
                       </TableCell>
                       <TableCell>
                         <Button
@@ -1469,8 +1490,10 @@ function Step4Review({
   totals,
 }: {
   formData: WizardFormData
-  totals: { totalItems: number; totalMaterialWeight: number; totalMaterialCost: number }
+  totals: { totalItems: number; totalMaterialWeight: number; totalMaterialCost: Money }
 }) {
+  const { currency } = useCurrency()
+
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
@@ -1510,7 +1533,7 @@ function Step4Review({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">£{totals.totalMaterialCost.toFixed(2)}</div>
+            <div className="text-2xl font-bold">{formatMoney(totals.totalMaterialCost, currency.symbol)}</div>
             <p className="text-xs text-muted-foreground">material cost only</p>
           </CardContent>
         </Card>
@@ -1626,7 +1649,7 @@ function Step4Review({
               <TableBody>
                 {formData.materials.map((mat) => {
                   const totalWeight = mat.estimated_model_weight_grams + mat.estimated_flushed_grams + mat.estimated_tower_grams
-                  const estCost = totalWeight * mat.cost_per_gram
+                  const estCost = multiplyMoney(mat.cost_per_gram, totalWeight)
                   return (
                     <TableRow key={mat.spool_id}>
                       <TableCell className="font-medium">{mat.spool_name}</TableCell>
@@ -1637,7 +1660,7 @@ function Step4Review({
                       <TableCell>{mat.estimated_flushed_grams.toFixed(1)}g</TableCell>
                       <TableCell>{mat.estimated_tower_grams.toFixed(1)}g</TableCell>
                       <TableCell className="font-medium">{totalWeight.toFixed(1)}g</TableCell>
-                      <TableCell>£{estCost.toFixed(2)}</TableCell>
+                      <TableCell>{formatMoney(estCost, currency.symbol)}</TableCell>
                     </TableRow>
                   )
                 })}

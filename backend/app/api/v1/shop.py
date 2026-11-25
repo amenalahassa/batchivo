@@ -10,7 +10,7 @@ the shop by subdomain (tenant.batchivo.shop) or custom domain.
 
 import logging
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -21,7 +21,8 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.auth.dependencies import ShopContext, ShopTenant
+from app.auth.dependencies import ShopContext, ShopDB, ShopTenant
+from app.core.money import pence_to_pounds
 from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.category import Category, product_categories
@@ -31,11 +32,16 @@ from app.models.order import OrderItem as OrderItemModel
 from app.models.order import OrderStatus
 from app.models.product import Product
 from app.models.review import Review
+from app.models.sales_channel import SalesChannel
 from app.services.cart import CartItem, CartService, get_cart_service
 from app.services.checkout_session import CheckoutSessionService, get_checkout_session_service
+from app.services.channel_economics import resolve_channel_economics
 from app.services.commerce_handover import legacy_product_write_guard, legacy_shop_write_guard
+from app.services.postage import freeze_order_postage
+from app.services.sale_snapshot import write_sale_snapshot
 from app.services.search_service import SearchService, get_search_service
-from app.services.shipping_service import ShippingService, get_shipping_service
+from app.services.shipping_service import ShippingService
+from app.services.temporal_pricing import storefront_price
 from app.services.stock_reservation import (
     ReservationItem,
     StockReservationService,
@@ -43,6 +49,11 @@ from app.services.stock_reservation import (
 )
 
 router = APIRouter()
+
+# Module level, because the checkout handler shadows `logging` with its own
+# local import further down and a `logging.getLogger` call above that line
+# would read an unassigned local.
+logger = logging.getLogger(__name__)
 
 # ============================================
 # Schemas
@@ -79,7 +90,7 @@ class ShopProductVariant(BaseModel):
     size: str
     display_order: int
     sku: str
-    price_pence: int  # Absolute price for this variant in pence
+    price_pence: Optional[int] = None  # Absolute price in pence; null when unpriced
     price_adjustment_pence: int  # Delta from base price (for reference)
     fulfilment_type: str  # "stock" | "print_to_order"
     units_in_stock: int
@@ -94,7 +105,10 @@ class ShopProduct(BaseModel):
     sku: str
     name: str
     description: Optional[str] = None
-    price: Decimal  # Base price in pence
+    # Base price in pence; null where the product is not priced on this shop,
+    # which is never shown or sold as zero (task T228).
+    price: Optional[Decimal] = None
+    is_priced: bool = True
     currency: str = "GBP"
     images: list[ShopProductImage] = []
     categories: list[ShopProductCategory] = []
@@ -246,13 +260,13 @@ class ApiResponse(BaseModel):
 async def get_products(
     response: Response,
     shop_context: ShopContext,
+    db: ShopDB,
     category: Optional[str] = None,
     designer: Optional[str] = None,
     search: Optional[str] = None,
     sort: Optional[str] = None,
     page: int = 1,
     limit: int = 200,
-    db: AsyncSession = Depends(get_db),
     search_service: SearchService = Depends(get_search_service),
 ):
     """
@@ -394,18 +408,11 @@ async def get_products(
     shop_products = []
     for product in products:
         # Find pricing for tenant's shop channel (active entries only)
-        price = Decimal("0")
-        if channel:
-            for pricing in product.pricing:
-                if pricing.sales_channel_id == channel.id and pricing.is_active:
-                    price = pricing.list_price or Decimal("0")
-                    break
-
-        # If no active channel-specific price, fall back to first active pricing entry
-        if price == 0 and product.pricing:
-            active = [p for p in product.pricing if p.is_active]
-            if active:
-                price = active[0].list_price or Decimal("0")
+        # The temporal filter is applied inside `storefront_price`, which reads
+        # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
+        # `product.pricing` here would serve a superseded price, because since
+        # Tier 3 that collection is the full history (task T097, FR-039).
+        price = storefront_price(product, sales_channel_id=channel.id)
 
         # Check if it's a dragon item using dedicated is_dragon field
         is_dragon = getattr(product, "is_dragon", False)
@@ -448,7 +455,8 @@ async def get_products(
             sku=product.sku or "",
             name=product.name,
             description=product.description,
-            price=price * 100,  # Convert to pence
+            price=price * 100 if price is not None else None,  # Convert to pence
+            is_priced=price is not None,
             images=product_images,
             categories=product_categories_list,
             designer=designer_info,
@@ -477,11 +485,29 @@ async def get_products(
     )
 
 
+async def _shop_channel_id(db, tenant_id) -> Optional[UUID]:
+    """The tenant's own shop channel, whose price is the only one the shop uses.
+
+    ``None`` where the tenant has none: then nothing is priced on the shop, and
+    ``storefront_price`` reports every product unpriced
+    rather than borrowing a marketplace's price (task T228).
+    """
+    return (
+        await db.execute(
+            select(SalesChannel.id).where(
+                SalesChannel.tenant_id == tenant_id,
+                SalesChannel.platform_type == "online_shop",
+                SalesChannel.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+
+
 @router.get("/products/{product_id}")
 async def get_product(
     product_id: str,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """Get single product details. Accepts a UUID or seo_slug (including Shopify-style slug-N suffixes)."""
     import re as _re
@@ -516,13 +542,14 @@ async def get_product(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Get pricing — only use active entries
-    price = Decimal("0")
-    active_pricing = [p for p in product.pricing if p.is_active]
-    if active_pricing:
-        price = active_pricing[0].list_price or Decimal("0")
+    # `storefront_price` reads the CURRENT rows only (task T097, FR-039), and
+    # only this shop's own (task T228): never a marketplace's, never zero.
+    price = storefront_price(
+        product,
+        sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+    )
 
-    base_price_pence = int(price * 100)
+    base_price_pence = int(price * 100) if price is not None else None
     is_dragon = getattr(product, "is_dragon", False)
 
     # Convert images - use API endpoint for reliable delivery
@@ -565,7 +592,11 @@ async def get_product(
             size=v.size,
             display_order=v.display_order,
             sku=v.sku,
-            price_pence=base_price_pence + v.price_adjustment_pence,
+            price_pence=(
+                base_price_pence + v.price_adjustment_pence
+                if base_price_pence is not None
+                else None
+            ),
             price_adjustment_pence=v.price_adjustment_pence,
             fulfilment_type=v.fulfilment_type,
             units_in_stock=v.units_in_stock,
@@ -585,6 +616,7 @@ async def get_product(
             name=product.name,
             description=display_description,
             price=base_price_pence,
+            is_priced=base_price_pence is not None,
             images=product_images,
             categories=product_categories_list,
             designer=designer_info,
@@ -613,7 +645,7 @@ async def get_product(
 async def get_related_products(
     product_id: str,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     limit: int = 4,
 ):
     """
@@ -707,16 +739,11 @@ async def get_related_products(
 
     shop_products = []
     for product in related:
-        price = Decimal("0")
-        if channel:
-            for pricing in product.pricing:
-                if pricing.sales_channel_id == channel.id and pricing.is_active:
-                    price = pricing.list_price or Decimal("0")
-                    break
-        if price == 0 and product.pricing:
-            active = [p for p in product.pricing if p.is_active]
-            if active:
-                price = active[0].list_price or Decimal("0")
+        # The temporal filter is applied inside `storefront_price`, which reads
+        # `current_pricing` (primary-joined on `valid_to IS NULL`). Filtering
+        # `product.pricing` here would serve a superseded price, because since
+        # Tier 3 that collection is the full history (task T097, FR-039).
+        price = storefront_price(product, sales_channel_id=channel.id)
 
         product_images = []
         for img in getattr(product, "images", []):
@@ -748,7 +775,8 @@ async def get_related_products(
                 sku=product.sku or "",
                 name=product.name,
                 description=product.description,
-                price=price * 100,
+                price=price * 100 if price is not None else None,
+                is_priced=price is not None,
                 images=product_images,
                 categories=product_categories_list,
                 designer=designer_info,
@@ -771,7 +799,7 @@ async def get_related_products(
 
 
 @router.get("/categories")
-async def get_categories(db: AsyncSession = Depends(get_db)):
+async def get_categories(db: ShopDB):
     """Get product categories for shop navigation."""
     from sqlalchemy import func
 
@@ -810,7 +838,7 @@ async def get_categories(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/designers")
-async def get_designers(db: AsyncSession = Depends(get_db)):
+async def get_designers(db: ShopDB):
     """
     Get active designers for shop display.
 
@@ -857,7 +885,7 @@ async def get_designers(db: AsyncSession = Depends(get_db)):
 @router.get("/designers/{slug}")
 async def get_designer_by_slug(
     slug: str,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Get a single designer by slug with their products.
@@ -900,7 +928,7 @@ async def get_designer_by_slug(
 
 
 @router.get("/dragons")
-async def get_dragons(db: AsyncSession = Depends(get_db)):
+async def get_dragons(db: ShopDB):
     """Get dragon products for the Dragons collection page.
 
     Returns products where is_dragon=True. This is separate from is_featured
@@ -923,10 +951,11 @@ async def get_dragons(db: AsyncSession = Depends(get_db)):
 
     shop_products = []
     for product in products:
-        price = Decimal("0")
-        active_pricing = [p for p in product.pricing if p.is_active]
-        if active_pricing:
-            price = active_pricing[0].list_price or Decimal("0")
+        # Current rows only (task T097, FR-039), this shop's only (task T228).
+        price = storefront_price(
+            product,
+            sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+        )
 
         # Convert images - use API endpoint for reliable delivery
         product_images = []
@@ -969,7 +998,8 @@ async def get_dragons(db: AsyncSession = Depends(get_db)):
                 sku=product.sku or "",
                 name=product.name,
                 description=display_description,
-                price=price * 100,
+                price=price * 100 if price is not None else None,
+                is_priced=price is not None,
                 images=product_images,
                 categories=product_categories_list,
                 designer=designer_info,
@@ -1018,7 +1048,7 @@ async def create_cart(request: dict, cart_service: CartService = Depends(get_car
 async def add_to_cart(
     session_id: str,
     request: AddToCartRequest,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
 ):
@@ -1037,20 +1067,21 @@ async def add_to_cart(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    # What the line will hold once this is added: the stock check and the
+    # quantity tier both answer for the whole line (task T228, FR-027).
+    current_cart = await cart_service.get_cart(session_id)
+    existing_quantity = 0
+    for item in current_cart.items:
+        if item.product_id == request.product_id:
+            existing_quantity = item.quantity
+            break
+    total_requested = existing_quantity + request.quantity
+
     # Check stock availability (including reservations) for non print-to-order items
     is_print_to_order = getattr(product, "print_to_order", False)
     if not is_print_to_order:
         stock_info = await reservation_service.get_available_stock(request.product_id, db)
 
-        # Get current cart to check if we already have this item
-        current_cart = await cart_service.get_cart(session_id)
-        existing_quantity = 0
-        for item in current_cart.items:
-            if item.product_id == request.product_id:
-                existing_quantity = item.quantity
-                break
-
-        total_requested = existing_quantity + request.quantity
         if total_requested > stock_info.available_stock:
             if stock_info.available_stock <= 0:
                 raise HTTPException(
@@ -1070,11 +1101,22 @@ async def add_to_cart(
                     },
                 )
 
-    # Get price — only use active pricing entries
-    price = Decimal("0")
-    active_pricing = [p for p in product.pricing if p.is_active]
-    if active_pricing:
-        price = active_pricing[0].list_price or Decimal("0")
+    # Current rows only (task T097, FR-039), at this shop's own price for the
+    # quantity the line will hold (task T228, FR-027). An unpriced product is
+    # refused: the zero substituted here was the price the customer was charged.
+    price = storefront_price(
+        product,
+        sales_channel_id=await _shop_channel_id(db, product.tenant_id),
+        quantity=total_requested,
+    )
+    if price is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "not_priced",
+                "message": f"{product.name} is not priced on this shop",
+            },
+        )
     price_pence = price * 100
 
     # Add to cart via service
@@ -1118,18 +1160,36 @@ async def update_cart_item(
 # ============================================
 
 
+async def shop_shipping_service(db: AsyncSession, channel: SalesChannel) -> ShippingService:
+    """The shipping service for this shop, applying its channel's threshold.
+
+    The free-shipping threshold is the operator's, effective-dated on the
+    channel's economics; the solver plans the ladder against the same figure,
+    so the storefront must apply that one and not a constant (task T208).
+
+    A helper rather than a dependency so the handler itself takes the scoped
+    `ShopDB` the economics are read on.
+    """
+    economics = await resolve_channel_economics(db, channel)
+    return ShippingService.for_economics(economics)
+
+
 @router.post("/checkout/shipping-rates")
 async def get_checkout_shipping_rates(
     request: dict,
-    shipping_service: ShippingService = Depends(get_shipping_service),
+    shop_context: ShopContext,
+    db: ShopDB,
 ):
     """Get shipping rates for postcode.
 
     Uses the shipping service for postcode validation and rate calculation.
-    Applies Highland/Island surcharges for remote UK areas.
+    Applies Highland/Island surcharges for remote UK areas, and free shipping
+    at the shop channel's own threshold.
     """
     postcode = request.get("postcode", "")
     cart_total_pence = request.get("cart_total_pence")
+    _, channel = shop_context
+    shipping_service = await shop_shipping_service(db, channel)
 
     # Get rates from shipping service
     rates_response = await shipping_service.get_shipping_rates(
@@ -1181,7 +1241,7 @@ async def validate_discount(
     request: Request,
     data: ValidateDiscountRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Validate a discount code for checkout.
@@ -1225,11 +1285,10 @@ async def create_checkout_session(
     http_request: Request,
     request: CreateCheckoutRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     checkout_service: CheckoutSessionService = Depends(get_checkout_session_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
-    shipping_service: ShippingService = Depends(get_shipping_service),
 ):
     """Create checkout/payment session with stock reservation. Tenant from X-Shop-Hostname."""
     shop_tenant, channel = shop_context
@@ -1242,8 +1301,12 @@ async def create_checkout_session(
     subtotal = cart.subtotal
 
     # Get shipping cost from shipping service (with postcode-aware pricing)
+    shipping_service = await shop_shipping_service(db, channel)
     postcode = request.shippingAddress.postcode
-    cart_total_pence = int(subtotal * 100)  # Convert to pence for free shipping check
+    # The cart already holds pence (`unit_price` is pence, see `add_to_cart`).
+    # Multiplying by a hundred again made every cart over 50p look like £50+
+    # to the threshold check (task T208).
+    cart_total_pence = int(subtotal.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     shipping_method_name, shipping_cost_pence = shipping_service.get_shipping_cost(
         shipping_method_id=request.shippingMethodId,
         postcode=postcode,
@@ -1262,7 +1325,10 @@ async def create_checkout_session(
         # Validate discount code using resolved shop tenant
         validation_request = DiscountValidationRequest(
             code=request.discountCode,
-            subtotal=subtotal / 100,  # Convert from pence to pounds for validation
+            # `cart.subtotal` is already a `Decimal`, so this division was
+            # exact; it goes through the shared converter so there is one place
+            # the hundred lives rather than twenty-two (task T182).
+            subtotal=pence_to_pounds(subtotal),
             customer_email=request.shippingAddress.email,
         )
 
@@ -1346,7 +1412,7 @@ async def complete_checkout(
     http_request: Request,
     request: CompleteCheckoutRequest,
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
     cart_service: CartService = Depends(get_cart_service),
     checkout_service: CheckoutSessionService = Depends(get_checkout_session_service),
     reservation_service: StockReservationService = Depends(get_stock_reservation_service),
@@ -1482,10 +1548,17 @@ async def complete_checkout(
         payment_status="completed",
     )
     db.add(db_order)
+    # The order's own key before its lines reference it. `id` carries a
+    # Python-side `uuid4` default that is assigned at flush, so reading
+    # `db_order.id` before this line yields `None` and every line is written
+    # with a null `order_id` -- which, together with the missing `tenant_id`
+    # below, meant a storefront sale could not record its lines at all.
+    await db.flush()
 
     # Create order items
     for item in cart.items:
         db_item = OrderItemModel(
+            tenant_id=shop_tenant.id,
             order_id=db_order.id,
             product_id=UUID(item.product_id) if item.product_id else None,
             product_sku=item.product_sku or "UNKNOWN",
@@ -1496,8 +1569,15 @@ async def complete_checkout(
         )
         db.add(db_item)
 
-    # Deduct inventory for each item
+    # Deduct inventory for each item, and record what posting this order costs.
+    #
+    # `shipping_cost` above is what the customer was charged. `postage_paid` is
+    # the other side of it: one parcel, weighed as the whole cart, priced from
+    # the operator's shipping profiles in the one place every storefront path
+    # uses (T257). A gap leaves it unrecorded rather than zero (FR-019).
+    lines: list[tuple[Optional[Product], int]] = []
     for item in cart.items:
+        product = None
         if item.product_id:
             product_result = await db.execute(
                 select(Product).where(Product.id == UUID(item.product_id))
@@ -1505,6 +1585,39 @@ async def complete_checkout(
             product = product_result.scalar_one_or_none()
             if product and product.units_in_stock is not None:
                 product.units_in_stock = max(0, product.units_in_stock - item.quantity)
+        lines.append((product, item.quantity))
+
+    await freeze_order_postage(db, shop_tenant, db_order, lines)
+    # The shop's checkout adds no tax to its total: a recorded zero (task T230),
+    # derived rather than entered by anyone (T241, FR-041e).
+    db_order.sales_tax_collected = Decimal("0")
+    db_order.actuals_source = "derived"
+
+    # Freeze what each line earned, as it stands (FR-036, task T157).
+    #
+    # The console's order path and the Shopify webhook both did this and the
+    # storefront's own checkout did not, so a sale made through the shop
+    # carried no `make_cost_at_sale` -- and `realised_margin` and
+    # `margin_alert` both select on that column being set, which left every
+    # storefront sale invisible to the margin this feature exists to report.
+    #
+    # Inside the sale's transaction, before the commit: a snapshot of an order
+    # that rolled back would be a frozen margin for a sale that never happened.
+    # An order the snapshot cannot fully cost is still recorded -- the gaps are
+    # reported, never costed at zero (FR-019).
+    #
+    # `sales_tax_collected` stays at its default. The storefront's totals are
+    # tax-inclusive with no tax line of their own, so any figure written here
+    # would be one nobody charged; FR-028d's liability is recorded where the
+    # amount is actually known.
+    await db.flush()
+    await db.refresh(db_order, ["items"])
+    snapshot = await write_sale_snapshot(db, shop_tenant, db_order)
+    if snapshot.incomplete:
+        logger.warning(
+            f"Storefront order {db_order.order_number} was snapshotted with gaps: "
+            f"{'; '.join(snapshot.incomplete)}"
+        )
 
     await db.commit()
     await db.refresh(db_order)
@@ -1566,13 +1679,17 @@ async def complete_checkout(
                 {
                     "name": item.product_name,
                     "quantity": item.quantity,
-                    "price": float(item.unit_price) / 100,
+                    "price": pence_to_pounds(item.unit_price),
                 }
                 for item in cart.items
             ],
-            subtotal=float(session.subtotal) / 100,
-            shipping_cost=float(session.shipping_cost) / 100,
-            total=float(session.total) / 100,
+            # The session's figures are pence; the `float()` around the
+            # division was the lossy step, on the amounts a customer is told
+            # they were charged (task T190, FR-047).
+            subtotal=pence_to_pounds(session.subtotal),
+            shipping_cost=pence_to_pounds(session.shipping_cost),
+            total=pence_to_pounds(session.total),
+            currency_symbol=shop_tenant.currency_symbol,
             shipping_address={
                 "address_line1": shipping["line1"],
                 "address_line2": shipping.get("line2"),
@@ -1653,7 +1770,7 @@ async def get_order(
     email: str,
     shop_context: ShopContext,
     response: Response,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """Look up an order only in the resolved storefront and sales channel."""
     tenant, channel = shop_context
@@ -1711,6 +1828,11 @@ async def get_product_image(
     product_id: str,
     image_filename: str,
     request: Request,
+    # The one route in this router that stays on the un-scoped session. It is
+    # served straight to a browser from an `<img src>`, which cannot send the
+    # `X-Shop-Hostname` header a scoped session resolves its tenant from. It
+    # reads one row of cache metadata and writes nothing, so what is at stake
+    # is an ETag, not a figure (Constitution I).
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -1818,7 +1940,7 @@ class ShopPage(BaseModel):
 async def get_public_page(
     slug: str,
     shop_tenant: ShopTenant,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Get a published page by slug.
@@ -1853,7 +1975,7 @@ async def get_public_page(
 @router.get("/pages")
 async def list_public_pages(
     shop_tenant: ShopTenant,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     List all published pages.
@@ -1937,9 +2059,9 @@ class ShopReviewSubmitResponse(BaseModel):
 @router.get("/products/{product_id}/reviews", response_model=ShopReviewList)
 async def get_product_reviews(
     product_id: str,
+    db: ShopDB,
     page: int = 1,
     limit: int = 10,
-    db: AsyncSession = Depends(get_db),
 ):
     """
     Get approved reviews for a product.
@@ -2041,7 +2163,7 @@ async def submit_product_review(
     request: Request,
     product_id: str,
     review: ShopReviewCreate,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Submit a review for a product.
@@ -2129,7 +2251,7 @@ async def submit_product_review(
 async def mark_review_helpful(
     product_id: str,
     review_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Mark a review as helpful.
@@ -2171,7 +2293,7 @@ async def mark_review_helpful(
 @router.get("/sitemap.xml", response_class=PlainTextResponse)
 async def get_sitemap(
     shop_context: ShopContext,
-    db: AsyncSession = Depends(get_db),
+    db: ShopDB,
 ):
     """
     Generate a dynamic XML sitemap for the shop.

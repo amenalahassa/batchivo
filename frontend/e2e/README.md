@@ -11,8 +11,55 @@ E2E tests verify complete user workflows by automating real browser interactions
 ### Prerequisites
 
 - Node.js 18+
-- Running backend API (port 8000)
+- Running backend API (port 8000), started with `E2E_TEST_HOOKS_ENABLED=true`
 - Test user account in the database
+
+### Signed-in tests (`fixtures.ts`)
+
+Specs import `test` and `expect` from `e2e/fixtures.ts` instead of
+`@playwright/test`. Every page then opens already signed in as the owner of a
+3D-print tenant: the fixture registers the owner through the API (the same
+endpoints the signup page calls, plus the e2e token hook below) and hands the
+session to the browser as its storage state. No signup pages are loaded.
+
+- Default (`account: 'fresh'`): a new tenant per test. Keep it when a test reads
+  an empty state, counts rows, or reuses names fixed once per file.
+- `test.use({ account: 'shared' })`: one tenant per worker and spec file, for
+  files whose tests only read (dashboard, settings).
+
+The chromium project runs on 3 workers (`PLAYWRIGHT_WORKERS` overrides it); the
+pricing projects stay on one worker, in file order, since they share the seeded
+tenant.
+
+`apiAs` (API seeding in specs) sends a call once more when its keep-alive socket
+was reset (`ECONNRESET` / `socket hang up`, `connectionRetry.ts`); any other error
+still fails. Check it with `node --test e2e/connectionRetry.check.ts`.
+
+### Throwaway users (`registerAndLogin`)
+
+The signup and login journeys (`tests/auth/*`) still sign up through the pages.
+
+Signup requires a business name and email verification. `registerAndLogin` walks
+the real flow: it fills `/signup`, reads the pending verification token from the
+backend's e2e-only hook (`GET /api/v1/onboarding/test/verification-token`), opens
+`/verify-email?token=…`, picks 3D printing as the business type (setup step 2,
+which enables the 3D-print modules) and lands on `/dashboard`.
+
+The hook answers 404 unless the **local** backend runs with the flag (`--reload`
+is needed on Windows for the async database driver):
+
+```powershell
+$env:E2E_TEST_HOOKS_ENABLED = 'true'; cd backend; poetry run uvicorn app.main:app --reload --port 8000
+```
+
+The same flag also switches off the API rate limiter for that process: a run
+registers one throwaway user per test from one IP, far over the signup limit of
+5 per minute.
+
+The flag is off by default, refused whenever `ENVIRONMENT=production` (hook
+answers 404, rate limits stay on), the hook is hidden from the API docs, and the
+flag must never be set in a deployment manifest or instance config
+(`backend/tests/api/test_onboarding_e2e_hooks.py` checks all of this).
 
 ### Installation
 
@@ -140,25 +187,41 @@ test.describe('Feature Name', () => {
 
 ## CI/CD Integration
 
-### GitHub Actions Example
+`.woodpecker/test-e2e.yml` runs the pricing journeys (`e2e/pricing/`) on every
+push and pull request to `main`, and release builds depend on it. The pipeline
+never touches production: it migrates a scratch PostgreSQL to head, seeds the
+e2e tenant with `backend/scripts/seed_e2e.py`, starts the backend and a Celery
+worker, serves the built frontend on `localhost:4173`, and runs
+`npx playwright test --project=pricing`.
 
-```yaml
-- name: Install Playwright
-  run: npx playwright install --with-deps
+### Running the pricing journeys locally
 
-- name: Run E2E Tests
-  run: npm run test:e2e
-  env:
-    TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
-    TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+```bash
+# A scratch database, migrated and seeded (credentials live in seed_e2e.py)
+cd backend
+DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:5433/batchivo_e2e poetry run alembic upgrade head
+DATABASE_URL=postgresql+psycopg://test:test@127.0.0.1:5433/batchivo_e2e poetry run python scripts/seed_e2e.py
 
-- name: Upload test results
-  if: always()
-  uses: actions/upload-artifact@v3
-  with:
-    name: playwright-report
-    path: playwright-report/
+# Backend (and a Celery worker for scenarios) against that database, then:
+cd frontend
+PLAYWRIGHT_BASE_URL=http://localhost:5174 PLAYWRIGHT_API_URL=http://localhost:8001 npx playwright test --project=pricing
 ```
+
+The journeys change the seeded data (a tier, a fee actual, accepted
+proposals), so recreate and reseed the database before each full run.
+
+### Running the generative AI journeys locally (spec 008)
+
+`e2e/tests/genai/` never reaches Replicate. Start the backend with its built-in fake provider
+and inline jobs, and a fake token is all the tests type:
+
+```powershell
+$env:E2E_TEST_HOOKS_ENABLED = 'true'; $env:GENAI_PROVIDER_BASE_URL = 'http://localhost:8000/api/v1/genai/e2e-fake'; $env:GENAI_RUN_INLINE = 'true'; cd backend; poetry run uvicorn app.main:app --port 8000
+```
+
+The port in `GENAI_PROVIDER_BASE_URL` is the backend's own. The tests skip, and a skip is
+not a pass, unless `GET /api/v1/genai/e2e-fake/status` reports `provider_is_fake: true`.
+Both variables are ignored in production.
 
 ## Troubleshooting
 
@@ -172,6 +235,7 @@ test.describe('Feature Name', () => {
 
 - Verify credentials in `.env.e2e`
 - Check test user exists in database
+- "No verification token from the e2e hook": restart the local backend with `E2E_TEST_HOOKS_ENABLED=true`
 - Check login endpoint is working
 
 ### Selectors Not Found
@@ -205,11 +269,9 @@ For consistent E2E tests, seed the database with:
 
 ### Parallel Execution
 
-Playwright runs tests in parallel by default. Configure workers in `playwright.config.ts`:
-
-```typescript
-workers: process.env.CI ? 1 : undefined
-```
+`playwright.config.ts` runs 3 workers (`PLAYWRIGHT_WORKERS=1 npx playwright test`
+for one); `fullyParallel` is on except for the pricing projects, which keep one
+worker of their own.
 
 ### Test Sharding (CI)
 

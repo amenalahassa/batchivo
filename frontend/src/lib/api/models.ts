@@ -7,6 +7,41 @@
 
 import { apiClient } from '../api'
 import { config } from '../config'
+import { getAuthTokens } from '../auth'
+import { detailText } from '../apiError'
+import type { Dimensions, FileMeasurement } from '@/types/packaging'
+
+/** Bearer header for the raw `fetch()` calls below (multipart uploads the
+ * shared axios client doesn't carry), reading the same token store the
+ * axios client uses - NOT the plain 'access_token' localStorage key (that
+ * key is never written anywhere; tokens are stored as a JSON blob under
+ * 'batchivo_auth_tokens' via auth.ts), which silently sent `Bearer null`. */
+function authHeader(): Record<string, string> {
+  const token = getAuthTokens()?.accessToken
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+/**
+ * Extract a human-readable message from a failed fetch Response.
+ *
+ * FastAPI's `detail` is usually a string, but on a 422 validation error it's
+ * an array of {msg, loc, ...} objects - passing that straight to `new
+ * Error()` stringifies to "[object Object]". Also guards against a
+ * non-JSON error body (e.g. an HTML page from a proxy/gateway in front of
+ * a down backend), which would otherwise throw out of `response.json()`
+ * and mask the real HTTP status.
+ */
+async function extractErrorMessage(response: Response, fallback: string): Promise<string> {
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    return `${fallback} (server returned ${response.status} ${response.statusText || ''}`.trim() + ')'
+  }
+
+  const text = detailText((body as { detail?: unknown } | null)?.detail)
+  return text ?? `${fallback} (server returned ${response.status})`
+}
 
 // ==================== Types ====================
 
@@ -22,7 +57,12 @@ export interface ModelMaterial {
   id: string
   spool_id: string
   weight_grams: string
-  cost_per_gram: string
+  /** The operator's override; null costs the line from the spool. */
+  cost_per_gram: string | null
+  /** What the line is costed at: the override, else the spool's landed figure. */
+  resolved_cost_per_gram: string | null
+  /** Weight times the resolved per-gram figure, as the server computed it. */
+  line_cost: string | null
   created_at: string
   updated_at: string
 }
@@ -44,6 +84,37 @@ export type ModelFileType = 'source_stl' | 'source_3mf' | 'slicer_project' | 'gc
 // Where the file is stored
 export type FileLocation = 'uploaded' | 'local_reference'
 
+// Result of parsing a .3mf file's embedded slicer metadata (transient, not persisted)
+export interface ThreeMFFilamentUse {
+  /** Slicer filament number (1-based); maps the filament to an AMS slot (spec 011). */
+  id?: number | null
+  type: string | null
+  color: string | null
+  grams: number | null
+}
+
+export interface ThreeMFPlateInfo {
+  index: number
+  print_time_minutes: number | null
+  filament_weight_grams: number | null
+  /** Objects the plate prints (skipped ones excluded); null when the file does not list them. */
+  object_count?: number | null
+  filaments?: ThreeMFFilamentUse[]
+}
+
+export interface ThreeMFParseResponse {
+  print_time_minutes: number | null
+  filament_weight_grams: number | null
+  plate_count: number | null
+  source_plate_index: number | null
+  slicer_detected: 'bambu_orca' | 'prusaslicer' | null
+  thumbnail_available: boolean
+  /** Per-plate breakdown (Bambu/Orca only; empty for PrusaSlicer or single-plate files). */
+  plates: ThreeMFPlateInfo[]
+  /** The build's bounding box, measured but not stored (packaging advisor). */
+  measurement?: FileMeasurement | null
+}
+
 export interface ModelFile {
   id: string
   model_id: string
@@ -63,6 +134,38 @@ export interface ModelFile {
   uploaded_by_user_id?: string
   created_at: string
   updated_at: string
+  /** Bounding box measured from the file; null for G-code (packaging advisor). */
+  measurement?: FileMeasurement | null
+  /** The version the file belongs to (spec 004). */
+  version_id?: string | null
+  /** A sliced plate (G-code or .gcode.3mf): it holds the print, not the part's shape. */
+  is_sliced?: boolean
+}
+
+/** What an upload returns: the file, and whether a new version was made for it (FR-009a). */
+export interface ModelFileUploadResult {
+  file: ModelFile
+  measurement?: FileMeasurement | null
+  version_created: boolean
+}
+
+/** Where an uploaded file goes: an existing version, or a new one. */
+export interface UploadVersionTarget {
+  versionId?: string
+  newVersionLabel?: string
+  newVersionNote?: string
+}
+
+/**
+ * The file type a file's name implies (T020). A `.gcode.3mf` is a sliced plate,
+ * so it is G-code even though it ends in `.3mf`.
+ */
+export function inferModelFileType(filename: string): ModelFileType | null {
+  const name = filename.toLowerCase()
+  if (name.endsWith('.gcode.3mf') || /\.(gcode|gco|g|bgcode)$/.test(name)) return 'gcode'
+  if (name.endsWith('.stl')) return 'source_stl'
+  if (name.endsWith('.3mf')) return 'source_3mf'
+  return null
 }
 
 export interface LocalPathValidationResponse {
@@ -102,10 +205,21 @@ export interface Model {
   updated_at: string
   // Computed cost (from list endpoint)
   total_cost?: string
+  /**
+   * What the engine could not cost. Non-empty means `total_cost` is a floor
+   * rather than a cost, and the row must say so (FR-019).
+   */
+  incomplete_reasons?: string[]
   // Production cost tracking (Phase 2)
   actual_production_cost?: string
   production_cost_count: number
   production_cost_updated_at?: string
+  /** Length × width × height with where they came from (packaging advisor, FR-001). */
+  dimensions?: Dimensions | null
+  /** Spec 007: the idea this was made from, if any. */
+  source_idea_id?: string | null
+  source_idea_title?: string | null
+  source_idea_archived?: boolean | null
 }
 
 export interface ModelDetail extends Model {
@@ -161,7 +275,8 @@ export interface ModelUpdateRequest {
 export interface ModelMaterialCreateRequest {
   spool_id: string
   weight_grams: string
-  cost_per_gram: string
+  /** Omit to cost the line at the spool's landed per-gram figure (T254). */
+  cost_per_gram?: string
 }
 
 export interface ModelComponentCreateRequest {
@@ -187,8 +302,11 @@ export interface BOMSpoolSuggestion {
   material_type_code: string
   color: string
   color_hex?: string
+  /** Grams on the bill of materials: one whole plate run. */
   weight_grams: string
-  cost_per_gram: string
+  /** Grams one item takes from this line, as the cost reads them (per-printer weight or bill ÷ items per plate), by the server. */
+  weight_grams_per_item: string
+  cost_per_gram: string | null
   current_weight: string
   is_active: boolean
 }
@@ -200,6 +318,8 @@ export interface ModelProductionDefaults {
   machine?: string
   print_time_minutes?: number
   prints_per_plate: number
+  /** Print minutes one item takes on the planned printer, as the cost reads them; null when no time is recorded. */
+  print_minutes_per_item?: string | null
   bom_materials: BOMSpoolSuggestion[]
 }
 
@@ -317,15 +437,12 @@ export async function importModels(file: File): Promise<ImportModelsResponse> {
 
   const response = await fetch(`${config.apiBaseUrl}/api/v1/models/import`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
+    headers: authHeader(),
     body: formData,
   })
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Import failed')
+    throw new Error(await extractErrorMessage(response, 'Import failed'))
   }
 
   return response.json()
@@ -337,13 +454,11 @@ export async function importModels(file: File): Promise<ImportModelsResponse> {
 export async function exportModels(): Promise<Blob> {
   const response = await fetch(`${config.apiBaseUrl}/api/v1/models/export`, {
     method: 'GET',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
+    headers: authHeader(),
   })
 
   if (!response.ok) {
-    throw new Error('Export failed')
+    throw new Error(await extractErrorMessage(response, 'Export failed'))
   }
 
   return response.blob()
@@ -360,42 +475,95 @@ export async function getModelFiles(modelId: string): Promise<ModelFile[]> {
 }
 
 /**
- * Upload a file for a model
+ * Upload a file for a model.
+ *
+ * Without a version target the file joins the active version, as before
+ * (no breaking change); `newVersionLabel` makes a new, inactive version for it.
+ * Returns the whole upload result so the caller can offer "Make active".
  */
-export async function uploadModelFile(
+export async function uploadModelFileWithResult(
   modelId: string,
   file: File,
-  fileType: ModelFileType,
+  fileType?: ModelFileType,
   options?: {
     partName?: string
     version?: string
     isPrimary?: boolean
     notes?: string
-  }
-): Promise<ModelFile> {
+  } & UploadVersionTarget
+): Promise<ModelFileUploadResult> {
   const formData = new FormData()
   formData.append('file', file)
-  formData.append('file_type', fileType)
+  formData.append('file_type', fileType ?? inferModelFileType(file.name) ?? 'source_3mf')
   if (options?.partName) formData.append('part_name', options.partName)
   if (options?.version) formData.append('version', options.version)
   if (options?.isPrimary) formData.append('is_primary', 'true')
   if (options?.notes) formData.append('notes', options.notes)
+  if (options?.versionId) formData.append('version_id', options.versionId)
+  if (options?.newVersionLabel) formData.append('new_version_label', options.newVersionLabel)
+  if (options?.newVersionNote) formData.append('new_version_note', options.newVersionNote)
 
-  const response = await fetch(`${config.apiBaseUrl}/api/v1/models/${modelId}/files`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${localStorage.getItem('access_token')}`,
-    },
-    body: formData,
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.apiBaseUrl}/api/v1/models/${modelId}/files`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: formData,
+    })
+  } catch {
+    throw new Error("Couldn't reach the server to upload this file. Check your connection and try again.")
+  }
 
   if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.detail || 'Upload failed')
+    throw new Error(await extractErrorMessage(response, 'Upload failed'))
   }
 
   const result = await response.json()
-  return result.file
+  return { ...result, version_created: Boolean(result.version_created) }
+}
+
+/**
+ * Upload a file for a model; resolves to the stored file.
+ */
+export async function uploadModelFile(
+  modelId: string,
+  file: File,
+  fileType?: ModelFileType,
+  options?: {
+    partName?: string
+    version?: string
+    isPrimary?: boolean
+    notes?: string
+  } & UploadVersionTarget
+): Promise<ModelFile> {
+  return (await uploadModelFileWithResult(modelId, file, fileType, options)).file
+}
+
+/**
+ * Parse a .3mf file's embedded slicer metadata (print time, filament weight,
+ * plate count) without attaching it to any model. Used to pre-fill the model
+ * creation form before a model exists.
+ */
+export async function parse3mfFile(file: File): Promise<ThreeMFParseResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  let response: Response
+  try {
+    response = await fetch(`${config.apiBaseUrl}/api/v1/models/files/parse-3mf`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: formData,
+    })
+  } catch {
+    throw new Error("Couldn't reach the server to parse this file. Check your connection and try again.")
+  }
+
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response, 'Failed to parse 3MF file'))
+  }
+
+  return response.json()
 }
 
 /**
@@ -440,7 +608,7 @@ export async function linkLocalModelFile(
     version?: string
     isPrimary?: boolean
     notes?: string
-  }
+  } & UploadVersionTarget
 ): Promise<ModelFile> {
   const response = await apiClient.post<{ file: ModelFile; message: string }>(
     `/api/v1/models/${modelId}/files/link-local`,
@@ -451,6 +619,9 @@ export async function linkLocalModelFile(
       version: options?.version,
       is_primary: options?.isPrimary ?? false,
       notes: options?.notes,
+      version_id: options?.versionId,
+      new_version_label: options?.newVersionLabel,
+      new_version_note: options?.newVersionNote,
     }
   )
   return response.file

@@ -1,0 +1,1124 @@
+/**
+ * TypeScript types for the pricing and costing API.
+ * These mirror the Pydantic schemas in backend/app/schemas/model.py
+ * (CostLine, CostBreakdown) and the breakdown shape in
+ * specs/002-pricing-engine-rebuild/data-model.md.
+ *
+ * Money crosses the wire as a decimal **string**, never a JSON number
+ * (Constitution IV: exact decimal arithmetic end to end). A number here would
+ * reintroduce binary floating point at the last possible moment, which is
+ * exactly where it is hardest to notice. Parse with a decimal library or render
+ * the string directly; do not call Number() on these fields.
+ */
+
+/** A money amount as an exact decimal string, e.g. "20.30". */
+export type Money = string
+
+/** A percentage as an exact decimal string, e.g. "35.3". */
+export type Percent = string
+
+/**
+ * Whether a cost is exposed to print failure. The failure premium is applied
+ * only to the at-risk portion: packaging materials and packing labor are spent
+ * on a part already known good, so they are never at risk.
+ */
+export type RiskClass = 'at_risk' | 'not_at_risk'
+
+/**
+ * Where a figure came from. `observed` and `measured` carry evidence;
+ * `assumed` is a guess the system supplied and `policy` is an operator
+ * decision. A reader needs this to know how much to trust the number
+ * (Constitution VI).
+ */
+export type ProvenanceSource = 'policy' | 'observed' | 'measured' | 'assumed'
+
+/** How a yield figure is interpreted when a plate holds more than one print. */
+export type FailureMode = 'per_part' | 'per_plate'
+
+/**
+ * Which amount a margin percentage is taken over. These are the backend's own
+ * values (`tenant_pricing_policy.margin_basis`): `customer_total` reproduces
+ * today's definition and is the default, so switching is opt-in.
+ */
+export type MarginBasis = 'customer_total' | 'item_price' | 'net_revenue'
+
+/** How overhead reaches a unit of production. */
+export type OverheadMethod = 'per_machine_hour' | 'percentage'
+
+/** The known cost line keys, in the order they are presented. */
+export type CostLineKey =
+  | 'material'
+  | 'waste'
+  | 'machine'
+  | 'overhead'
+  | 'labor_handling'
+  | 'labor_finishing'
+  | 'labor_packing'
+  | 'packaging'
+  | 'components'
+  | 'child_products'
+
+/** One line of a cost breakdown, with its amount, risk class and provenance. */
+export interface CostLine {
+  key: CostLineKey | string
+  label: string
+  amount: Money
+  risk_class: RiskClass
+  /** Where the inputs behind this line came from. */
+  source: ProvenanceSource
+  /** ISO 8601 date the figure was set or observed. */
+  as_of: string | null
+  /**
+   * An observation disputing one of this line's inputs is held for review
+   * (FR-042e). The amount is still the figure in force — telemetry proposes
+   * and never reprices — but the line says so, rather than showing a number
+   * the evidence already contradicts as though nothing were in question.
+   */
+  has_pending_revision: boolean
+  /** How far to believe its observed inputs, a fraction in (0, 1] (T259). */
+  confidence?: Money | null
+}
+
+/**
+ * A full make-cost breakdown. Recomputed on demand and never stored as an
+ * authoritative figure (Constitution V), except as a once-written snapshot on
+ * a settled order line.
+ */
+export interface CostBreakdown {
+  lines: CostLine[]
+
+  /** Subtotals by risk class; the failure premium applies to the at-risk one. */
+  at_risk_subtotal: Money
+  not_at_risk_subtotal: Money
+
+  /** The yield figure actually applied, as a fraction in (0, 1]. */
+  yield_applied: Money
+  failure_mode: FailureMode
+  /** The amount the yield figure added to the at-risk subtotal. */
+  failure_premium: Money
+
+  total_make_cost: Money
+
+  /** Share of the cost whose inputs are observed or measured, 0-1. */
+  observed_share: Money
+  /** Share of the cost still resting on assumptions, 0-1. */
+  assumed_share: Money
+
+  /**
+   * What was missing, if anything. A non-empty list means the figure is
+   * incompletely costed and must be presented as such -- never silently
+   * costed at zero.
+   */
+  incomplete_reasons: string[]
+}
+
+/** A margin percentage always travels with the basis it was taken on. */
+export interface MarginFigure {
+  margin_percentage: Percent
+  margin_basis: MarginBasis
+  profit: Money
+}
+
+/**
+ * The tenant's pricing policy, as `GET /settings/pricing-policy` serves it.
+ *
+ * `origin` is `legacy_settings` for a tenant the Tier 1 migration has not
+ * reached: their figures come from the old settings blob and are a fallback,
+ * not a decision anyone made. Say so on screen rather than presenting it as
+ * configured.
+ */
+/** Where one pricing-policy lever's figure came from (T260). */
+export interface PolicyLeverOrigin {
+  source: 'policy' | 'assumed'
+  as_of: string | null
+  set_by_role: string | null
+}
+
+export interface PricingPolicy {
+  print_labor_rate: Money
+  finishing_labor_rate: Money
+  default_machine_rate_per_hour: Money | null
+  overhead_method: OverheadMethod
+  overhead_monthly_pool: Money | null
+  expected_monthly_machine_hours: Money | null
+  /**
+   * Overhead absorbed per machine-hour, or null when no pool and capacity are
+   * declared — reported missing rather than as zero.
+   */
+  overhead_rate_per_machine_hour: Money | null
+  overhead_percentage: Percent
+  electricity_rate_per_kwh: Money | null
+  margin_basis: MarginBasis
+  default_target_margin_pct: Percent | null
+  rounding_rule: string | null
+  sales_tax_recoverable: boolean
+  staleness_threshold_days: number
+  margin_alert_threshold_pct: Percent
+  min_outcomes_before_auto_update: number
+  estimate_divergence_threshold_pct: Percent
+  origin: 'policy_row' | 'legacy_settings'
+  effective_from: string | null
+  effective_to: string | null
+  set_by_role: string | null
+  /**
+   * 'policy' once an operator has set this policy; 'assumed' for the row seeded
+   * when the tenant was created, which nobody chose.
+   */
+  source: 'policy' | 'assumed'
+  /**
+   * Each lever's own origin (T260). A lever an administrator never chose stays
+   * 'assumed' even on a row somebody wrote.
+   */
+  levers?: Record<string, PolicyLeverOrigin>
+}
+
+/** A change to one or more policy levers. Unlisted levers are carried forward. */
+export type PricingPolicyUpdate = Partial<
+  Pick<
+    PricingPolicy,
+    | 'print_labor_rate'
+    | 'finishing_labor_rate'
+    | 'default_machine_rate_per_hour'
+    | 'overhead_method'
+    | 'overhead_monthly_pool'
+    | 'expected_monthly_machine_hours'
+    | 'electricity_rate_per_kwh'
+    | 'overhead_percentage'
+    | 'margin_basis'
+    | 'default_target_margin_pct'
+    | 'rounding_rule'
+    | 'sales_tax_recoverable'
+    | 'staleness_threshold_days'
+    | 'margin_alert_threshold_pct'
+    | 'min_outcomes_before_auto_update'
+    | 'estimate_divergence_threshold_pct'
+  >
+> & { effective_from?: string }
+
+/**
+ * A printer's machine cost policy and the hourly rate it implies.
+ *
+ * `machine_rate_per_hour` is null when nothing could be derived. Render that
+ * as unknown, never as zero: a zero makes a 40-hour print look free.
+ * `missing` names the inputs the operator has not supplied.
+ */
+export interface PrinterCostPolicy {
+  printer_id: string
+  purchase_price: Money | null
+  expected_lifetime_hours: number | null
+  maintenance_reserve_total: Money | null
+  measured_watts: Money | null
+  /** This printer's own rate; null when it falls back to the tenant policy's. */
+  electricity_rate_per_kwh: Money | null
+  /** The rate actually used, whether the printer's own or the tenant's. */
+  effective_electricity_rate_per_kwh: Money | null
+  machine_rate_per_hour: Money | null
+  /** The parts the rate is made of, each named, so it needs no recomputing. */
+  components: Record<string, Money>
+  missing: string[]
+  /** Where each figure came from; an observed draw is not editable (T262). */
+  origins?: CostProfileFieldOrigin[]
+}
+
+export type PrinterCostPolicyUpdate = Partial<
+  Pick<
+    PrinterCostPolicy,
+    | 'purchase_price'
+    | 'expected_lifetime_hours'
+    | 'maintenance_reserve_total'
+    | 'measured_watts'
+    | 'electricity_rate_per_kwh'
+  >
+>
+
+/**
+ * One printed item's operational figures, each with where it came from.
+ *
+ * These are the Tier 1 columns the engine costs on every read — purge waste,
+ * expected yield, the failure mode and the four-way labor split. They are
+ * *measurements* of a printed item rather than monetary policy, so a member
+ * may record them (FR-007b) while the labor rate beside them on the same table
+ * needs an administrator (FR-007a).
+ *
+ * `incomplete_reasons` names an input the engine needs and does not have. A
+ * missing print time silently removes the machine and overhead lines, which is
+ * exactly how the superseded model understated a nine-hour print — so it is
+ * reported rather than costed at zero (FR-019).
+ */
+export interface ModelCostProfile {
+  model_id: string
+  print_time_minutes: number | null
+  /** The machine this item is planned on, whose rate costs it (FR-011). */
+  planned_printer_id: string | null
+  planned_printer_name: string | null
+  prints_per_plate: number
+  waste_grams: Money
+  expected_yield: Money
+  failure_mode: FailureMode
+  labor_hours_per_plate: Money
+  labor_hours_per_item: Money
+  finishing_hours_per_item: Money
+  packing_hours_per_item: Money
+  /** One entry per numeric figure above (FR-001). */
+  origins: CostProfileFieldOrigin[]
+  incomplete_reasons: string[]
+}
+
+/** Where one figure on the profile came from, and whether it may be typed over. */
+export interface CostProfileFieldOrigin {
+  field_name: string
+  source: ProvenanceSource
+  /** ISO 8601 date the figure was set or observed; null means never recorded. */
+  as_of: string | null
+  /** Past the tenant's staleness threshold. Still in use, still shown (FR-005). */
+  is_stale: boolean
+  /** False for an observed figure, which is refreshed from its source (FR-004). */
+  editable: boolean
+}
+
+export type ModelCostProfileUpdate = Partial<
+  Pick<
+    ModelCostProfile,
+    | 'print_time_minutes'
+    | 'prints_per_plate'
+    | 'waste_grams'
+    | 'expected_yield'
+    | 'failure_mode'
+    | 'labor_hours_per_plate'
+    | 'labor_hours_per_item'
+    | 'finishing_hours_per_item'
+    | 'packing_hours_per_item'
+    | 'planned_printer_id'
+  >
+>
+
+/** One spool's share of a purchase, and what a usable gram of it cost. */
+export interface SpoolLandedCost {
+  spool_id: string
+  spool_label: string | null
+  purchase_price: Money | null
+  allocated_shipping: Money
+  allocated_tax: Money
+  tax_recoverable: boolean
+  nominal_weight_grams: Money
+  unusable_remainder_grams: Money
+  /** Nominal weight less the unusable remainder — never the nominal weight. */
+  usable_weight_grams: Money
+  total_landed_cost: Money | null
+  cost_per_gram: Money | null
+  /** True when weights were unusable and shipping was split evenly instead. */
+  even_split_fallback: boolean
+  incomplete_reasons: string[]
+  /** How the figure was arrived at, in order. Show it; do not make them ask. */
+  derivation: string[]
+}
+
+/** A filament purchase, with the landed cost it implies for each of its spools. */
+export interface FilamentPurchase {
+  id: string
+  supplier: string | null
+  purchase_date: string
+  inbound_shipping_cost: Money
+  tax_amount: Money
+  tax_recoverable: boolean
+  order_reference: string | null
+  notes: string | null
+  spools: SpoolLandedCost[]
+  allocation_notes: string[]
+}
+
+export interface FilamentPurchaseCreate {
+  supplier?: string | null
+  purchase_date: string
+  inbound_shipping_cost?: Money
+  tax_amount?: Money
+  tax_recoverable?: boolean
+  order_reference?: string | null
+  notes?: string | null
+}
+
+export type FilamentPurchaseUpdate = Partial<FilamentPurchaseCreate>
+
+export interface FilamentPurchaseListResponse {
+  purchases: FilamentPurchase[]
+  total: number
+  skip: number
+  limit: number
+}
+
+/* ===========================================================================
+ * Channel economics: the real fee stack, shipping and tax (User Story 3)
+ * ======================================================================== */
+
+/**
+ * What a fee is charged on. Each is an amount or a count taken from the order
+ * and never another fee — there is no fee on a fee (research.md D9).
+ */
+export type FeeBasis =
+  | 'item_subtotal'
+  | 'item_plus_shipping'
+  | 'order_total'
+  | 'per_listing'
+  | 'per_order'
+  | 'per_unit_sold'
+  | 'per_month'
+
+/** Which clamp changed a fee's amount, if either did (FR-021c). */
+export type ClampApplied = 'min' | 'max'
+
+/** Who hands the sales tax to the revenue authority (FR-028b). */
+export type TaxRemitter = 'marketplace' | 'operator'
+
+/**
+ * One fee as charged, with everything behind it.
+ *
+ * `clamp_applied` is the field that stops a capped fee reading as a
+ * miscalculated one (FR-021c), and `is_expected` separates what a channel
+ * charges on average from what it charged here (FR-029). Both must reach the
+ * screen; a breakdown that hides them is a breakdown nobody can check.
+ */
+export interface FeeCharge {
+  name: string
+  basis: FeeBasis
+  amount: Money
+  clamp_applied: ClampApplied | null
+  is_expected: boolean
+  rate_pct: Percent
+  fixed_amount: Money
+  /** The amount or count the rate was applied to. */
+  basis_amount: Money
+  incidence_pct: Percent | null
+}
+
+/** One fee rule as the operator configures it. */
+export interface FeeRule {
+  id: string
+  tenant_id: string
+  sales_channel_id: string
+  name: string
+  basis: FeeBasis
+  rate_pct: Percent
+  fixed_amount: Money
+  min_amount: Money | null
+  max_amount: Money | null
+  incidence_pct: Percent | null
+  sort_order: number
+  applies_from: string
+  applies_to: string | null
+}
+
+export interface FeeRuleCreate {
+  name: string
+  basis: FeeBasis
+  rate_pct?: Percent
+  fixed_amount?: Money
+  min_amount?: Money | null
+  max_amount?: Money | null
+  incidence_pct?: Percent | null
+  sort_order?: number
+  applies_from: string
+  applies_to?: string | null
+}
+
+export type FeeRuleUpdate = Partial<FeeRuleCreate> & {
+  /**
+   * A change to what a rule charges supersedes it from this day, today if
+   * absent; the current row closes the day before (FR-022, T233).
+   */
+  effective_from?: string
+}
+
+export interface FeeRuleListResponse {
+  rules: FeeRule[]
+  total: number
+  as_of: string
+}
+
+/** A hypothetical order, for inspecting the stack without creating one. */
+export interface FeePreviewRequest {
+  item_subtotal: Money
+  shipping_revenue?: Money
+  extras?: Money
+  quantity?: number
+  listings?: number
+  sales_tax_collected?: Money
+  amounts_are_tax_inclusive?: boolean
+  as_of?: string
+}
+
+export interface FeePreviewResponse {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
+  charges: FeeCharge[]
+  total: Money
+  /** Per-listing and per-month rules, absorbed over a period instead (FR-025). */
+  periodic: FeeCharge[]
+  periodic_total: Money
+  bound_clamps: string[]
+  as_of: string
+  revenue_tax_exclusive: Money
+  tax_exclusive_derived: boolean
+}
+
+/** Postage the operator pays, by zone and weight bracket (FR-024). */
+export interface ShippingProfile {
+  id: string
+  tenant_id: string
+  name: string
+  destination_zone: string
+  weight_bracket_min_grams: Money
+  weight_bracket_max_grams: Money | null
+  postage_cost: Money
+  carrier: string | null
+  effective_from: string
+  /** Set once superseded or withdrawn; the profile stays for orders it costed. */
+  effective_to?: string | null
+  /** A size class in mm (all three or none); null for a weight-only service. */
+  max_length_mm?: string | null
+  max_width_mm?: string | null
+  max_height_mm?: string | null
+  /** The carrier's volumetric divisor, cm³ per kg; null charges actual weight. */
+  volumetric_divisor?: string | null
+  /** Spec 006: set on a row seeded from a carrier tariff; null on the operator's own. */
+  catalogue_carrier?: string | null
+  /** The carrier's service this row prices, e.g. "small_packet". */
+  service?: string | null
+  /** The tariff's effective date (ISO) the row was seeded from. */
+  tariff_version?: string | null
+  /** The published price list the figures came from. */
+  source?: string | null
+}
+
+export interface ShippingProfileCreate {
+  name: string
+  destination_zone: string
+  weight_bracket_min_grams?: Money
+  weight_bracket_max_grams?: Money | null
+  postage_cost: Money
+  carrier?: string | null
+  effective_from: string
+  max_length_mm?: string | null
+  max_width_mm?: string | null
+  max_height_mm?: string | null
+  volumetric_divisor?: string | null
+}
+
+export type ShippingProfileUpdate = Partial<ShippingProfileCreate>
+
+export interface ShippingProfileListResponse {
+  profiles: ShippingProfile[]
+  total: number
+}
+
+/** A reserve held against revenue: neither a fee nor a cost (FR-026). */
+export interface RevenueDeduction {
+  key: string
+  label: string
+  amount: Money
+  rate_pct: Percent
+  basis_amount: Money
+}
+
+/**
+ * What one unit earns on one channel at the price in effect.
+ *
+ * `margin_pct` is null rather than zero where the basis is zero — net revenue
+ * after fees, with fees consuming the whole amount. Render that as undefined,
+ * never as break-even.
+ */
+export interface ProductMargin {
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
+  /** Units on the line every amount is for (T258); one when not asked. */
+  quantity?: number
+  /** The price per unit at this quantity's tier. */
+  unit_price?: Money | null
+
+  list_price: Money
+  shipping_revenue: Money
+  postage_paid: Money
+  /** Shipping revenue less postage paid, positive or negative (FR-024). */
+  shipping_net: Money
+
+  make_cost: Money
+  fees: FeeCharge[]
+  fee_total: Money
+  deductions: RevenueDeduction[]
+  deduction_total: Money
+
+  net_revenue: Money
+  profit: Money
+  margin_pct: Percent | null
+  margin_basis: MarginBasis
+  margin_basis_label: string
+  margin_basis_amount: Money
+
+  sales_tax_collected: Money
+  sales_tax_liability: Money
+  tax_remitter: TaxRemitter
+  /** True when the exclusive amounts were derived from inclusive ones (FR-028e). */
+  tax_exclusive_derived: boolean
+  revenue_tax_exclusive: Money
+
+  observed_share: Money | null
+  assumed_share: Money | null
+  incomplete_reasons: string[]
+  /**
+   * How the postage was priced when worth saying (spec 006 FR-023a), e.g.
+   * `preferred_service_does_not_fit` when the chosen service is not used.
+   */
+  postage_notes?: string[]
+}
+
+/** A recorded fee: exactly one of a period scope or an order scope. */
+export interface FeeActualCreate {
+  sales_channel_id: string
+  fee_category: string
+  amount: Money
+  period_start?: string
+  period_end?: string
+  order_id?: string
+  /** Order scope only: the statement period this charge appeared in. */
+  statement_period_start?: string
+  statement_period_end?: string
+}
+
+export interface FeeActual {
+  id: string
+  tenant_id: string
+  sales_channel_id: string
+  fee_category: string
+  amount: Money
+  period_start: string | null
+  period_end: string | null
+  order_id: string | null
+  statement_period_start?: string | null
+  statement_period_end?: string | null
+  /** `entered` by a human, never presented as observed (FR-041e). */
+  source: string
+}
+
+/** Plan against statement for one fee category (FR-041d). */
+export interface CategoryReconciliation {
+  category: string
+  planned: Money
+  actual_period: Money | null
+  actual_order_scoped: Money
+  unallocated_remainder: Money | null
+  actual_total: Money | null
+  /** Null while nothing is recorded — which is not the same as agreeing. */
+  difference: Money | null
+  difference_pct_of_fee: Percent | null
+}
+
+/** A periodic cost spread over the period's order volume (FR-025). */
+export interface AbsorbedCost {
+  key: string
+  label: string
+  total: Money
+  order_count: number
+  /** Null when there were no orders to absorb it over. */
+  per_order: Money | null
+  is_unabsorbed: boolean
+}
+
+/** One channel over one period. */
+export interface ChannelPnL {
+  channel_id: string
+  period_start: string
+  period_end: string
+  order_count: number
+
+  revenue_tax_exclusive: Money
+  sales_tax_collected: Money
+  sales_tax_liability: Money
+
+  postage_paid: Money
+  shipping_revenue: Money
+  shipping_net: Money
+
+  planned_fee_total: Money
+  actual_fee_total: Money | null
+  unallocated_remainder: Money
+  fee_difference: Money | null
+  reconciliation: CategoryReconciliation[]
+
+  absorbed_costs: AbsorbedCost[]
+  unabsorbed_total: Money
+
+  make_cost_total: Money
+  /** Lines that froze no make-cost (or no rate to convert it), left out. */
+  make_cost_unrecorded_lines?: number
+  /** Orders with no postage recorded, carried at none rather than guessed. */
+  postage_unrecorded_orders?: number
+  /** Orders whose source did not record the tax it collected. */
+  tax_unrecorded_orders?: number
+  /** Orders sold before snapshots, whose planned fees come from the rules. */
+  planned_fees_from_rules?: number
+  profit: Money
+  margin_pct: Percent | null
+  margin_basis: MarginBasis
+  margin_basis_label: string
+  margin_bases_in_period?: MarginBasis[]
+  margin_basis_spans_change?: boolean
+  /** What the figures leave out or derive, in words. */
+  notes?: string[]
+}
+
+/** Channel economics as the sales-channel form edits them. */
+export interface ChannelEconomics {
+  tax_remitter: TaxRemitter
+  expected_discount_pct: Percent
+  expected_refund_pct: Percent
+  free_shipping_threshold: Money | null
+  rounding_rule: string | null
+  currency_code: string
+  offsite_ads_opt_in: boolean
+}
+
+// ---------------------------------------------------------------------------
+// The target-margin solver and the price ladder (tasks T089, T089b)
+//
+// `machine_hours` and every amount below is a decimal string, like everything
+// else in this file. Nothing here parses one into a number: see `lib/money`.
+// ---------------------------------------------------------------------------
+
+/** Rounding rules the solver understands (FR-033). Every one rounds up. */
+export type RoundingRule =
+  | 'nearest_cent'
+  | 'nearest_five_cents'
+  | 'nearest_dollar'
+  | 'psychological_99'
+  | 'psychological_95'
+
+/** What the operator asks for: a target margin, on a hypothetical sale. */
+export interface PriceSolveRequest {
+  target_margin_pct: Percent
+  quantity?: number
+  shipping_revenue?: Money
+  extras?: Money
+  margin_basis?: MarginBasis | null
+  apply_rounding?: boolean
+  rounding_rule?: RoundingRule | string | null
+  snap_to_free_shipping?: boolean
+  as_of?: string | null
+}
+
+/**
+ * One deliberate move away from the solved price (FR-033).
+ *
+ * A rounding rule and a free-shipping snap both change the answer. Neither is
+ * a correction, so neither is hidden: each says where the price came from and
+ * where it went, which is the only way an operator can check it.
+ */
+export interface PriceAdjustment {
+  key: string
+  label: string
+  from_price: Money
+  to_price: Money
+  delta: Money
+}
+
+/**
+ * The solver's answer, and everything behind it (FR-032 - FR-035).
+ *
+ * `achievable` is false, with `reason` of `"unachievable"` and every price
+ * field null, where no price achieves the target. The API serves that case as
+ * a 422 carrying this shape in `detail`.
+ *
+ * `is_proposal` is always true. Nothing here has been published to any
+ * channel: applying it is a separate write on the price (US4 scenario 5).
+ */
+export interface PriceSolveResult {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
+
+  achievable: boolean
+  reason: string | null
+  binding_constraint: string | null
+
+  target_margin_pct: Percent
+  margin_basis: MarginBasis
+  margin_basis_label: string
+
+  /** The closed-form answer, before any rounding or snap. */
+  required_price_raw: Money | null
+  /** The price to charge: the raw price with every adjustment applied. */
+  required_price_rounded: Money | null
+  adjustments: PriceAdjustment[]
+  /** Fees whose cap or floor bound at the price returned (FR-032a). */
+  binding_clamps: string[]
+
+  /** At or above the target, since every rounding rule rounds up. */
+  margin_pct_at_price: Percent | null
+  profit_at_price: Money | null
+
+  make_cost: Money
+  postage_paid: Money
+  fees: FeeCharge[]
+
+  /** Every figure the answer came from, rendered as strings (FR-034). */
+  inputs: Record<string, string>
+  passes: number
+  is_proposal: boolean
+}
+
+/** One price point and what it earns (FR-007). No rung is recommended. */
+export interface PriceLadderRung {
+  price: Money
+  /** Null where fees consume the whole basis, never zero. */
+  margin_pct: Percent | null
+  profit: Money
+  margin_basis: MarginBasis
+  /** Null when nobody has timed the print, never zero. */
+  profit_per_machine_hour: Money | null
+}
+
+/**
+ * Margin across a range of prices, for the operator to choose from.
+ *
+ * The bounds are echoed back because they were the caller's: the ladder has no
+ * range of its own, since a default range's midpoint would function as a
+ * recommended price while resting on nothing (FR-007).
+ */
+export interface PriceLadder {
+  /** A date no fee rule covers, reported rather than priced at zero fees (T236). */
+  incomplete_reasons?: string[]
+  product_id: string
+  sales_channel_id: string
+  as_of: string
+  /** ISO 4217 code every amount here is in: the channel's (T261). */
+  currency?: string
+
+  price_from: Money
+  price_to: Money
+  step: Money
+
+  margin_basis: MarginBasis
+  margin_basis_label: string
+  make_cost: Money
+  postage_paid: Money
+  machine_hours: Money | null
+
+  rungs: PriceLadderRung[]
+}
+
+/** The range the operator asks the ladder for. No defaults (FR-007). */
+export interface PriceLadderParams {
+  price_from: Money
+  price_to: Money
+  step: Money
+  quantity?: number
+  shipping_revenue?: Money
+  as_of?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Provenance and estimate proposals (User Story 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where one figure came from, as `GET /provenance` reports it.
+ *
+ * `editable` and `has_pending_revision` are served rather than inferred on
+ * this side. An observed figure is read-only (FR-004), and a screen that
+ * worked that out for itself would eventually disagree with the server about
+ * which edits will be refused — which shows up as a form that fails on submit
+ * for no visible reason.
+ */
+export interface FieldOrigin {
+  field_name: string
+  source: ProvenanceSource
+  /** Null where nothing has been recorded, which is not the same as today. */
+  as_of: string | null
+  /** A fraction between 0 and 1, not a percentage. */
+  confidence: Money | null
+  /** True where the registry's default applied because nothing was recorded. */
+  is_default: boolean
+  /** True for a hand measurement past the tenant's threshold (FR-005). */
+  is_stale: boolean
+  /** False where an operator may not write this origin (FR-004). */
+  editable: boolean
+  /** True where an observation diverges beyond the threshold (FR-042e). */
+  has_pending_revision: boolean
+  description: string
+}
+
+export interface EntityProvenance {
+  entity_type: string
+  entity_id: string
+  fields: FieldOrigin[]
+  observed_count: number
+  total_count: number
+  stale_count: number
+  /** The tenant's own threshold; a stale count cannot be judged without it. */
+  staleness_threshold_days: number
+}
+
+/** What an operator may claim. `observed` is deliberately absent (FR-004). */
+export type OperatorProvenanceSource = 'measured' | 'policy' | 'assumed'
+
+export interface ProvenanceWriteRequest {
+  source: OperatorProvenanceSource
+  as_of?: string
+  /** A fraction between 0 and 1. */
+  confidence?: Money
+}
+
+export type RevisionState = 'pending' | 'accepted' | 'rejected'
+
+/**
+ * A proposed estimate change, held for review (FR-042b, FR-042c).
+ *
+ * Every figure is a decimal string. The operator compares `divergence_pct`
+ * against a threshold they set, and a value that drifted in its last place on
+ * the way here could not be reconciled with the one on the server.
+ */
+export interface EstimateRevision {
+  id: string
+  entity_type: string
+  entity_id: string
+  field_name: string
+  /** The estimate this would change, as it stood when the proposal was raised. */
+  current_value: Money
+  observed_value: Money
+  divergence_pct: Money
+  /** How far to believe the observation, a fraction in (0, 1] (T259). */
+  confidence?: Money | null
+  /** The outcomes behind it, so a reviewer can check them (FR-042c). */
+  derived_from_run_ids: string[]
+  state: RevisionState
+  observed_as_of: string
+  reviewed_by_user_id: string | null
+  reviewed_at: string | null
+  created_at: string
+}
+
+export interface EstimateRevisionList {
+  revisions: EstimateRevision[]
+  total: number
+  pending_count: number
+}
+
+// ---------------------------------------------------------------------------
+// Realised margin against plan (FR-042, US7 scenario 3)
+// ---------------------------------------------------------------------------
+
+/** One cost line that came in different from plan. */
+export interface LineMovement {
+  /** The breakdown line, or 'fees'. */
+  key: string
+  /** What the snapshot costed it at. */
+  planned: Money
+  /** What it actually came to. */
+  realised: Money
+  /** Realised less planned; positive means dearer. */
+  delta: Money
+}
+
+/**
+ * What one settled line earned, beside the margin it was sold at.
+ *
+ * A percentage is `null`, never zero, where fees consumed the whole basis:
+ * break-even and unanswerable are different facts, and reporting the second as
+ * the first reads as a sale that merely made no money.
+ */
+export interface MarginDivergence {
+  order_id: string
+  order_item_id: string
+  product_id: string | null
+  product_name: string | null
+  sold_on: string | null
+  /** The basis both percentages are on (FR-031b). */
+  margin_basis: string
+  planned_margin_pct: Money | null
+  realised_margin_pct: Money | null
+  /** Realised less planned, in points. Negative is a shortfall. */
+  divergence_points: Money | null
+  /** The operator's own threshold, from the pricing policy. */
+  threshold_points: Money
+  diverges: boolean
+  shortfall: boolean
+  /** Null where no exchange rate was frozen: a profit across currencies is not one. */
+  planned_profit: Money | null
+  realised_profit: Money | null
+  /** Which lines moved, heaviest first -- what US7 scenario 3 asks for. */
+  movements: LineMovement[]
+  /** The rate frozen at sale, its date and origin (FR-028g, FR-028h). */
+  fx_rate?: Money | null
+  fx_rate_date?: string | null
+  fx_rate_source?: string | null
+  /** What the sale's snapshot could not record (T232). */
+  snapshot_incomplete?: string[] | null
+}
+
+export interface MarginDivergenceList {
+  divergences: MarginDivergence[]
+  total: number
+  /** How many are past the threshold and should be acted on. */
+  alerting: number
+  threshold_points: Money
+}
+
+// ---------------------------------------------------------------------------
+// Catalogue-wide scenarios (US7, FR-044)
+// ---------------------------------------------------------------------------
+
+/**
+ * A scenario's lifecycle.
+ *
+ * `partial` is the state that matters: a sweep that costed nine hundred
+ * products and could not cost four has an answer worth reading, and calling it
+ * `failed` would throw that away while calling it `succeeded` would hide the
+ * gap (FR-044b).
+ */
+export type ScenarioState = 'queued' | 'running' | 'succeeded' | 'partial' | 'failed'
+
+/** The overrides a scenario applies, each a relative percentage change. */
+export interface ScenarioShock {
+  material_cost_pct?: Money
+  labor_rate_pct?: Money
+  fee_rate_pct?: Money
+  electricity_rate_pct?: Money
+}
+
+/** One product the shock put below the operator's margin floor. */
+export interface BelowFloorEntry {
+  product_id: string
+  sku: string
+  name: string
+  sales_channel_id: string
+  channel_name: string
+  list_price: Money
+  make_cost: Money
+  /** Null where fees consume the whole basis — undefined, not zero. */
+  margin_pct: Money | null
+  profit: Money
+  profit_per_machine_hour: Money | null
+  shortfall_pct: Money | null
+}
+
+/** A product the sweep could not cost, and why. */
+export interface SkippedEntry {
+  product_id: string
+  sku: string
+  sales_channel_id: string
+  reason: string
+}
+
+/**
+ * What a run found.
+ *
+ * `shock` and `inputs` are repeated here on purpose: a result read a fortnight
+ * later must state what it was asking and what it was applied to, or it reads
+ * as a current report (FR-044c).
+ */
+export interface ScenarioResult {
+  shock: Record<string, Money>
+  inputs: Record<string, string | number | null>
+  evaluated: number
+  below_floor: BelowFloorEntry[]
+  skipped: SkippedEntry[]
+  margins?: Record<string, Money | null>
+}
+
+export interface ScenarioRun {
+  id: string
+  state: ScenarioState
+  shock: Record<string, Money>
+  margin_floor_pct: Money
+  inputs: Record<string, string | number | null> | null
+  /** Null until the run finishes: nothing found yet, not nothing wrong. */
+  result: ScenarioResult | null
+  /** Set only for a failure, and a failure always has one (FR-044b). */
+  error_text: string | null
+  requested_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface ScenarioRunList {
+  runs: ScenarioRun[]
+  total: number
+}
+
+export interface ScenarioRunRequest {
+  shock: ScenarioShock
+  margin_floor_pct: Money
+  sales_channel_id?: string
+}
+
+// ---------------------------------------------------------------------------
+// Exchange rates entered by hand (T223, FR-028h)
+// ---------------------------------------------------------------------------
+
+/** A settled line that froze no exchange rate, and the pair it waits on. */
+export interface FxWaitingLine {
+  order_id: string
+  order_number: string
+  order_item_id: string
+  product_name: string
+  sold_on: string | null
+  base_currency: string
+  quote_currency: string
+}
+
+export interface FxWaitingLines {
+  lines: FxWaitingLine[]
+  total: number
+}
+
+/** One `base_currency` is `rate` of `quote_currency`, on `rate_date`. */
+export interface ManualFxRateCreate {
+  base_currency: string
+  quote_currency: string
+  rate: Money
+  rate_date?: string
+}
+
+export interface ManualFxRate {
+  base_currency: string
+  quote_currency: string
+  rate: Money
+  rate_date: string
+  source: string
+  /** Lines that had frozen no rate and now carry this one. */
+  lines_filled: number
+}
+
+// ---------------------------------------------------------------------------
+// The queue by profit per machine-hour (T234, FR-043, US7)
+// ---------------------------------------------------------------------------
+
+export type PrintJobStatus = 'pending' | 'queued' | 'printing' | 'completed' | 'failed' | 'cancelled'
+export type PrintJobPriority = 'low' | 'normal' | 'high' | 'urgent'
+
+/** One queued job and what it earns for the machine time it takes. */
+export interface JobProfitability {
+  job_id: string
+  status: PrintJobStatus
+  priority: PrintJobPriority
+  queue_position: number
+  model_name: string | null
+  product_name: string | null
+  /** Null, never zero, where no figure can be had; `reason` says why. */
+  profit_per_machine_hour: Money | null
+  margin_pct: Percent | null
+  machine_hours: Money | null
+  reason: string | null
+}
+
+/** The queue ordered by what pays per machine-hour, priority still first. */
+export interface ProfitabilityRanking {
+  as_of: string
+  entries: JobProfitability[]
+}
+

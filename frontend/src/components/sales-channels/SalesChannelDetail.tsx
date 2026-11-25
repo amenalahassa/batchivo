@@ -4,10 +4,13 @@
  * Displays full sales channel information including fee structure.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
+import { formatMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Edit, Loader2, Trash2, Store, DollarSign, Percent, Calendar, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Edit, Loader2, Trash2, Store, Calendar, AlertTriangle } from 'lucide-react'
 
 import {
   getSalesChannel,
@@ -15,9 +18,13 @@ import {
   getPlatformDisplayName,
   getPlatformColor,
 } from '@/lib/api/sales-channels'
+import { symbolForCurrency } from '@/lib/money'
+import { FeeRuleEditor } from './FeeRuleEditor'
+import { FeePreviewPanel } from './FeePreviewPanel'
+import { ChannelProfitabilityPanel } from './ChannelProfitabilityPanel'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CardContent, CardTitle, Card, CardDescription, CardHeader } from '@/components/ui/card'
+import { CardContent, CardTitle, Card, CardHeader } from '@/components/ui/card'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -66,6 +73,7 @@ function DetailItem({ label, value }: { label: string; value: string | React.Rea
 }
 
 export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
+  const { currency } = useCurrency()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -84,15 +92,13 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
     },
   })
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(2)}`
-  }
-
-  const formatPercentage = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `${numValue.toFixed(1)}%`
-  }
+  // Rendered from the decimal string the API sent, in the tenant's own
+  // currency. A channel's monthly cost is a figure `channel_pnl.py` absorbs
+  // over a period's orders (FR-025), so a `parseFloat` here and an exact
+  // decimal there is two answers to one question (Constitution IV, task
+  // T162).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currency.symbol)
 
   if (isLoading) {
     return (
@@ -116,12 +122,10 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
     )
   }
 
-  // Calculate example fee for a £20 sale
-  const exampleSale = 20
-  const feePercentage = parseFloat(channel.fee_percentage || '0')
-  const feeFixed = parseFloat(channel.fee_fixed || '0')
-  const totalFee = (exampleSale * feePercentage / 100) + feeFixed
-  const netAmount = exampleSale - totalFee
+  // The channel settles in its own currency, which need not be the tenant's
+  // (FR-020). Its fees are rendered with its own symbol so an amount is never
+  // labelled with the wrong currency.
+  const channelSymbol = symbolForCurrency(channel.currency_code, '£')
 
   return (
     <div className="space-y-6">
@@ -215,31 +219,16 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
         </div>
       </div>
 
-      {/* Fee Stats Grid */}
+      {/* What the channel costs to be on. Its per-sale fees are the rule
+          stack below, which is the only thing a margin is computed from
+          (FR-020) -- an "example sale" figure here would be a second answer
+          to a question the fee rules already answer. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard
-          icon={Percent}
-          label="Fee Percentage"
-          value={formatPercentage(channel.fee_percentage)}
-          subValue="Per sale"
-        />
-        <StatCard
-          icon={DollarSign}
-          label="Fixed Fee"
-          value={formatCurrency(channel.fee_fixed)}
-          subValue="Per sale"
-        />
         <StatCard
           icon={Calendar}
           label="Monthly Cost"
           value={formatCurrency(channel.monthly_cost)}
           subValue="Subscription/booth fee"
-        />
-        <StatCard
-          icon={Store}
-          label="Example (£20 sale)"
-          value={formatCurrency(netAmount)}
-          subValue={`After ${formatCurrency(totalFee)} fees`}
         />
       </div>
 
@@ -294,39 +283,15 @@ export function SalesChannelDetail({ channelId }: SalesChannelDetailProps) {
         </CardContent>
       </Card>
 
-      {/* Fee Calculator Card */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <DollarSign className="h-5 w-5" />
-            Fee Calculator
-          </CardTitle>
-          <CardDescription>
-            See how fees affect different sale amounts
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[10, 20, 30, 50].map((saleAmount) => {
-              const fee = (saleAmount * feePercentage / 100) + feeFixed
-              const net = saleAmount - fee
-              const feePercent = (fee / saleAmount) * 100
+      {/* The authoritative fee stack (FR-020, FR-021) */}
+      <FeeRuleEditor channelId={channelId} currencySymbol={channelSymbol} />
 
-              return (
-                <div key={saleAmount} className="rounded-lg border p-3 text-center">
-                  <div className="text-sm text-muted-foreground">
-                    {formatCurrency(saleAmount)} sale
-                  </div>
-                  <div className="text-lg font-bold mt-1">{formatCurrency(net)}</div>
-                  <div className="text-xs text-muted-foreground">
-                    -{formatCurrency(fee)} ({feePercent.toFixed(1)}%)
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Check a rule against an order without creating one (T246). */}
+      <FeePreviewPanel channelId={channelId} currencySymbol={channelSymbol} />
+
+      {/* Planned against recorded, over a period (FR-025, FR-041d) */}
+      <ChannelProfitabilityPanel channelId={channelId} currencySymbol={channelSymbol} />
+
     </div>
   )
 }

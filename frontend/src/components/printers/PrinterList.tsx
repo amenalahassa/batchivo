@@ -7,9 +7,11 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Gauge, Trash2 } from 'lucide-react'
 
 import { listPrinters } from '@/lib/api/printers'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
 import type { Printer } from '@/types/printer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,6 +27,11 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { PrinterFormDialog } from './PrinterFormDialog'
 import { DeletePrinterDialog } from './DeletePrinterDialog'
+import { PrinterCostPolicyDialog } from './PrinterCostPolicyDialog'
+import { PrinterConnectionDialog } from './PrinterConnectionDialog'
+import { PrinterSendActions } from './PrinterSendActions'
+import { PrinterSendsDialog } from './PrinterSendsDialog'
+import { SendPrintDialog } from './SendPrintDialog'
 
 export function PrinterList() {
   const [search, setSearch] = useState('')
@@ -33,6 +40,17 @@ export function PrinterList() {
   const [editingPrinterId, setEditingPrinterId] = useState<string | null>(null)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletingPrinter, setDeletingPrinter] = useState<Printer | null>(null)
+  const [costDialogOpen, setCostDialogOpen] = useState(false)
+  const [costPrinter, setCostPrinter] = useState<Printer | null>(null)
+  // Print send (spec 011): which printer each dialog is open for
+  const [connectionPrinter, setConnectionPrinter] = useState<Printer | null>(null)
+  const [sendPrinter, setSendPrinter] = useState<Printer | null>(null)
+  const [sendsPrinter, setSendsPrinter] = useState<Printer | null>(null)
+
+  const { user } = useAuth()
+  // The hourly rate is a monetary figure (FR-007a). A member or viewer opens
+  // the same dialog and reads it; the controls inside arrive disabled.
+  const canEditCost = canEditMonetaryPolicy(user)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['printers', { isActiveFilter }],
@@ -71,6 +89,11 @@ export function PrinterList() {
   const handleAddNew = () => {
     setEditingPrinterId(null)
     setFormDialogOpen(true)
+  }
+
+  const handleCostPolicy = (printer: Printer) => {
+    setCostPrinter(printer)
+    setCostDialogOpen(true)
   }
 
   const formatBedSize = (printer: Printer): string => {
@@ -228,11 +251,25 @@ export function PrinterList() {
                     )}
                   </div>
 
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={() => handleEdit(printer)}>
                       <Edit className="h-3 w-3 mr-1" />
                       Edit
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleCostPolicy(printer)}
+                    >
+                      <Gauge className="h-3 w-3 mr-1" />
+                      Machine cost
+                    </Button>
+                    <PrinterSendActions
+                      printer={printer}
+                      onConnection={setConnectionPrinter}
+                      onSend={setSendPrinter}
+                      onSends={setSendsPrinter}
+                    />
                     <Button
                       variant="outline"
                       size="sm"
@@ -307,6 +344,21 @@ export function PrinterList() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            aria-label={`Machine cost for ${printer.name}`}
+                            onClick={() => handleCostPolicy(printer)}
+                          >
+                            <Gauge className="h-4 w-4" />
+                          </Button>
+                          <PrinterSendActions
+                            printer={printer}
+                            compact
+                            onConnection={setConnectionPrinter}
+                            onSend={setSendPrinter}
+                            onSends={setSendsPrinter}
+                          />
+                          <Button
+                            variant="ghost"
+                            size="sm"
                             className="text-destructive hover:text-destructive"
                             onClick={() => handleDelete(printer)}
                           >
@@ -335,6 +387,39 @@ export function PrinterList() {
         onOpenChange={setDeleteDialogOpen}
         printer={deletingPrinter}
       />
+
+      <PrinterCostPolicyDialog
+        open={costDialogOpen}
+        onOpenChange={setCostDialogOpen}
+        printerId={costPrinter?.id ?? null}
+        printerName={costPrinter?.name}
+        canEdit={canEditCost}
+      />
+
+      {connectionPrinter && (
+        <PrinterConnectionDialog
+          open
+          onOpenChange={(open) => !open && setConnectionPrinter(null)}
+          printerId={connectionPrinter.id}
+          printerName={connectionPrinter.name}
+        />
+      )}
+      {sendPrinter && (
+        <SendPrintDialog
+          open
+          onOpenChange={(open) => !open && setSendPrinter(null)}
+          printerId={sendPrinter.id}
+          printerName={sendPrinter.name}
+        />
+      )}
+      {sendsPrinter && (
+        <PrinterSendsDialog
+          open
+          onOpenChange={(open) => !open && setSendsPrinter(null)}
+          printerId={sendsPrinter.id}
+          printerName={sendsPrinter.name}
+        />
+      )}
     </div>
   )
 }

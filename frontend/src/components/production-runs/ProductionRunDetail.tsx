@@ -17,6 +17,16 @@ import {
   getStatusColor,
 } from '@/lib/api/production-runs'
 import { useCurrency } from '@/hooks/useCurrency'
+import {
+  ZERO,
+  compareMoney,
+  divideMoney,
+  formatMoney,
+  formatPercent,
+  multiplyMoney,
+  subtractMoney,
+} from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { CancelRunDialog } from './CancelRunDialog'
 import { CompleteRunDialog } from './CompleteRunDialog'
 import { EditRunDialog } from './EditRunDialog'
@@ -36,6 +46,32 @@ import { Separator } from '@/components/ui/separator'
 
 interface ProductionRunDetailProps {
   runId: string
+}
+
+/**
+ * The waste factor: how much more material the run really used than the
+ * successful items theoretically needed, as a percentage.
+ *
+ * `(actual / successful - 1) * 100`, computed with the decimal helpers rather
+ * than by dividing two doubles. Both inputs are `Decimal` on the backend and
+ * so arrive as exact decimal strings; putting them through `Number()` was the
+ * same conversion T151 removed from the model screens and T162 from the
+ * channel ones (FR-047, Constitution IV).
+ *
+ * Returns null when either side is missing or the divisor is zero, so the
+ * screen shows a dash rather than a figure derived from nothing.
+ */
+function wasteFactorPct(run: {
+  actual_total_weight_grams?: number | string | null
+  successful_weight_grams?: Money | null
+}): Money | null {
+  const { actual_total_weight_grams: actual, successful_weight_grams: successful } = run
+  if (actual === null || actual === undefined || !successful) return null
+
+  const ratio = divideMoney(String(actual), successful, 6)
+  if (ratio === null) return null
+
+  return multiplyMoney(subtractMoney(ratio, '1'), '100')
 }
 
 export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
@@ -216,7 +252,7 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">Cost Per Gram</p>
                 <p className="text-2xl font-bold text-primary">
-                  {formatCurrency(Number(run.cost_per_gram_actual))}
+                  {formatCurrency(run.cost_per_gram_actual)}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Total material cost ÷ successful weight
@@ -225,7 +261,7 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">Successful Weight</p>
                 <p className="text-2xl font-bold">
-                  {Number(run.successful_weight_grams).toFixed(1)}g
+                  {formatMoney(run.successful_weight_grams, '', { places: 1 })}g
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Theoretical weight of successful items
@@ -234,9 +270,7 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
               <div className="space-y-1">
                 <p className="text-sm text-muted-foreground">Waste Factor</p>
                 <p className="text-2xl font-bold">
-                  {run.actual_total_weight_grams && run.successful_weight_grams
-                    ? `${((Number(run.actual_total_weight_grams) / Number(run.successful_weight_grams) - 1) * 100).toFixed(1)}%`
-                    : '—'}
+                  {formatPercent(wasteFactorPct(run), { undefinedLabel: '—' })}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Extra material used (purge, tower, failures)
@@ -299,12 +333,12 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
                     </TableCell>
                     <TableCell className="text-right text-muted-foreground">
                       {item.model_weight_grams != null
-                        ? `${Number(item.model_weight_grams).toFixed(1)}g`
+                        ? `${formatMoney(item.model_weight_grams, '', { places: 1 })}g`
                         : '—'}
                     </TableCell>
                     <TableCell className="text-right font-medium">
                       {item.actual_cost_per_unit != null
-                        ? formatCurrency(Number(item.actual_cost_per_unit))
+                        ? formatCurrency(item.actual_cost_per_unit)
                         : '—'}
                     </TableCell>
                   </TableRow>
@@ -387,7 +421,7 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
                           {material.estimated_total_weight != null ? Number(material.estimated_total_weight).toFixed(1) : '—'}
                         </TableCell>
                         <TableCell className="text-right text-muted-foreground">
-                          {formatCurrency(Number(material.estimated_cost ?? 0))}
+                          {formatCurrency(material.estimated_cost ?? ZERO)}
                         </TableCell>
                         <TableCell className="text-right">
                           {hasActualData ? actualWeight.toFixed(1) : '—'}
@@ -409,7 +443,7 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
                           )}
                         </TableCell>
                         <TableCell className="text-right font-medium">
-                          {hasActualData ? formatCurrency(Number(material.total_cost ?? 0)) : '—'}
+                          {hasActualData ? formatCurrency(material.total_cost ?? ZERO) : '—'}
                         </TableCell>
                       </TableRow>
                     )
@@ -424,23 +458,23 @@ export function ProductionRunDetail({ runId }: ProductionRunDetailProps) {
                 <div className="space-y-2 min-w-[300px]">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Estimated Total Cost:</span>
-                    <span className="font-medium">{formatCurrency(Number(run.total_estimated_cost ?? 0))}</span>
+                    <span className="font-medium">{formatCurrency(run.total_estimated_cost ?? ZERO)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">Actual Material Cost:</span>
-                    <span className="font-medium">{formatCurrency(Number(run.total_material_cost ?? 0))}</span>
+                    <span className="font-medium">{formatCurrency(run.total_material_cost ?? ZERO)}</span>
                   </div>
                   <Separator />
                   <div className="flex justify-between">
                     <span className="font-semibold">Cost Variance:</span>
                     <span
                       className={`font-semibold ${
-                        Number(run.total_material_cost ?? 0) > Number(run.total_estimated_cost ?? 0)
+                        compareMoney(run.total_material_cost ?? ZERO, run.total_estimated_cost ?? ZERO) > 0
                           ? 'text-destructive'
                           : 'text-green-600'
                       }`}
                     >
-                      {formatCurrency(Number(run.total_material_cost ?? 0) - Number(run.total_estimated_cost ?? 0))}
+                      {formatCurrency(subtractMoney(run.total_material_cost ?? ZERO, run.total_estimated_cost ?? ZERO))}
                     </span>
                   </div>
                 </div>

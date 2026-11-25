@@ -10,6 +10,9 @@ os.environ.setdefault(
     "SECRET_KEY",
     "test-secret-key-for-pytest-only-do-not-use-in-production-minimum-32-chars",
 )
+# No test reaches a live exchange-rate service: a rate a test depends on is one
+# it records itself, so the suite neither needs a network nor varies with one.
+os.environ.setdefault("FX_ENABLED", "false")
 
 import boto3
 import pytest
@@ -17,6 +20,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from moto import mock_aws
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from decimal import Decimal
@@ -29,7 +33,8 @@ from app.models.material import MaterialType
 from app.models.product import Product
 from app.models.spool import Spool
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
+from tests.passwords import hashed_test_password
 
 
 # Configure anyio to only use asyncio backend (not trio)
@@ -94,9 +99,19 @@ async def _drop_all_tables(conn, is_sqlite: bool):
             await conn.execute(text(f'DROP TYPE IF EXISTS "{enum_name}" CASCADE'))
 
 
-@pytest_asyncio.fixture(scope="function")
-async def db_engine():
-    """Create a test database engine (function-scoped for test isolation)."""
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def _schema_engine():
+    """Create the test database engine and build the schema once per session.
+
+    The schema build is the expensive part: dropping and recreating all 65
+    model tables takes the better part of a minute on PostgreSQL, and doing
+    it per test made the API suite take most of a day -- a commit gate that
+    slow is a gate nobody runs. Per-test isolation is the function-scoped
+    `db_engine` fixture below, which empties the tables between tests instead.
+
+    Nothing requests this directly except `db_engine`: a worker that only
+    draws database-free tests never builds the schema at all.
+    """
     # SQLite needs check_same_thread=False; PostgreSQL timeout key differs by driver
     if _IS_SQLITE:
         connect_args = {"check_same_thread": False}
@@ -112,6 +127,20 @@ async def db_engine():
         connect_args=connect_args,
         **extra_kwargs,
     )
+
+    if _IS_SQLITE:
+        # SQLite ignores foreign keys unless asked, per connection. Without
+        # this, an endpoint that relies on an IntegrityError to reject a
+        # dangling reference silently succeeds locally and fails in CI, where
+        # PostgreSQL does enforce it -- so the local suite is weaker than the
+        # one that gates the merge, in a way nothing announces.
+        from sqlalchemy import event
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
 
     # Drop any existing tables first (important for PostgreSQL persistence)
     async with engine.begin() as conn:
@@ -157,8 +186,120 @@ async def db_engine():
     await engine.dispose()
 
 
+def _children_first_table_names() -> list[str]:
+    """Every model table, referencing tables before the tables they reference."""
+    return [table.name for table in reversed(Base.metadata.sorted_tables)]
+
+
+async def _empty_postgres_tables(engine, table_names: list[str]) -> None:
+    """Empty, on PostgreSQL, only the tables a previous test wrote to.
+
+    A `TRUNCATE ... CASCADE` of all 75 tables costs about 280 ms whatever they
+    hold -- every table gets a new file -- and it ran before every test, so it
+    was most of what a test cost. One probe finds the non-empty tables (about
+    4 ms), and a DELETE of the few rows a test leaves behind is a few more.
+
+    DELETE also takes only row locks, where TRUNCATE needs an exclusive lock on
+    every table: an idle transaction a previous test left open can no longer
+    hang the next test's cleanup until the timeout.
+
+    Should a DELETE trip a constraint the children-first order cannot satisfy
+    (a reference cycle), the old full TRUNCATE runs instead, so the outcome is
+    always the same: every table empty and every sequence restarted.
+    """
+    probe = " UNION ALL ".join(
+        f'SELECT {index} WHERE EXISTS (SELECT 1 FROM "{name}")'
+        for index, name in enumerate(table_names)
+    )
+    async with engine.begin() as conn:
+        filled = [table_names[row[0]] for row in (await conn.execute(text(probe))).fetchall()]
+        sequences = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname)"
+                        " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+                        " WHERE c.relkind = 'S' AND n.nspname = 'public'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if filled:
+            order = {name: position for position, name in enumerate(table_names)}
+            try:
+                async with conn.begin_nested():
+                    for name in sorted(filled, key=order.__getitem__):
+                        await conn.execute(text(f'DELETE FROM "{name}"'))
+            except DBAPIError:
+                joined = ", ".join(f'"{name}"' for name in table_names)
+                await conn.execute(text(f"TRUNCATE TABLE {joined} CASCADE"))
+        # What `RESTART IDENTITY` did: a sequence can advance without leaving a
+        # row (a rolled-back insert), so every one is restarted, not only the
+        # filled tables' ones.
+        for sequence in sequences:
+            await conn.execute(text(f"ALTER SEQUENCE {sequence} RESTART"))
+
+
+async def _truncate_all_tables(engine, is_sqlite: bool):
+    """Empty every table, leaving the schema in place.
+
+    This is what replaces the per-test drop/create: emptying the tables costs
+    a fraction of a second where rebuilding the schema cost about a minute,
+    and a test that starts against empty tables cannot see what a previous
+    one left.
+    """
+    table_names = _children_first_table_names()
+    if not table_names:
+        return
+
+    if not is_sqlite:
+        await _empty_postgres_tables(engine, table_names)
+        return
+
+    # SQLite has no TRUNCATE, and a plain DELETE trips the foreign keys the
+    # engine fixture deliberately switches on -- a self-referencing table
+    # cannot be emptied row by row with them enforced. SQLite silently
+    # IGNORES `PRAGMA foreign_keys` inside a transaction, so this must run
+    # on an autocommitting connection: issued inside `begin()`, the closing
+    # `ON` is dropped and the whole session continues with foreign keys off,
+    # which quietly turns every constraint test into a pass.
+    async with engine.connect() as conn:
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(text("PRAGMA foreign_keys=OFF"))
+        try:
+            for name in table_names:
+                await conn.execute(text(f'DELETE FROM "{name}"'))
+        finally:
+            await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 @pytest_asyncio.fixture(scope="function")
-async def db_session(db_engine) -> AsyncGenerator[AsyncSession, None]:
+async def db_engine(_schema_engine):
+    """The session's engine, with every table emptied before the test runs.
+
+    Every fixture that reaches the database goes through this one, so a test
+    that touches it starts against empty tables, and a test that does not --
+    a schema or pure-function test, most of `tests/unit` -- pays nothing.
+    Cleaning used to be an autouse fixture that ran before every test,
+    database or not.
+
+    Cleaning before rather than after means a test that dies mid-way cannot
+    poison the next one.
+    """
+    await _truncate_all_tables(_schema_engine, _IS_SQLITE)
+    yield _schema_engine
+
+
+@pytest.fixture(scope="function")
+def clean_tables(db_engine):
+    """Empty tables for the test; `db_engine` does the work (kept for its dependants)."""
+    yield
+
+
+@pytest_asyncio.fixture(scope="function")
+async def db_session(db_engine, clean_tables) -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
     async_session_maker = async_sessionmaker(
         db_engine,
@@ -237,7 +378,12 @@ async def client(
     db_session: AsyncSession, seed_material_types, test_user: User, test_tenant: Tenant
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client with database session and auth overrides."""
-    from app.auth.dependencies import get_current_user, get_current_tenant, get_tenant_db
+    from app.auth.dependencies import (
+        get_current_user,
+        get_current_tenant,
+        get_shop_db,
+        get_tenant_db,
+    )
 
     async def override_get_db():
         yield db_session
@@ -250,6 +396,8 @@ async def client(
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_tenant_db] = override_get_db  # TenantDB endpoints use same session
+    # Storefront routes take a hostname-scoped session of their own.
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_current_user] = override_get_current_user
     app.dependency_overrides[get_current_tenant] = override_get_current_tenant
 
@@ -275,7 +423,7 @@ async def unauthenticated_client(
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client WITHOUT authentication overrides for testing auth."""
     from app.database import get_db
-    from app.auth.dependencies import get_tenant_db
+    from app.auth.dependencies import get_shop_db, get_tenant_db
 
     async def override_get_db():
         yield db_session
@@ -283,6 +431,7 @@ async def unauthenticated_client(
     # Only override the database, not auth
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_tenant_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
 
     # Disable rate limiting for tests
     app.state.limiter.enabled = False
@@ -304,10 +453,9 @@ async def test_tenant(db_session: AsyncSession) -> Tenant:
         id=uuid4(),
         name="Test Tenant",
         slug=f"test-tenant-{unique_id}",
-        settings={
-            "default_labor_rate": 20.0,
-            "currency": "USD",
-        },
+        # No `default_labor_rate`: the key went with task T123, and a labor
+        # rate now comes from the tenant's policy row.
+        settings={"currency": "USD"},
     )
     db_session.add(tenant)
     await db_session.commit()
@@ -318,7 +466,6 @@ async def test_tenant(db_session: AsyncSession) -> Tenant:
 @pytest_asyncio.fixture(scope="function")
 async def test_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
     """Create a test user with proper password hashing."""
-    from app.auth.password import get_password_hash
     from app.models.user import UserTenant, UserRole
 
     # Use unique email per test to avoid PostgreSQL duplicate key issues
@@ -327,7 +474,7 @@ async def test_user(db_session: AsyncSession, test_tenant: Tenant) -> User:
         id=uuid4(),
         email=f"test-{unique_id}@example.com",
         full_name="Test User",
-        hashed_password=get_password_hash("testpassword123"),
+        hashed_password=hashed_test_password("testpassword123"),
         is_active=True,
     )
     db_session.add(user)
@@ -607,8 +754,6 @@ async def test_designer(db_session: AsyncSession, test_tenant: Tenant):
 @pytest_asyncio.fixture(scope="function")
 async def test_customer(db_session: AsyncSession, test_tenant: Tenant) -> Customer:
     """Create a test customer account."""
-    from app.auth.password import get_password_hash
-
     # Use unique email per test to avoid PostgreSQL duplicate key issues
     unique_id = str(uuid4())[:8]
     customer = Customer(
@@ -616,7 +761,7 @@ async def test_customer(db_session: AsyncSession, test_tenant: Tenant) -> Custom
         tenant_id=test_tenant.id,
         email=f"customer-{unique_id}@example.com",
         full_name="Test Customer",
-        hashed_password=get_password_hash("customerpass123"),
+        hashed_password=hashed_test_password("customerpass123"),
         is_active=True,
         email_verified=True,
     )
@@ -631,7 +776,11 @@ async def customer_client(
     db_session: AsyncSession, seed_material_types, test_customer: Customer, test_tenant: Tenant
 ) -> AsyncGenerator[AsyncClient, None]:
     """Create a test HTTP client authenticated as a customer."""
-    from app.auth.customer_dependencies import get_current_customer, get_current_customer_tenant
+    from app.auth.customer_dependencies import (
+        get_current_customer,
+        get_current_customer_tenant,
+        get_customer_db,
+    )
 
     async def override_get_db():
         yield db_session
@@ -643,6 +792,10 @@ async def customer_client(
         return test_tenant
 
     app.dependency_overrides[get_db] = override_get_db
+    # A customer account handler takes its session from `get_customer_db`,
+    # which opens a session of its own and scopes it to the tenant the
+    # customer's token was issued for (T205).
+    app.dependency_overrides[get_customer_db] = override_get_db
     app.dependency_overrides[get_current_customer] = override_get_current_customer
     app.dependency_overrides[get_current_customer_tenant] = override_get_current_customer_tenant
 
@@ -708,3 +861,94 @@ def image_storage_fixture(test_storage_type, tmp_path, s3_mock):
         (tmp_path / "products").mkdir(exist_ok=True)
 
     return storage
+
+
+# ---------------------------------------------------------------------------
+# Acting as a role other than the admin `client` is (task T034)
+# ---------------------------------------------------------------------------
+#
+# Both the HTTP suites and the settled-order integration suite need the same
+# thing: to act as a member or a viewer, so a write can be refused and the
+# stored figure checked afterwards, or a read proved open to every role
+# (FR-007c). The `client` fixture above is an admin — the role that is
+# *allowed* to write — so it cannot show a refusal.
+#
+# `as_role` is an async context manager rather than a second client fixture
+# because `app.dependency_overrides` is one dictionary: two clients
+# authenticated as different users cannot coexist. Entering the context swaps
+# who the current user is and restores the previous overrides on exit, which
+# lets one test write as an admin and then be refused as a member.
+
+
+async def make_user_with_role(
+    db_session: AsyncSession,
+    tenant: Tenant,
+    role: UserRole,
+) -> User:
+    """A user holding exactly ``role`` in ``tenant``."""
+    from app.models.user import UserTenant
+
+    unique_id = str(uuid4())[:8]
+    user = User(
+        id=uuid4(),
+        email=f"{role.value}-pricing-{unique_id}@example.com",
+        full_name=f"Pricing {role.value}",
+        hashed_password=hashed_test_password("pricingpassword123"),
+        is_active=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    db_session.add(UserTenant(user_id=user.id, tenant_id=tenant.id, role=role))
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
+async def as_role(db_session: AsyncSession, seed_material_types, test_tenant: Tenant):
+    """Act as a user holding a given role, then put the overrides back.
+
+    The role check reads `UserTenant` from the database, so the role comes
+    from the row rather than from the override — which is the point: this
+    exercises the real authorisation path, not a stubbed one.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.auth.dependencies import (
+        get_current_tenant,
+        get_current_user,
+        get_shop_db,
+        get_tenant_db,
+    )
+
+    @asynccontextmanager
+    async def _acting_as(role: UserRole):
+        user = await make_user_with_role(db_session, test_tenant, role)
+        previous = dict(app.dependency_overrides)
+        was_enabled = app.state.limiter.enabled
+
+        async def override_get_db():
+            yield db_session
+
+        async def override_get_current_user():
+            return user
+
+        async def override_get_current_tenant():
+            return test_tenant
+
+        app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_tenant_db] = override_get_db
+        app.dependency_overrides[get_shop_db] = override_get_db
+        app.dependency_overrides[get_current_user] = override_get_current_user
+        app.dependency_overrides[get_current_tenant] = override_get_current_tenant
+        app.state.limiter.enabled = False
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                yield ac
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.update(previous)
+            app.state.limiter.enabled = was_enabled
+
+    yield _acting_as

@@ -8,8 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2, Printer, Sparkles, Scissors, Cog } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-type TenantType = 'GENERIC' | 'THREED_PRINT' | 'HAND_KNITTING' | 'MACHINE_KNITTING'
+import type { TenantType } from '@/types/modules'
 
 interface CraftTypeOption {
   type: TenantType
@@ -21,7 +20,7 @@ interface CraftTypeOption {
 
 const CRAFT_TYPES: CraftTypeOption[] = [
   {
-    type: 'THREED_PRINT',
+    type: 'three_d_print',
     title: '3D Printing',
     description: 'For 3D print shops and makers',
     icon: <Printer className="h-8 w-8" />,
@@ -33,7 +32,7 @@ const CRAFT_TYPES: CraftTypeOption[] = [
     ],
   },
   {
-    type: 'HAND_KNITTING',
+    type: 'hand_knitting',
     title: 'Hand Knitting',
     description: 'For knitters and crocheters',
     icon: <Sparkles className="h-8 w-8" />,
@@ -45,7 +44,7 @@ const CRAFT_TYPES: CraftTypeOption[] = [
     ],
   },
   {
-    type: 'MACHINE_KNITTING',
+    type: 'machine_knitting',
     title: 'Machine Knitting',
     description: 'For machine knitting businesses',
     icon: <Cog className="h-8 w-8" />,
@@ -57,7 +56,7 @@ const CRAFT_TYPES: CraftTypeOption[] = [
     ],
   },
   {
-    type: 'GENERIC',
+    type: 'generic',
     title: 'General Crafts',
     description: 'For other craft businesses',
     icon: <Scissors className="h-8 w-8" />,

@@ -1,6 +1,7 @@
 """Integration tests for payments API endpoints."""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import AsyncGenerator
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -96,8 +97,14 @@ async def payments_client(
     test_tenant: Tenant,
     online_shop_channel: SalesChannel,
 ) -> AsyncGenerator[AsyncClient, None]:
-    """Create a test HTTP client for payments with ShopContext."""
-    from app.auth.dependencies import get_shop_sales_channel, get_shop_tenant
+    """Create a test HTTP client for payments with ShopContext.
+
+    `get_shop_db` is overridden alongside `get_db` because T181 moved the two
+    order-writing Square routes onto the RLS-scoped storefront session; without
+    it they would open a real session of their own and see none of the rows
+    this test wrote.
+    """
+    from app.auth.dependencies import get_shop_db, get_shop_sales_channel, get_shop_tenant
 
     async def override_get_db():
         yield db_session
@@ -109,6 +116,7 @@ async def payments_client(
         return (test_tenant, online_shop_channel)
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_shop_db] = override_get_db
     app.dependency_overrides[get_shop_tenant] = override_get_shop_tenant
     app.dependency_overrides[get_shop_sales_channel] = override_get_shop_sales_channel
     app.state.limiter.enabled = False
@@ -119,6 +127,7 @@ async def payments_client(
     app.state.limiter.enabled = True
     # Only remove the overrides we added, not all overrides (preserves Redis mocks)
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_shop_db, None)
     app.dependency_overrides.pop(get_shop_tenant, None)
     app.dependency_overrides.pop(get_shop_sales_channel, None)
 
@@ -801,3 +810,278 @@ class TestGetPaymentStatus:
 
                 assert response.status_code == 404
                 assert "not found" in response.json()["detail"]
+
+
+# ============================================
+# The Square order paths: frozen and exact (tasks T180, T182)
+# ============================================
+
+
+class TestSquareOrderPathsFreezeAndStayExact:
+    """What the two Square checkout surfaces write onto a settled order.
+
+    Both paths persisted an ``Order`` with its lines and never snapshotted it,
+    while the console order, the storefront checkout, the Shopify webhook and
+    the commerce bridge all did. And both converted integer pence to pounds
+    with ``int / int``, which is binary floating point: 7999 / 100 is
+    79.989999999999994884. The two defects compound -- an approximation of
+    what the customer paid, frozen onto nothing, with the margin re-derived
+    from today's inputs (FR-036, FR-037, FR-047, Constitution IV and VI).
+    """
+
+    @staticmethod
+    def _body(product_id: str, *, amount: int, item_price: int, shipping_cost: int) -> dict:
+        return {
+            "payment_token": "cnon:card-nonce-ok",
+            "amount": amount,
+            "currency": "GBP",
+            "customer": {"email": "customer@example.com", "phone": "+44123456789"},
+            "shipping_address": {
+                "first_name": "John",
+                "last_name": "Doe",
+                "address_line1": "123 Test Street",
+                "address_line2": None,
+                "city": "London",
+                "county": "Greater London",
+                "postcode": "SW1A 1AA",
+                "country": "GB",
+            },
+            "shipping_method": "standard",
+            "shipping_cost": shipping_cost,
+            "items": [
+                {
+                    "product_id": product_id,
+                    "name": "Test Product",
+                    "quantity": 1,
+                    "price": item_price,
+                }
+            ],
+        }
+
+    @staticmethod
+    async def _order_with_items(db_session: AsyncSession, order_number: str) -> Order:
+        from sqlalchemy.orm import selectinload
+
+        return (
+            await db_session.execute(
+                select(Order)
+                .where(Order.order_number == order_number)
+                .options(selectinload(Order.items))
+            )
+        ).scalar_one()
+
+    # -- T180: the snapshot ------------------------------------------------
+
+    async def test_hosted_checkout_freezes_the_sale_snapshot(
+        self,
+        payments_client: AsyncClient,
+        shop_product: Product,
+        db_session: AsyncSession,
+    ):
+        """A hosted-checkout order carries its frozen basis and revision."""
+        with patch("app.api.v1.payments.settings") as mock_settings:
+            mock_settings.square_access_token = "test-token"
+            mock_settings.square_location_id = "test-location"
+            mock_settings.square_environment = "production"
+
+            with patch("app.api.v1.payments.get_payment_service") as mock_get_service:
+                service = MagicMock()
+                service.create_payment_link.return_value = {
+                    "id": "LPM_TEST_LINK",
+                    "url": "https://square.link/u/test",
+                    "order_id": "square_order_123",
+                }
+                mock_get_service.return_value = service
+
+                body = self._body(
+                    str(shop_product.id), amount=2999, item_price=2500, shipping_cost=499
+                )
+                body.pop("payment_token")
+
+                response = await payments_client.post("/api/v1/payments/hosted-checkout", json=body)
+                assert response.status_code == 200, response.text
+                order_number = response.json()["order_id"]
+
+        order = await self._order_with_items(db_session, order_number)
+        assert order.items, "the sale recorded no lines"
+        for item in order.items:
+            assert item.has_snapshot, (
+                "a Square hosted-checkout line was settled with no frozen "
+                "make-cost, which hides it from realised_margin and "
+                "margin_alert entirely (FR-036)"
+            )
+            assert item.cost_breakdown_json is not None
+            assert item.margin_basis_at_sale, "the basis in force was not frozen (FR-031d)"
+            assert item.pricing_rev is not None
+
+    async def test_process_payment_freezes_the_sale_snapshot(
+        self,
+        payments_client: AsyncClient,
+        shop_product: Product,
+        db_session: AsyncSession,
+    ):
+        """A Web Payments SDK order carries its frozen basis and revision."""
+        with patch("app.api.v1.payments.settings") as mock_settings:
+            mock_settings.square_access_token = "test-token"
+            mock_settings.square_location_id = "test-location"
+            mock_settings.square_environment = "production"
+
+            with patch("app.api.v1.payments.get_payment_service") as mock_get_service:
+                service = MagicMock()
+                service.process_payment.return_value = PaymentResponse(
+                    success=True,
+                    order_id="MF-TEMP123",
+                    payment_id="sq_payment_123",
+                    amount=2999,
+                    currency="GBP",
+                    status="COMPLETED",
+                    receipt_url="https://squareup.com/receipt/123",
+                    created_at=datetime.now(timezone.utc),
+                )
+                mock_get_service.return_value = service
+
+                with patch("app.api.v1.payments.get_email_service") as mock_get_email:
+                    mock_get_email.return_value = MagicMock()
+                    response = await payments_client.post(
+                        "/api/v1/payments/process",
+                        json=self._body(
+                            str(shop_product.id), amount=2999, item_price=2500, shipping_cost=499
+                        ),
+                    )
+                assert response.status_code == 200, response.text
+                order_number = response.json()["order_id"]
+
+        order = await self._order_with_items(db_session, order_number)
+        assert order.items, "the sale recorded no lines"
+        for item in order.items:
+            assert item.has_snapshot, (
+                "a Square Web Payments line was settled with no frozen make-cost (FR-036)"
+            )
+            assert item.margin_basis_at_sale
+            assert item.pricing_rev is not None
+
+    # -- T182: the arithmetic ---------------------------------------------
+
+    async def test_hosted_checkout_converts_pence_exactly(
+        self,
+        payments_client: AsyncClient,
+        shop_product: Product,
+        db_session: AsyncSession,
+    ):
+        """GBP 79.99 is written as 79.99, not as 79.989999999999994884.
+
+        The amounts are chosen so each one is a value ``int / 100`` cannot
+        represent: 7999, 7500 and 499 pence.
+        """
+        with patch("app.api.v1.payments.settings") as mock_settings:
+            mock_settings.square_access_token = "test-token"
+            mock_settings.square_location_id = "test-location"
+            mock_settings.square_environment = "production"
+
+            with patch("app.api.v1.payments.get_payment_service") as mock_get_service:
+                service = MagicMock()
+                service.create_payment_link.return_value = {
+                    "id": "LPM_TEST_LINK",
+                    "url": "https://square.link/u/test",
+                    "order_id": "square_order_123",
+                }
+                mock_get_service.return_value = service
+
+                body = self._body(
+                    str(shop_product.id), amount=7999, item_price=7500, shipping_cost=499
+                )
+                body.pop("payment_token")
+
+                response = await payments_client.post("/api/v1/payments/hosted-checkout", json=body)
+                assert response.status_code == 200, response.text
+                order_number = response.json()["order_id"]
+
+        order = await self._order_with_items(db_session, order_number)
+
+        # Equality against an exact Decimal, never pytest.approx: the whole
+        # point is that no approximation entered the column realised_margin.py
+        # and channel_pnl.py read exactly.
+        assert order.total == Decimal("79.99"), (
+            f"the order total was written as {order.total!r}; integer division "
+            f"by 100 is binary floating point and 7999 / 100 is not 79.99"
+        )
+        assert order.subtotal == Decimal("75.00")
+        assert order.shipping_cost == Decimal("4.99")
+        assert order.items[0].unit_price == Decimal("75.00")
+        assert order.items[0].total_price == Decimal("75.00")
+
+    async def test_process_payment_converts_pence_exactly(
+        self,
+        payments_client: AsyncClient,
+        shop_product: Product,
+        db_session: AsyncSession,
+    ):
+        """The Web Payments path writes exact amounts too, quantity included."""
+        with patch("app.api.v1.payments.settings") as mock_settings:
+            mock_settings.square_access_token = "test-token"
+            mock_settings.square_location_id = "test-location"
+            mock_settings.square_environment = "production"
+
+            with patch("app.api.v1.payments.get_payment_service") as mock_get_service:
+                service = MagicMock()
+                service.process_payment.return_value = PaymentResponse(
+                    success=True,
+                    order_id="MF-TEMP123",
+                    payment_id="sq_payment_456",
+                    amount=6496,
+                    currency="GBP",
+                    status="COMPLETED",
+                    receipt_url=None,
+                    created_at=datetime.now(timezone.utc),
+                )
+                mock_get_service.return_value = service
+
+                body = self._body(
+                    str(shop_product.id), amount=0, item_price=1999, shipping_cost=499
+                )
+                body["items"][0]["quantity"] = 3
+                body["amount"] = 1999 * 3 + 499
+
+                with patch("app.api.v1.payments.get_email_service") as mock_get_email:
+                    mock_get_email.return_value = MagicMock()
+                    response = await payments_client.post("/api/v1/payments/process", json=body)
+                assert response.status_code == 200, response.text
+                order_number = response.json()["order_id"]
+
+        order = await self._order_with_items(db_session, order_number)
+        assert order.items[0].unit_price == Decimal("19.99")
+        assert order.items[0].total_price == Decimal("59.97"), (
+            f"the line total was written as {order.items[0].total_price!r}; "
+            f"5997 / 100 in binary floating point is not 59.97"
+        )
+        assert order.total == Decimal("64.96")
+        assert order.subtotal == Decimal("59.97")
+
+    async def test_the_converter_is_exact_where_binary_division_is_not(self):
+        """The unit the two routes now share, checked on its own.
+
+        A route test proves the wiring; this proves the arithmetic, and the
+        last assertion names the defect being defended against -- a value near
+        enough to survive a display rounding and still be the wrong number in
+        a ``Numeric`` column.
+        """
+        from app.core.money import pence_to_pounds
+
+        assert pence_to_pounds(7999) == Decimal("79.99")
+        assert pence_to_pounds(1) == Decimal("0.01")
+        assert pence_to_pounds(0) == Decimal("0")
+        assert pence_to_pounds(None) == Decimal("0")
+        assert pence_to_pounds(Decimal("1999")) == Decimal("19.99")
+        assert pence_to_pounds(-250) == Decimal("-2.50")
+
+        # The parts sum to the whole, which binary division does not guarantee.
+        assert pence_to_pounds(7500) + pence_to_pounds(499) == pence_to_pounds(7999)
+
+        # The defect itself. `Decimal(float)` rather than `Decimal(str(float))`
+        # on purpose: `str` prints the shortest representation that round-trips,
+        # which is "79.99" and hides the value actually held. What `int / 100`
+        # produces is the number below, and it is what every subsequent step --
+        # a sum across lines, a comparison, a fee share -- was computed from.
+        inexact = Decimal(7999 / 100)
+        assert inexact != Decimal("79.99")
+        assert str(inexact).startswith("79.98999999999999")

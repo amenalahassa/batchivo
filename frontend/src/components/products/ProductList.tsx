@@ -12,6 +12,7 @@ import { Loader2, Plus, Search, Package, ArrowUpDown, Wand2 } from 'lucide-react
 
 import { listProducts } from '@/lib/api/products'
 import { useCurrency } from '@/hooks/useCurrency'
+import { makeCostOf } from '@/lib/pricing/makeCost'
 import { ProductWizard } from '@/components/products/ProductWizard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,6 +33,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
+import { IncompleteCostBadge } from '@/components/pricing/IncompleteCostBadge'
 
 type SortOption = 'name' | 'sku' | 'recent'
 
@@ -251,11 +253,9 @@ export function ProductList() {
 
                   <div className="flex flex-wrap items-center gap-3 text-sm">
                     <span className="font-medium">
-                      Cost: {formatCurrency(product.total_make_cost || '0')}
+                      Cost: {formatCurrency(makeCostOf(product))}
                     </span>
-                    <span className="text-green-600 font-medium">
-                      SRP: {formatCurrency(product.suggested_price || '0')}
-                    </span>
+                    <IncompleteCostBadge reasons={product.incomplete_reasons} />
                     <span className="text-muted-foreground">Stock: {product.units_in_stock}</span>
                   </div>
                 </Link>
@@ -273,7 +273,6 @@ export function ProductList() {
                     <TableHead>Name</TableHead>
                     <TableHead className="w-[100px]">Status</TableHead>
                     <TableHead className="w-[100px] text-right">Make Cost</TableHead>
-                    <TableHead className="w-[100px] text-right">SRP (2.5×)</TableHead>
                     <TableHead className="w-[80px] text-right">Stock</TableHead>
                     <TableHead className="w-[80px]"></TableHead>
                   </TableRow>
@@ -305,10 +304,10 @@ export function ProductList() {
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right tabular-nums font-medium">
-                        {formatCurrency(product.total_make_cost || '0')}
-                      </TableCell>
-                      <TableCell className="text-right tabular-nums font-medium text-green-600">
-                        {formatCurrency(product.suggested_price || '0')}
+                        <div className="flex items-center justify-end gap-2">
+                          <span>{formatCurrency(makeCostOf(product))}</span>
+                          <IncompleteCostBadge reasons={product.incomplete_reasons} />
+                        </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {product.units_in_stock}

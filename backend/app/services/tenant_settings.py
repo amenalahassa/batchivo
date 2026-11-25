@@ -1,6 +1,7 @@
 """Service for managing tenant settings with secure credential storage."""
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -23,6 +24,11 @@ from app.schemas.tenant_settings import (
     SquareConnectionTest,
     SquareSettingsResponse,
     SquareSettingsUpdate,
+    ReplicateConnectionTest,
+    ReplicateSettingsResponse,
+    ReplicateSettingsUpdate,
+    ReplicateUsageMonth,
+    ReplicateUsageResponse,
     TenantResponse,
     TenantUpdate,
 )
@@ -578,6 +584,13 @@ class TenantSettingsService:
             updates["name"] = data.name
         if data.description is not None:
             updates["description"] = data.description
+        if data.currency_code is not None:
+            updates["currency_code"] = data.currency_code
+        if data.currency_symbol is not None:
+            updates["currency_symbol"] = data.currency_symbol
+        if "country_code" in data.model_fields_set:
+            # Null clears it; changing it seeds and supersedes nothing (D7).
+            updates["country_code"] = data.country_code
 
         if updates:
             updates["updated_at"] = datetime.now(timezone.utc)
@@ -588,6 +601,131 @@ class TenantSettingsService:
         # Refresh and return
         await self.db.refresh(tenant)
         return TenantResponse.model_validate(tenant)
+
+    # =========================================================================
+    # Replicate (generative AI) Settings -- spec 008
+    # =========================================================================
+
+    async def get_replicate_settings(self, tenant_id: UUID) -> ReplicateSettingsResponse:
+        """Replicate settings with the token masked, budget and month-to-date usage (USD)."""
+        from sqlalchemy import func
+
+        from app.config import get_settings
+        from app.models.generation_job import ACTIVE_STATUSES, GenerationJob
+        from app.services.genai import credentials
+        from app.services.genai.costs import GenAICostService
+
+        tenant = await self._get_tenant(tenant_id)
+        config = credentials.replicate_config(tenant)
+        own = safe_decrypt(config.get("api_token_encrypted", ""))
+        resolved = credentials.resolve(tenant)
+        mtd, jobs = await GenAICostService().month_to_date(self.db, tenant.id)
+        active = await self.db.scalar(
+            select(func.count(GenerationJob.id)).where(
+                GenerationJob.tenant_id == tenant.id, GenerationJob.status.in_(ACTIVE_STATUSES)
+            )
+        )
+        budget = config.get("monthly_budget_usd")
+        return ReplicateSettingsResponse(
+            is_configured=bool(own),
+            token_masked=mask_credential(own) if own else None,
+            token_source=resolved.source,
+            platform_token_available=credentials.platform_token() is not None,
+            platform_token_allowed=credentials.platform_allowed(tenant),
+            monthly_budget=str(budget) if budget not in (None, "") else None,
+            month_to_date=format(mtd, "f"),
+            jobs_this_month=jobs,
+            active_jobs=int(active or 0),
+            concurrency_limit=get_settings().genai_max_concurrent_jobs,
+            model_overrides=dict(config.get("model_overrides") or {}),
+            updated_at=config.get("updated_at"),
+        )
+
+    async def update_replicate_settings(
+        self, tenant_id: UUID, data: ReplicateSettingsUpdate
+    ) -> ReplicateSettingsResponse:
+        """Save the token (encrypted), budget and model overrides.
+
+        ``platform_token_allowed`` is never written here: only a platform admin
+        grants the platform token (clarification Q2).
+        """
+        tenant = await self._get_tenant(tenant_id)
+        current = dict(tenant.settings or {})
+        config = dict(current.get("replicate") or {})
+        if data.api_token is not None:
+            token = data.api_token.strip()
+            if token:
+                config["api_token_encrypted"] = encrypt_value(token)
+            else:
+                config.pop("api_token_encrypted", None)
+            # A new or removed token invalidates the cached webhook secret.
+            config.pop("webhook_secret_encrypted", None)
+            config.pop("webhook_secret_token_fingerprint", None)
+        if data.clear_budget:
+            config.pop("monthly_budget_usd", None)
+        elif data.monthly_budget is not None:
+            config["monthly_budget_usd"] = format(
+                data.monthly_budget.quantize(Decimal("0.01")), "f"
+            )
+        if data.model_overrides is not None:
+            overrides = dict(config.get("model_overrides") or {})
+            for capability, override in data.model_overrides.items():
+                if override is None:
+                    overrides.pop(capability, None)
+                else:
+                    item = override.model_dump(mode="json", exclude_none=True)
+                    if override.price_usd is not None:
+                        item["price_usd"] = format(override.price_usd, "f")
+                    overrides[capability] = item
+            config["model_overrides"] = overrides
+        config["updated_at"] = datetime.now(timezone.utc).isoformat()
+        current["replicate"] = config
+        await self._update_tenant_settings(tenant_id, current)
+        return await self.get_replicate_settings(tenant_id)
+
+    async def test_replicate_connection(self, tenant_id: UUID) -> ReplicateConnectionTest:
+        """Ask the provider who the token in use belongs to; the token never appears."""
+        from app.services.genai import credentials
+        from app.services.genai.base import ProviderError
+        from app.services.genai.logging import redact
+        from app.services.genai.runner import make_provider
+
+        tenant = await self._get_tenant(tenant_id)
+        resolved = credentials.resolve(tenant)
+        if not resolved.token:
+            return ReplicateConnectionTest(
+                success=False,
+                message="No Replicate token is configured",
+                token_source=resolved.source,
+            )
+        provider = make_provider("replicate", resolved.token)
+        try:
+            account = await provider.account()
+        except ProviderError as exc:
+            return ReplicateConnectionTest(
+                success=False, message=redact(str(exc)), token_source=resolved.source
+            )
+        finally:
+            await provider.aclose()
+        return ReplicateConnectionTest(
+            success=True,
+            message="Connected to Replicate",
+            account=account.username or account.name,
+            token_source=resolved.source,
+        )
+
+    async def replicate_usage(self, tenant_id: UUID, months: int = 6) -> ReplicateUsageResponse:
+        """Spend and job count per calendar month (UTC), newest first."""
+        from app.services.genai.costs import GenAICostService
+
+        tenant = await self._get_tenant(tenant_id)
+        rows = await GenAICostService().usage_by_month(self.db, tenant.id, months)
+        return ReplicateUsageResponse(
+            months=[
+                ReplicateUsageMonth(month=r["month"], cost=format(r["cost"], "f"), jobs=r["jobs"])
+                for r in rows
+            ]
+        )
 
     # =========================================================================
     # Helpers
@@ -613,6 +751,23 @@ class TenantSettingsService:
             raise ValueError(f"Tenant not found: {tenant_id}")
 
         return tenant
+
+    async def write_settings_part(
+        self, tenant: Tenant, key: str, value: Any, *, commit: bool = False
+    ) -> None:
+        """Replace one top-level part of ``tenant.settings`` (e.g. ``postage``).
+
+        Written through the ORM and, by default, not committed: the catalogue
+        seeding writes its notice in the same savepoint as the rows it adds, so
+        a failure leaves neither (spec 006, FR-015).
+        """
+        settings = dict(tenant.settings or {})
+        settings[key] = value
+        tenant.settings = settings
+        tenant.updated_at = datetime.now(timezone.utc)
+        await self.db.flush()
+        if commit:
+            await self.db.commit()
 
     async def _update_tenant_settings(self, tenant_id: UUID, settings: dict[str, Any]) -> None:
         """Update tenant settings JSON field.

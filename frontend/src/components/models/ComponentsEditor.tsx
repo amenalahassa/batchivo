@@ -5,6 +5,7 @@
  * Supports both selecting from consumables inventory and manual entry.
  */
 
+import { useCurrency } from '@/hooks/useCurrency'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -14,6 +15,8 @@ import { Loader2, Plus, Trash2 } from 'lucide-react'
 
 import { addModelComponent, removeModelComponent, type ModelComponent } from '@/lib/api/models'
 import { consumablesApi } from '@/lib/api/consumables'
+import { formatMoney, multiplyMoney } from '@/lib/money'
+import type { Money } from '@/types/pricing'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -54,6 +57,8 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
 
 const componentFormSchema = z.object({
   component_name: z.string().min(1, 'Component name is required').max(200),
@@ -77,6 +82,12 @@ interface ComponentsEditorProps {
 }
 
 export function ComponentsEditor({ modelId, components }: ComponentsEditorProps) {
+  // Costs are kept in the books currency (T242, T276).
+  const { currency } = useCurrency()
+  // A viewer sees the bill of materials with its controls disabled (T238).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const [dialogOpen, setDialogOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'inventory' | 'manual'>('inventory')
   const queryClient = useQueryClient()
@@ -141,17 +152,20 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
     addMutation.mutate({
       component_name: consumable.name,
       quantity: values.quantity,
-      unit_cost: (consumable.current_cost_per_unit || 0).toFixed(4),
+      // The API sent this as an exact decimal string; pass it along rather
+      // than round-tripping it through a float to get the same digits back.
+      unit_cost: consumable.current_cost_per_unit ?? '0',
       supplier: consumable.preferred_supplier || undefined,
       notes: `From inventory: ${consumable.sku}`,
     })
     consumableForm.reset()
   }
 
-  const formatCurrency = (value: string | number) => {
-    const numValue = typeof value === 'string' ? parseFloat(value) : value
-    return `£${numValue.toFixed(4)}`
-  }
+  // Four places, because a component's unit cost is often fractions of a
+  // penny. It renders the decimal string the API sent and never becomes a
+  // double (Constitution IV, task T151).
+  const formatCurrency = (value: Money | null | undefined) =>
+    formatMoney(value, currency.symbol, { places: 4 })
 
   return (
     <div className="space-y-4">
@@ -159,7 +173,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
         <h3 className="text-lg font-medium">Components</h3>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm">
+            <Button size="sm" disabled={!canEdit}>
               <Plus className="mr-2 h-4 w-4" />
               Add Component
             </Button>
@@ -194,7 +208,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                             <SelectContent>
                               {consumablesData?.consumables.map((c) => (
                                 <SelectItem key={c.id} value={c.id}>
-                                  {c.sku} - {c.name} ({formatCurrency(c.current_cost_per_unit || 0)}/ea)
+                                  {c.sku} - {c.name} ({formatMoney(c.current_cost_per_unit, currency.symbol)}/ea)
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -271,7 +285,7 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
                         name="unit_cost"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Unit Cost (£)</FormLabel>
+                            <FormLabel>Unit Cost ({currency.symbol})</FormLabel>
                             <FormControl>
                               <Input type="number" step="0.0001" placeholder="0.00" {...field} />
                             </FormControl>
@@ -346,12 +360,19 @@ export function ComponentsEditor({ modelId, components }: ComponentsEditorProps)
               <div className="flex items-center gap-4">
                 <div className="text-right">
                   <div className="font-semibold">
-                    {formatCurrency((component.quantity * parseFloat(component.unit_cost)).toFixed(3))}
+                    {/*
+                      A line total is a unit cost times a whole quantity, which
+                      `parseFloat` and `*` get wrong in the fourth place and
+                      which `costing.py` already owns as the engine's components
+                      line. Multiplied exactly here so the two agree to the
+                      digit (FR-047, FR-048, task T151).
+                    */}
+                    {formatCurrency(multiplyMoney(component.unit_cost, component.quantity))}
                   </div>
                 </div>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
-                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending}>
+                    <Button variant="ghost" size="sm" disabled={removeMutation.isPending || !canEdit}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   </AlertDialogTrigger>

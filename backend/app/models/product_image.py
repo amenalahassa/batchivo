@@ -3,7 +3,7 @@
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -97,6 +97,17 @@ class ProductImage(Base, UUIDMixin, TimestampMixin):
         comment="MIME type of the image",
     )
 
+    # Where the image comes from (spec 008, FR-028): a photo of the product, a render of
+    # its real geometry, or AI-generated/edited. Existing images are photos. Only adopting
+    # a generation output sets "ai"; an operator can switch between photo and render.
+    origin: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        default="photo",
+        server_default="photo",
+        comment="photo | render | ai",
+    )
+
     # Relationships
     product: Mapped["Product"] = relationship(
         "Product",
@@ -107,6 +118,7 @@ class ProductImage(Base, UUIDMixin, TimestampMixin):
     # Constraints
     __table_args__ = (
         UniqueConstraint("product_id", "display_order", name="uq_product_image_order"),
+        CheckConstraint("origin IN ('photo', 'render', 'ai')", name="ck_product_images_origin"),
         {"comment": "Product images for shop display"},
     )
 

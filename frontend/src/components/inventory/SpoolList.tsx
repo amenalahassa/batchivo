@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { spoolsApi, materialTypesApi } from '@/lib/api/spools'
 import type { SpoolListParams, SpoolResponse } from '@/types/spool'
+import { sortSpools, type SpoolSortOption } from '@/lib/spool'
 import styles from './SpoolList.module.css'
 import {
   isIndexedDBAvailable,
@@ -33,14 +34,14 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
 import { Search, Plus, RefreshCcw, Trash2, X, Copy, QrCode, ScanLine } from 'lucide-react'
-import { AddSpoolDialog } from './AddSpoolDialog'
+import { AddFilamentDialog } from '@/components/filaments/AddFilamentDialog'
 import { EditSpoolDialog } from './EditSpoolDialog'
 import { UpdateWeightDialog } from './UpdateWeightDialog'
 import { DeleteSpoolDialog } from './DeleteSpoolDialog'
 import { ViewSpoolDialog } from './ViewSpoolDialog'
 import { SpoolCard } from './SpoolCard'
 
-type SortOption = 'spool_id' | 'material' | 'brand' | 'color' | 'remaining' | 'weight'
+type SortOption = SpoolSortOption
 
 export function SpoolList() {
   const queryClient = useQueryClient()
@@ -188,35 +189,12 @@ export function SpoolList() {
     duplicateMutation.mutate(id)
   }
 
-  // Natural sort for spool IDs (FIL-001 before FIL-009 before FIL-010)
-  const naturalSort = (a: string, b: string) => {
-    return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
-  }
-
   // Client-side sorting (since backend doesn't support it yet)
   const sortedSpools = React.useMemo(() => {
     if (!spoolData?.spools || !Array.isArray(spoolData.spools)) {
       return []
     }
-
-    return [...spoolData.spools].sort((a, b) => {
-      switch (sortBy) {
-        case 'spool_id':
-          return naturalSort(a.spool_id, b.spool_id)
-        case 'material':
-          return a.material_type_code.localeCompare(b.material_type_code)
-        case 'brand':
-          return a.brand.localeCompare(b.brand)
-        case 'color':
-          return a.color.localeCompare(b.color)
-        case 'remaining':
-          return b.remaining_percentage - a.remaining_percentage  // Descending
-        case 'weight':
-          return b.current_weight - a.current_weight  // Descending
-        default:
-          return 0
-      }
-    })
+    return sortSpools(spoolData.spools, sortBy)
   }, [spoolData?.spools, sortBy])
 
   // Handlers
@@ -467,67 +445,36 @@ export function SpoolList() {
                         {spool.spool_id}
                       </TableCell>
                       <TableCell>
-                        <span className="font-medium">{spool.material_type_name}</span>
+                        <span className="font-medium">{spool.filament_type?.material_type_name}</span>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          {spool.brand}
-                          {spool.spools_remaining > 1 && (
-                            <Badge variant="secondary" className="text-xs">
-                              ×{spool.spools_remaining}
-                            </Badge>
-                          )}
+                          {spool.filament_type?.brand}
                         </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
-                          {spool.color}
-                          {spool.finish && (
+                          {spool.filament_type?.color}
+                          {spool.filament_type?.finish && (
                             <span className="text-xs text-muted-foreground">
-                              ({spool.finish})
+                              ({spool.filament_type?.finish})
                             </span>
                           )}
                         </div>
                       </TableCell>
                       <TableCell>
-                        {(() => {
-                          // Calculate total weight across all spools in this batch
-                          // current_weight is for the active spool, remaining spools are full
-                          const unusedSpools = Math.max(0, spool.spools_remaining - 1)
-                          const totalCurrent = spool.current_weight + (unusedSpools * spool.initial_weight)
-                          const totalInitial = spool.spools_remaining * spool.initial_weight
-
-                          return (
-                            <div className="flex flex-col text-xs">
-                              {spool.spools_remaining > 1 ? (
-                                <>
-                                  <span className="font-medium">{totalCurrent.toFixed(0)}g</span>
-                                  <span className="text-muted-foreground">
-                                    / {totalInitial.toFixed(0)}g
-                                  </span>
-                                  <span className="text-muted-foreground text-[10px]">
-                                    ({spool.spools_remaining} spools)
-                                  </span>
-                                </>
-                              ) : (
-                                <>
-                                  <span>{spool.current_weight.toFixed(0)}g</span>
-                                  <span className="text-muted-foreground">
-                                    / {spool.initial_weight.toFixed(0)}g
-                                  </span>
-                                </>
-                              )}
-                            </div>
-                          )
-                        })()}
+                        <div className="flex flex-col text-xs">
+                          <span>{spool.current_weight.toFixed(0)}g</span>
+                          <span className="text-muted-foreground">
+                            / {spool.initial_weight.toFixed(0)}g
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell>
                         {(() => {
                           // Calculate remaining percentage across all spools in batch
-                          const unusedSpools = Math.max(0, spool.spools_remaining - 1)
-                          const totalCurrent = spool.current_weight + (unusedSpools * spool.initial_weight)
-                          const totalInitial = spool.spools_remaining * spool.initial_weight
-                          const totalPercentage = totalInitial > 0 ? (totalCurrent / totalInitial) * 100 : 0
+                          // One record is one physical spool: the server's own figure.
+                          const totalPercentage = spool.remaining_percentage
 
                           return (
                             <div className="flex items-center gap-2">
@@ -552,10 +499,8 @@ export function SpoolList() {
                       <TableCell>
                         {(() => {
                           // Calculate total percentage for low stock check
-                          const unusedSpools = Math.max(0, spool.spools_remaining - 1)
-                          const totalCurrent = spool.current_weight + (unusedSpools * spool.initial_weight)
-                          const totalInitial = spool.spools_remaining * spool.initial_weight
-                          const totalPercentage = totalInitial > 0 ? (totalCurrent / totalInitial) * 100 : 0
+                          // One record is one physical spool: the server's own figure.
+                          const totalPercentage = spool.remaining_percentage
 
                           return (
                             <>
@@ -670,7 +615,8 @@ export function SpoolList() {
       </Card>
 
       {/* Add Spool Dialog */}
-      <AddSpoolDialog open={addDialogOpen} onOpenChange={setAddDialogOpen} />
+      {/* Spools are created under a filament type (bug spool-create-missing-filament-type). */}
+      <AddFilamentDialog open={addDialogOpen} onOpenChange={setAddDialogOpen} />
 
       {/* Edit Spool Dialog */}
       <EditSpoolDialog

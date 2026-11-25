@@ -105,3 +105,19 @@ export function useAuth() {
   }
   return context
 }
+
+/**
+ * The auth context where there may not be one, for consumers that only want
+ * a preference off it.
+ *
+ * `useAuth` throws without a provider, which is right for anything that acts
+ * on the session. It is wrong for a display preference: a currency symbol
+ * read by a leaf component should not take a whole screen down because the
+ * tree it was mounted in has no `AuthProvider` -- and that is exactly what
+ * happened when the money helpers reached the inventory and production
+ * screens (task T162).
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useOptionalAuth() {
+  return useContext(AuthContext)
+}

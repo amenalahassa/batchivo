@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     ForeignKey,
     Index,
     Integer,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Text,
     TypeDecorator,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeEngine
@@ -69,6 +71,7 @@ class StringArrayType(TypeDecorator):
 
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
+from app.models.dimensions import DimensionsMixin, dimension_constraints
 
 if TYPE_CHECKING:
     from app.models.category import Category
@@ -85,7 +88,7 @@ if TYPE_CHECKING:
     from app.models.review import Review
 
 
-class Product(Base, UUIDMixin, TimestampMixin):
+class Product(Base, UUIDMixin, TimestampMixin, DimensionsMixin):
     """
     Product represents a sellable item composed of one or more Models and/or other Products.
 
@@ -157,7 +160,7 @@ class Product(Base, UUIDMixin, TimestampMixin):
     )
 
     # Packaging - can be manual cost or linked to consumable
-    packaging_cost: Mapped[float] = mapped_column(
+    packaging_cost: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
         nullable=False,
         default=0,
@@ -180,12 +183,30 @@ class Product(Base, UUIDMixin, TimestampMixin):
         comment="Quantity of packaging consumable per product",
     )
 
+    # The postage service this product ships with, overriding the shop's
+    # default (spec 006, FR-023a, research D9): "<carrier>:<service>".
+    postage_service: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        comment="Postage service override, '<carrier>:<service>'; NULL = shop default",
+    )
+
     assembly_minutes: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
         default=0,
         server_default="0",
         comment="Time to assemble/package in minutes",
+    )
+
+    source_idea_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        # use_alter: ideas points back here (converted_model_id / converted_product_id).
+        ForeignKey(
+            "ideas.id", ondelete="SET NULL", use_alter=True, name="fk_products_source_idea_id"
+        ),
+        nullable=True,
+        index=True,
+        comment="Idea this record was converted from (feature 007)",
     )
 
     # Status
@@ -271,6 +292,15 @@ class Product(Base, UUIDMixin, TimestampMixin):
         comment="Print time in hours (auto-captured from production run or manual)",
     )
 
+    # Packaging advisor: chooses the fragile clearance and suggests wrap (FR-020).
+    is_fragile: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+        comment="Whether the item needs the fragile clearance and protective wrap",
+    )
+
     # Review statistics (cached for performance)
     average_rating: Mapped[Optional[Decimal]] = mapped_column(
         Numeric(3, 2),
@@ -351,11 +381,36 @@ class Product(Base, UUIDMixin, TimestampMixin):
         lazy="selectin",
     )
 
+    #: The **full price history**, every channel and every tier (FR-039).
+    #:
+    #: This used to be one row per channel, so every read of it was implicitly
+    #: a read of the current price. Since Tier 3 it is a history, and a caller
+    #: that still treats it as "the prices" will pick up superseded rows. Read
+    #: `current_pricing` below for what is in effect now, or resolve as at a
+    #: date through `app.services.temporal_pricing`.
     pricing: Mapped[list["ProductPricing"]] = relationship(
         "ProductPricing",
         back_populates="product",
         cascade="all, delete-orphan",
         lazy="selectin",
+        order_by="ProductPricing.valid_from.desc()",
+    )
+
+    #: The prices **in effect now** — one per channel and quantity tier.
+    #:
+    #: Primary-joined on `valid_to IS NULL` (research D6), so the storefront
+    #: and every other current-price read cannot accidentally serve a
+    #: superseded figure. `viewonly` because this is a filtered view of
+    #: `pricing`: writing through it would let two collections disagree about
+    #: the same rows, and closing a period is the service's job.
+    current_pricing: Mapped[list["ProductPricing"]] = relationship(
+        "ProductPricing",
+        primaryjoin=(
+            "and_(Product.id == ProductPricing.product_id, ProductPricing.valid_to.is_(None))"
+        ),
+        viewonly=True,
+        lazy="selectin",
+        order_by="ProductPricing.min_quantity",
     )
 
     images: Mapped[list["ProductImage"]] = relationship(
@@ -452,105 +507,9 @@ class Product(Base, UUIDMixin, TimestampMixin):
             "search_vector",
             postgresql_using="gin",
         ),
+        *dimension_constraints("products"),
         {"comment": "Sellable products composed of one or more printed models"},
     )
 
     def __repr__(self) -> str:
         return f"<Product(sku={self.sku}, name={self.name})>"
-
-    def calculate_make_cost(self, labor_rate: float = 10.0, visited: set | None = None) -> dict:
-        """
-        Calculate the make cost for this product.
-
-        Supports composite products (bundles) by recursively calculating costs
-        for child products. Includes cycle detection to prevent infinite loops.
-
-        Args:
-            labor_rate: Hourly labor rate (default £10/hr)
-            visited: Set of product IDs already visited (for cycle detection)
-
-        Returns:
-            dict with cost breakdown:
-            - models_cost: Sum of (model.cost × quantity) for all models
-            - child_products_cost: Sum of child product costs × quantity
-            - packaging_cost: Packaging cost
-            - assembly_cost: Assembly labor cost
-            - total_make_cost: Total cost to make this product
-
-        Raises:
-            ValueError: If circular reference detected in product hierarchy
-        """
-        # Initialize visited set for cycle detection
-        if visited is None:
-            visited = set()
-
-        # Check for circular reference
-        if self.id in visited:
-            raise ValueError(
-                f"Circular reference detected: Product {self.sku} appears in its own hierarchy"
-            )
-        visited.add(self.id)
-
-        models_cost = Decimal("0")
-        child_products_cost = Decimal("0")
-
-        # Calculate cost of direct models (printed items)
-        for pm in self.product_models:
-            if pm.model:
-                # Get model cost (materials + components + labor + overhead)
-                model_cost = self._calculate_model_cost(pm.model, labor_rate)
-                models_cost += model_cost * pm.quantity
-
-        # Calculate cost of child products (composite/bundles)
-        for pc in self.child_products:
-            if pc.child_product:
-                # Recursively calculate child product cost with visited copy
-                child_cost_breakdown = pc.child_product.calculate_make_cost(
-                    labor_rate=labor_rate, visited=visited.copy()
-                )
-                child_products_cost += (
-                    Decimal(str(child_cost_breakdown["total_make_cost"])) * pc.quantity
-                )
-
-        assembly_cost = Decimal(str(self.assembly_minutes)) / 60 * Decimal(str(labor_rate))
-
-        # Get packaging cost (from consumable or manual)
-        if self.packaging_consumable and self.packaging_consumable.unit_cost:
-            packaging = Decimal(str(self.packaging_consumable.unit_cost)) * self.packaging_quantity
-        else:
-            packaging = Decimal(str(self.packaging_cost))
-
-        total_make_cost = models_cost + child_products_cost + packaging + assembly_cost
-
-        return {
-            "models_cost": float(models_cost),
-            "child_products_cost": float(child_products_cost),
-            "packaging_cost": float(packaging),
-            "assembly_cost": float(assembly_cost),
-            "total_make_cost": float(total_make_cost),
-        }
-
-    def _calculate_model_cost(self, model, labor_rate: float) -> Decimal:
-        """Calculate cost for a single model."""
-        # Materials cost
-        materials_cost = sum(
-            Decimal(str(m.weight_grams)) * Decimal(str(m.cost_per_gram)) for m in model.materials
-        )
-
-        # Components cost
-        components_cost = sum(
-            Decimal(str(c.quantity)) * Decimal(str(c.unit_cost)) for c in model.components
-        )
-
-        # Labor cost
-        rate = float(model.labor_rate_override) if model.labor_rate_override else labor_rate
-        labor_cost = Decimal(str(model.labor_hours)) * Decimal(str(rate))
-
-        # Subtotal before overhead
-        subtotal = materials_cost + components_cost + labor_cost
-
-        # Overhead
-        overhead_pct = Decimal(str(model.overhead_percentage)) / 100
-        overhead_cost = subtotal * overhead_pct
-
-        return subtotal + overhead_cost

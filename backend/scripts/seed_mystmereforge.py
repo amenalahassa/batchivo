@@ -5,6 +5,7 @@ Run with: poetry run python scripts/seed_mystmereforge.py
 """
 
 import asyncio
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from sqlalchemy import select
 
 from app.database import async_session_maker
 from app.models.tenant import Tenant
+from app.models.fee_rule import FeeRule
 from app.models.sales_channel import SalesChannel
 from app.models.category import Category
 
@@ -89,13 +91,40 @@ async def seed_mystmereforge():
                 tenant_id=tenant.id,
                 name="Mystmereforge Shop",
                 platform_type="online_shop",
-                fee_percentage=Decimal("2.9"),  # Square payment processing
-                fee_fixed=Decimal("0.30"),  # Square per-transaction fee
                 monthly_cost=Decimal("0"),  # No monthly cost
                 is_active=True,
             )
             session.add(channel)
             await session.flush()
+            # Square's processing fee, as two dated rules rather than a blended
+            # percentage: the columns that held one went with task T123, and a
+            # channel's fees are its `fee_rules` (FR-020).
+            session.add_all(
+                [
+                    FeeRule(
+                        id=uuid4(),
+                        tenant_id=tenant.id,
+                        sales_channel_id=channel.id,
+                        name="Square processing",
+                        basis="order_total",
+                        rate_pct=Decimal("2.9"),
+                        fixed_amount=Decimal("0"),
+                        sort_order=10,
+                        applies_from=date(2020, 1, 1),
+                    ),
+                    FeeRule(
+                        id=uuid4(),
+                        tenant_id=tenant.id,
+                        sales_channel_id=channel.id,
+                        name="Square per-transaction",
+                        basis="per_order",
+                        rate_pct=Decimal("0"),
+                        fixed_amount=Decimal("0.30"),
+                        sort_order=20,
+                        applies_from=date(2020, 1, 1),
+                    ),
+                ]
+            )
             print(f"Created sales channel: {channel.id}")
         else:
             print(f"Sales channel already exists: {channel.id}")

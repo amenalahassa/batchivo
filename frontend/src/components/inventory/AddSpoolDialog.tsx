@@ -2,9 +2,11 @@ import { useState, useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { spoolsApi, materialTypesApi } from '@/lib/api/spools'
 import type { SpoolCreate } from '@/types/spool'
+import { divideMoney, formatMoney } from '@/lib/money'
 import type { SpoolmanDBFilament } from '@/types/spoolmandb'
 import { SpoolmanDBPicker } from './SpoolmanDBPicker'
 import { useNextSKU } from '@/hooks/useSKU'
+import { useCurrency } from '@/hooks/useCurrency'
 
 // Normalize brand/supplier names to prevent duplicates
 const normalizeName = (name: string): string => {
@@ -42,6 +44,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2, Sparkles, Droplets, RefreshCw } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { spoolBrand } from '@/lib/spool'
 
 interface AddSpoolDialogProps {
   open: boolean
@@ -49,6 +54,10 @@ interface AddSpoolDialogProps {
 }
 
 export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const queryClient = useQueryClient()
 
   // Auto-generate spool ID
@@ -102,7 +111,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
 
   // Additional UI state for bulk purchases
   const [quantity, setQuantity] = useState(1)
-  const [currency, setCurrency] = useState('GBP')
+  // A spool's price is entered in the currency the books are kept in: the
+  // tenant's. There is no per-spool currency to choose (T231).
+  const { currency } = useCurrency()
   const [customSupplier, setCustomSupplier] = useState('')
 
   // SpoolmanDB integration
@@ -145,10 +156,12 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
     setSelectedSpoolmanDBFilament(null)
   }
 
-  // Calculate cost per spool
-  const costPerSpool = formData.purchase_price && quantity > 0
-    ? (formData.purchase_price / quantity).toFixed(2)
-    : '0.00'
+  // What one spool of the batch cost, split from the total the operator
+  // typed. Divided in decimal rather than with `/` on a double: the figure
+  // becomes a spool's `purchase_price`, which `landed_cost.py` turns into the
+  // per-gram price every material line is costed from (Constitution IV,
+  // task T158).
+  const costPerSpool = divideMoney(formData.purchase_price, quantity) ?? '0.00'
 
   // Auto-fill spool ID when nextSKU is fetched
   // formData.spool_id intentionally excluded to prevent re-run when this effect sets it
@@ -187,9 +200,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
 
     const brandMap = new Map<string, string>()
     spoolData.spools.forEach(spool => {
-      const normalized = normalizeName(spool.brand)
+      const normalized = normalizeName(spoolBrand(spool))
       if (!brandMap.has(normalized)) {
-        brandMap.set(normalized, getDisplayName(spool.brand))
+        brandMap.set(normalized, getDisplayName(spoolBrand(spool)))
       }
     })
 
@@ -253,7 +266,6 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
       is_active: true,
     })
     setQuantity(1)
-    setCurrency('GBP')
     setCustomSupplier('')
     setSelectedSpoolmanDBFilament(null)
   }
@@ -277,7 +289,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
     createMutation.mutate(formData as SpoolCreate)
   }
 
-  const handleInputChange = (field: keyof SpoolCreate, value: string | number | boolean | null | undefined) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof SpoolCreate>(field: K, value: SpoolCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -292,6 +306,7 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
           {/* SpoolmanDB Lookup */}
           <div className="bg-muted/50 rounded-lg p-4 border">
             <SpoolmanDBPicker
@@ -607,22 +622,9 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
                 <p className="text-xs text-muted-foreground">How many spools in this purchase</p>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="currency">Currency</Label>
-                <Select value={currency} onValueChange={setCurrency}>
-                  <SelectTrigger id="currency">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="GBP">£ GBP</SelectItem>
-                    <SelectItem value="USD">$ USD</SelectItem>
-                    <SelectItem value="EUR">€ EUR</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
 
               <div className="space-y-2">
-                <Label htmlFor="purchase_price">Total Price</Label>
+                <Label htmlFor="purchase_price">Total Price ({currency.code})</Label>
                 <Input
                   id="purchase_price"
                   type="number"
@@ -630,11 +632,14 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
                   placeholder="41.48"
                   value={formData.purchase_price || ''}
                   onChange={(e) =>
-                    handleInputChange('purchase_price', e.target.value ? parseFloat(e.target.value) : undefined)
+                    // The typed string, not a double: the backend takes a
+                    // `Decimal` and `parseFloat` here would round 24.99 before
+                    // the engine ever saw it (FR-047).
+                    handleInputChange('purchase_price', e.target.value || undefined)
                   }
                 />
                 <p className="text-xs text-muted-foreground">
-                  {currency}{costPerSpool} per spool
+                  {formatMoney(costPerSpool, currency.symbol)} per spool
                 </p>
               </div>
 
@@ -745,6 +750,18 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
             </div>
           )}
 
+          </fieldset>
+
+          {!canEdit && (
+
+            <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+              Changing this needs a member, admin or owner role.
+
+            </p>
+
+          )}
+
           <DialogFooter>
             <Button
               type="button"
@@ -754,7 +771,7 @@ export function AddSpoolDialog({ open, onOpenChange }: AddSpoolDialogProps) {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={createMutation.isPending}>
+            <Button type="submit" disabled={createMutation.isPending || !canEdit}>
               {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create Spool
             </Button>

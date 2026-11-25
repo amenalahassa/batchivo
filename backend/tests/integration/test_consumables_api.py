@@ -1,5 +1,6 @@
 """Comprehensive integration tests for Consumables API - all fields and operations."""
 
+from decimal import Decimal
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
@@ -113,7 +114,9 @@ class TestConsumableTypesBasicCRUD:
         assert data["description"] == "A consumable with all fields for testing"
         assert data["category"] == "hardware"
         assert data["unit_of_measure"] == "each"
-        assert data["current_cost_per_unit"] == 2.50
+        # Money is a decimal string on the wire, not a JSON number
+        # (Constitution IV, task T144), so this is exact rather than close.
+        assert Decimal(data["current_cost_per_unit"]) == Decimal("2.50")
         assert data["quantity_on_hand"] == 200
         assert data["reorder_point"] == 50
         assert data["reorder_quantity"] == 100
@@ -225,7 +228,7 @@ class TestConsumableTypesAllFieldsPersistence:
         assert data["description"] == "Testing field persistence"
         assert data["category"] == "finishing"
         assert data["unit_of_measure"] == "ml"
-        assert data["current_cost_per_unit"] == 15.99
+        assert Decimal(data["current_cost_per_unit"]) == Decimal("15.99")
         assert data["quantity_on_hand"] == 500
         assert data["reorder_point"] == 100
         assert data["reorder_quantity"] == 200
@@ -372,7 +375,7 @@ class TestConsumablePurchasesCRUD:
         assert response.status_code in [200, 201]
         data = response.json()
         assert data["quantity_purchased"] == 50
-        assert data["total_cost"] == 299.50
+        assert Decimal(data["total_cost"]) == Decimal("299.50")
         assert data["supplier"] == "Test Supplier"
 
     @pytest.mark.asyncio
@@ -569,8 +572,130 @@ class TestConsumableTypesComputedFields:
         )
         assert response.status_code == 200
         data = response.json()
-        # stock_value = quantity_on_hand * current_cost_per_unit
-        expected_value = test_consumable_type.quantity_on_hand * (
-            test_consumable_type.current_cost_per_unit or 0
+        # stock_value = quantity_on_hand * current_cost_per_unit, exactly: both
+        # sides are Decimal and the wire carries the decimal string (task T144).
+        expected_value = Decimal(test_consumable_type.quantity_on_hand) * (
+            test_consumable_type.current_cost_per_unit or Decimal("0")
         )
-        assert data["stock_value"] == expected_value
+        assert Decimal(data["stock_value"]) == expected_value
+
+
+class TestTheUnitCostIsDerivedFromThePurchase:
+    """Task T273: no rounded quotient stored, none left behind by a deleted purchase."""
+
+    @pytest.mark.asyncio
+    async def test_the_unit_cost_is_served_unrounded(
+        self, client: AsyncClient, auth_headers: dict, test_consumable_type: ConsumableType
+    ):
+        response = await client.post(
+            "/api/v1/consumables/purchases",
+            headers=auth_headers,
+            json={
+                "consumable_type_id": str(test_consumable_type.id),
+                "quantity_purchased": 7,
+                "total_cost": "1.00",
+                "purchase_date": "2026-06-01",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+        served = await client.get(
+            f"/api/v1/consumables/types/{test_consumable_type.id}", headers=auth_headers
+        )
+        unit = Decimal(served.json()["current_cost_per_unit"])
+        # Not the four-place 0.1429 a column would hold: over a thousand units
+        # that drift is four pence.
+        assert (unit * 1000).quantize(Decimal("0.01")) == Decimal("142.86")
+
+    @pytest.mark.asyncio
+    async def test_deleting_the_purchase_stops_its_price_applying(
+        self, client: AsyncClient, auth_headers: dict, test_consumable_type: ConsumableType
+    ):
+        created = await client.post(
+            "/api/v1/consumables/purchases",
+            headers=auth_headers,
+            json={
+                "consumable_type_id": str(test_consumable_type.id),
+                "quantity_purchased": 4,
+                "total_cost": "2.00",
+                "purchase_date": "2026-06-01",
+            },
+        )
+        assert created.status_code == 201, created.text
+        url = f"/api/v1/consumables/types/{test_consumable_type.id}"
+        assert Decimal(
+            (await client.get(url, headers=auth_headers)).json()["current_cost_per_unit"]
+        ) == Decimal("0.5")
+
+        deleted = await client.delete(
+            f"/api/v1/consumables/purchases/{created.json()['id']}", headers=auth_headers
+        )
+        assert deleted.status_code == 204
+
+        # Back to the figure the operator typed on the consumable itself.
+        served = (await client.get(url, headers=auth_headers)).json()
+        assert Decimal(served["current_cost_per_unit"]) == Decimal("5.99")
+
+
+class TestAPurchasePricedUnitCostIsReadOnly:
+    """Task T277: a typed unit cost is refused while a purchase prices the unit."""
+
+    @pytest.mark.asyncio
+    async def test_the_type_names_the_purchase_that_prices_it(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        test_consumable_type: ConsumableType,
+        test_consumable_purchase: ConsumablePurchase,
+    ):
+        served = await client.get(
+            f"/api/v1/consumables/types/{test_consumable_type.id}", headers=auth_headers
+        )
+        body = served.json()
+        assert body["priced_by_purchase_id"] == str(test_consumable_purchase.id)
+        assert body["priced_by_purchase_date"] == test_consumable_purchase.purchase_date.isoformat()
+
+    @pytest.mark.asyncio
+    async def test_a_typed_unit_cost_is_refused(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        test_consumable_type: ConsumableType,
+        test_consumable_purchase: ConsumablePurchase,
+    ):
+        response = await client.put(
+            f"/api/v1/consumables/types/{test_consumable_type.id}",
+            headers=auth_headers,
+            json={"current_cost_per_unit": "9.99"},
+        )
+        assert response.status_code == 409, response.text
+        assert "purchase" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_other_fields_still_save(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        test_consumable_type: ConsumableType,
+        test_consumable_purchase: ConsumablePurchase,
+    ):
+        response = await client.put(
+            f"/api/v1/consumables/types/{test_consumable_type.id}",
+            headers=auth_headers,
+            json={"name": "Renamed magnets"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["name"] == "Renamed magnets"
+
+    @pytest.mark.asyncio
+    async def test_without_a_purchase_the_typed_figure_is_accepted(
+        self, client: AsyncClient, auth_headers: dict, test_consumable_type: ConsumableType
+    ):
+        response = await client.put(
+            f"/api/v1/consumables/types/{test_consumable_type.id}",
+            headers=auth_headers,
+            json={"current_cost_per_unit": "6.50"},
+        )
+        assert response.status_code == 200, response.text
+        assert Decimal(response.json()["current_cost_per_unit"]) == Decimal("6.50")
+        assert response.json()["priced_by_purchase_id"] is None

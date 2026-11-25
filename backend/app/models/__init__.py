@@ -7,8 +7,16 @@ from app.models.material import MaterialType
 # Model (printed items) - renamed from Product
 from app.models.model import Model
 from app.models.model_file import ModelFile, ModelFileType
+from app.models.model_file_note import ModelFileNote
+from app.models.model_file_version import ModelFileVersion
 from app.models.model_material import ModelMaterial
 from app.models.model_component import ModelComponent
+
+# Ideas (feature 007)
+from app.models.idea import Idea, IdeaEntry
+
+# Generative AI (feature 008)
+from app.models.generation_job import GenAIAdoption, GenAIAsset, GenerationJob
 
 # Printers and printer-specific configurations
 from app.models.printer import Printer
@@ -18,6 +26,10 @@ from app.models.model_printer_config import ModelPrinterConfig
 
 # Print queue
 from app.models.print_job import JobPriority, JobStatus, PrintJob
+from app.models.print_send import PrintSend
+
+# Personal API tokens (spec 010)
+from app.models.api_token import ApiToken
 
 # Product (sellable items composed of models and/or other products)
 from app.models.category import Category, product_categories
@@ -31,12 +43,17 @@ from app.models.product_variant import FulfilmentType, ProductSizeSystem, Produc
 
 # Sales channels
 from app.models.sales_channel import SalesChannel
+from app.models.sales_channel_economics import (
+    ECONOMICS_FIELDS,
+    SalesChannelEconomics,
+)
 
 # External listings (marketplace integrations)
 from app.models.external_listing import ExternalListing
 
 # Orders
 from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order_parcel import OrderParcel, OrderParcelItem
 
 # Discounts
 from app.models.discount import DiscountCode, DiscountType, DiscountUsage
@@ -49,6 +66,7 @@ from app.models.production_run import ProductionRun, ProductionRunItem, Producti
 from app.models.production_run_plate import ProductionRunPlate
 
 # Inventory
+from app.models.filament_purchase import FilamentPurchase
 from app.models.filament_type import FilamentType
 from app.models.spool import Spool
 from app.models.inventory_transaction import InventoryTransaction, TransactionType
@@ -91,6 +109,30 @@ from app.models.webhook_event import (
     WebhookEventStatus,
 )
 
+# Pricing policy and provenance (Tier 1)
+from app.models.pricing_input_provenance import (
+    PROVENANCE_ENTITY_TYPES,
+    PROVENANCE_SOURCES,
+    PricingInputProvenance,
+)
+from app.models.tenant_pricing_policy import (
+    MARGIN_BASES,
+    OVERHEAD_METHODS,
+    TenantPricingPolicy,
+)
+
+# Channel economics (Tier 2)
+from app.models.fee_actual import FEE_ACTUAL_SOURCES, FeeActual
+from app.models.refund_actual import REFUND_ACTUAL_SOURCES, RefundActual
+from app.models.fee_rule import COUNT_BASES, FEE_BASES, PERIODIC_BASES, FeeRule
+from app.models.shipping_profile import ShippingProfile
+
+# Exchange rates (Tier 3). Deliberately NOT tenant-scoped -- a published rate
+# is not tenant data; the exception is argued in the model's docstring.
+from app.models.estimate_revision import REVISION_STATES, EstimateRevision
+from app.models.scenario_run import SCENARIO_STATES, ScenarioRun
+from app.models.fx_rate import FX_RATE_SOURCES, FxRate
+
 # Multi-tenancy
 from app.models.tenant import Tenant
 from app.models.tenant_module import TenantModule
@@ -107,8 +149,17 @@ __all__ = [
     "Model",
     "ModelFile",
     "ModelFileType",
+    "ModelFileNote",
+    "ModelFileVersion",
     "ModelMaterial",
     "ModelComponent",
+    # Ideas
+    "Idea",
+    "IdeaEntry",
+    # Generative AI
+    "GenerationJob",
+    "GenAIAsset",
+    "GenAIAdoption",
     # Printers
     "Printer",
     "PrinterConnection",
@@ -117,6 +168,8 @@ __all__ = [
     "ModelPrinterConfig",
     # Print queue
     "PrintJob",
+    "PrintSend",
+    "ApiToken",
     "JobPriority",
     "JobStatus",
     # Products (sellable items)
@@ -133,11 +186,15 @@ __all__ = [
     "ProductSizeSystem",
     # Sales
     "SalesChannel",
+    "SalesChannelEconomics",
+    "ECONOMICS_FIELDS",
     # External listings
     "ExternalListing",
     # Orders
     "Order",
     "OrderItem",
+    "OrderParcel",
+    "OrderParcelItem",
     "OrderStatus",
     # Discounts
     "DiscountCode",
@@ -153,6 +210,7 @@ __all__ = [
     "ProductionRunMaterial",
     "ProductionRunPlate",
     # Inventory
+    "FilamentPurchase",
     "FilamentType",
     "Spool",
     "InventoryTransaction",
@@ -192,6 +250,31 @@ __all__ = [
     "WebhookEvent",
     "WebhookEventSource",
     "WebhookEventStatus",
+    # Pricing policy and provenance
+    "TenantPricingPolicy",
+    "MARGIN_BASES",
+    "OVERHEAD_METHODS",
+    "PricingInputProvenance",
+    "PROVENANCE_SOURCES",
+    "PROVENANCE_ENTITY_TYPES",
+    # Channel economics
+    "FeeRule",
+    "FEE_BASES",
+    "COUNT_BASES",
+    "PERIODIC_BASES",
+    "FeeActual",
+    "REFUND_ACTUAL_SOURCES",
+    "RefundActual",
+    "FEE_ACTUAL_SOURCES",
+    "ShippingProfile",
+    # Exchange rates
+    "EstimateRevision",
+    # Scenario runs (Tier 4). Holds no authoritative cost or price (FR-044d).
+    "ScenarioRun",
+    "SCENARIO_STATES",
+    "REVISION_STATES",
+    "FxRate",
+    "FX_RATE_SOURCES",
     # Multi-tenancy
     "Tenant",
     "TenantModule",

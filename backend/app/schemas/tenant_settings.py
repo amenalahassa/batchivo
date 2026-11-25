@@ -1,11 +1,12 @@
 """Pydantic schemas for tenant settings and management."""
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import field_validator, BaseModel, ConfigDict, EmailStr, Field
 
 
 # Re-export UserRole from models for API use
@@ -223,8 +224,12 @@ class TenantSettings(BaseModel):
     features: TenantFeatures = Field(default_factory=TenantFeatures)
     shop: ShopSettings = Field(default_factory=ShopSettings)
 
-    # Legacy fields (for backward compatibility)
-    default_labor_rate: float = Field(default=20.0, description="Default hourly labor rate")
+    # Legacy fields (for backward compatibility).
+    #
+    # `default_labor_rate` was removed with the key behind it (task T123): a
+    # labor rate lives in the typed, dated `tenant_pricing_policy` table, and a
+    # float in a JSON blob could not be either. It was also the wrong type for
+    # money (Constitution IV).
     currency: str = Field(default="GBP", description="Legacy currency field")
 
     @classmethod
@@ -469,6 +474,118 @@ class SquareConnectionTest(BaseModel):
 
 
 # =============================================================================
+# Replicate (generative AI) Settings Schemas -- spec 008
+# =============================================================================
+#
+# Money is US dollars (clarification Q1) as decimal strings. The token is write-only:
+# responses carry its last four characters at most (FR-021).
+
+GENAI_CAPABILITIES = (
+    "concept_image",
+    "image_edit",
+    "product_photo_enhance",
+    "background_remove",
+    "upscale",
+    "lifestyle_scene",
+    "image_to_3d",
+)
+
+
+class ReplicateModelOverride(BaseModel):
+    """A tenant's replacement model for one capability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_ref: str = Field(..., min_length=3, max_length=200, pattern=r"^[\w.-]+/[\w.-]+$")
+    model_version: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="Pinned version id, or 'official' for a provider-maintained model",
+    )
+    price_unit: Literal["per_output", "per_run", "per_second"] | None = None
+    price_usd: Decimal | None = Field(None, ge=0, max_digits=12, decimal_places=6)
+    typical_seconds: int | None = Field(
+        None,
+        ge=1,
+        le=3600,
+        description="How long a run usually takes, to estimate a price charged per second",
+    )
+
+    @field_validator("model_version")
+    @classmethod
+    def _pinned(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("a version is required: a pinned version id, or 'official'")
+        if value.lower() == "latest":
+            raise ValueError("a version must be pinned; 'latest' is not allowed")
+        if value != "official" and not all(c.isalnum() for c in value):
+            raise ValueError("a version id has letters and digits only, or is 'official'")
+        return value
+
+
+class ReplicateSettingsUpdate(BaseModel):
+    """Owner/admin update of the Replicate settings; omitted fields are kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_token: str | None = Field(
+        None, max_length=200, description="New token; an empty string removes it"
+    )
+    monthly_budget: Decimal | None = Field(
+        None, ge=0, max_digits=12, decimal_places=2, description="USD per month; null = no cap"
+    )
+    clear_budget: bool = Field(False, description="Remove the monthly budget (no cap)")
+    model_overrides: dict[str, ReplicateModelOverride | None] | None = None
+
+    @field_validator("model_overrides")
+    @classmethod
+    def _known_capabilities(cls, value):
+        if value:
+            unknown = sorted(set(value) - set(GENAI_CAPABILITIES))
+            if unknown:
+                raise ValueError(f"unknown capability: {', '.join(unknown)}")
+        return value
+
+
+class ReplicateSettingsResponse(BaseModel):
+    """Replicate settings as an owner or admin sees them (token masked)."""
+
+    is_configured: bool
+    token_masked: str | None = None
+    token_source: Literal["tenant", "platform", "none"]
+    platform_token_available: bool
+    platform_token_allowed: bool
+    monthly_budget: str | None = None
+    currency: str = "USD"
+    month_to_date: str
+    jobs_this_month: int
+    active_jobs: int
+    concurrency_limit: int
+    model_overrides: dict[str, ReplicateModelOverride] = Field(default_factory=dict)
+    updated_at: datetime | None = None
+
+
+class ReplicateConnectionTest(BaseModel):
+    success: bool
+    message: str
+    account: str | None = None
+    token_source: str
+
+
+class ReplicateUsageMonth(BaseModel):
+    month: str
+    cost: str
+    jobs: int
+
+
+class ReplicateUsageResponse(BaseModel):
+    currency: str = "USD"
+    months: list[ReplicateUsageMonth]
+
+
+# =============================================================================
 # Tenant Settings Schemas
 # =============================================================================
 
@@ -485,8 +602,35 @@ class TenantResponse(BaseModel):
     description: str | None = Field(None, description="Tenant description")
     is_active: bool = Field(..., description="Whether the tenant is active")
     settings: TenantSettings | dict = Field(default_factory=dict, description="Tenant settings")
+    currency_code: str = Field("GBP", description="The currency the books are kept in (FR-028)")
+    currency_symbol: str = Field("£", description="Its display symbol")
+    country_code: str | None = Field(
+        None, description="ISO 3166-1 alpha-2 country; chooses the postage carrier (spec 006)"
+    )
     created_at: datetime = Field(..., description="Creation timestamp")
     updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+#: ISO 4217 currencies whose minor unit is not a hundredth. Money is rounded
+#: once at the edge to two places (`app/core/money.py`), so books kept in one
+#: of these would be rounded to a precision the currency does not have.
+NON_CENTESIMAL_CURRENCIES: frozenset[str] = frozenset(
+    {
+        "BHD", "BIF", "CLP", "DJF", "GNF", "IQD", "ISK", "JOD", "JPY", "KMF", "KRW",
+        "KWD", "LYD", "OMR", "PYG", "RWF", "TND", "UGX", "UYI", "VND", "VUV", "XAF",
+        "XOF", "XPF",
+    }
+)  # fmt: skip
+
+
+def normalise_country(value: str | None) -> str | None:
+    """An ISO 3166-1 alpha-2 code, upper-cased; blank is no country."""
+    if value is None or not value.strip():
+        return None
+    code = value.strip().upper()
+    if len(code) != 2 or not code.isascii() or not code.isalpha():
+        raise ValueError("country_code must be a two-letter ISO 3166-1 code, such as CA or FR")
+    return code
 
 
 class TenantUpdate(BaseModel):
@@ -495,6 +639,37 @@ class TenantUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100, description="Tenant name")
     description: str | None = Field(None, max_length=500, description="Tenant description")
     tenant_type: TenantType | None = Field(None, description="Tenant business type")
+    # Every cost is converted from this currency (T242, FR-028). Changing it
+    # moves no settled order: each froze the rate it was sold at (FR-028j).
+    currency_code: str | None = Field(
+        None,
+        pattern=r"^[A-Za-z]{3}$",
+        description="ISO 4217 code of the currency the books are kept in",
+    )
+    currency_symbol: str | None = Field(None, min_length=1, max_length=5)
+    # The shop's country (spec 006, FR-017a): optional, sent as null to clear.
+    # It only chooses the postage carrier and re-seeds nothing.
+    country_code: str | None = Field(
+        None, description="ISO 3166-1 alpha-2 country, e.g. CA; null clears it"
+    )
+
+    @field_validator("country_code")
+    @classmethod
+    def _country(cls, value: str | None) -> str | None:
+        return normalise_country(value)
+
+    @field_validator("currency_code")
+    @classmethod
+    def _books_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        code = value.upper()
+        if code in NON_CENTESIMAL_CURRENCIES:
+            raise ValueError(
+                f"{code} does not have two decimal places, which is the only precision "
+                "money is kept at"
+            )
+        return code
 
 
 # =============================================================================

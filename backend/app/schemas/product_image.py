@@ -1,7 +1,7 @@
 """Pydantic schemas for product images."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -24,6 +24,8 @@ class ProductImageUpdate(BaseModel):
 
     alt_text: Optional[str] = Field(None, max_length=255)
     display_order: Optional[int] = Field(None, ge=0)
+    # Spec 008: an operator labels a picture a photo or a render; "ai" is set only by adoption.
+    origin: Optional[Literal["photo", "render"]] = None
 
 
 class ProductImageResponse(ProductImageBase):
@@ -38,6 +40,7 @@ class ProductImageResponse(ProductImageBase):
     original_filename: Optional[str] = None
     file_size: Optional[int] = None
     content_type: Optional[str] = None
+    origin: Literal["photo", "render", "ai"] = "photo"  # spec 008
     created_at: datetime
     updated_at: datetime
 

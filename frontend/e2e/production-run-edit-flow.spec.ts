@@ -1,45 +1,39 @@
 /**
  * E2E Test: Production Run Edit Flow with Status-Based Restrictions
  *
- * This test verifies the complete user flow for editing production runs
- * with proper status-based restrictions.
+ * Verifies editing production runs with status-based restrictions.
  *
  * Flow:
- * 1. Create a production run (in_progress status)
- * 2. Edit the run - verify all fields are editable
+ * 1. Seed an in_progress production run (one model, one spool) through the API
+ * 2. Edit the run - all fields are editable
  * 3. Save changes and verify they persisted
  * 4. Complete the production run
- * 5. Try to edit completed run - verify only notes field is editable
- * 6. Verify immutable status alert is shown
- * 7. Save notes-only change
- * 8. Verify other fields remain unchanged
+ * 5. Edit the completed run - only the notes field is editable
+ * 6. The immutable status alert is shown
+ * 7. Save a notes-only change
+ * 8. Other fields remain unchanged
  *
- * PREREQUISITES:
- * - Backend server running on http://localhost:8000
- * - Frontend dev server running on http://localhost:5173
- * - Test user must exist in database with credentials:
- *   - Email: test@example.com (or set TEST_USER_EMAIL env var)
- *   - Password: testpassword (or set TEST_USER_PASSWORD env var)
- *
- * To create test user, run:
- *   cd backend && python scripts/create_test_user.py
+ * Each test gets a fresh tenant; the run and what it prints are seeded
+ * through the API, the wizard itself is covered by the other production run
+ * specs.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from './helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from './fixtures'
+import { apiAs, isBackendAvailable } from './helpers'
 
 // Test data
 const TEST_RUN = {
   printer: 'Prusa i3 MK3S',
   estimatedTime: '2.5',
-  bedTemp: '60',
-  nozzleTemp: '210',
+  bedTemp: 60,
+  nozzleTemp: 210,
   notes: 'Initial test notes',
 }
 
 const EDIT_DATA = {
   printer: 'Prusa XL',
-  estimatedTime: '3.0',
+  estimatedTime: '3',
   bedTemp: '65',
   nozzleTemp: '215',
   notes: 'Updated notes after editing',
@@ -47,276 +41,204 @@ const EDIT_DATA = {
 
 const COMPLETED_NOTES = 'Added notes after completion'
 
-// Helper functions - registerAndLogin is defined above
-
+/**
+ * Seed an in_progress run printing one model from one spool, and open it.
+ */
 async function createProductionRun(page: Page): Promise<string> {
-  // Navigate to production runs
-  await page.goto('/production-runs')
-  await page.waitForLoadState('networkidle')
+  const api = await apiAs(page)
+  const materials = await api.get<{ id: string; code: string }[]>('/api/v1/spools/material-types')
+  const pla = materials.find((m) => m.code === 'PLA') ?? materials[0]
+  const filamentType = await api.post<{ id: string }>('/api/v1/filament-types', {
+    material_type_id: pla.id,
+    brand: 'E2E',
+    color: 'Blue',
+  })
+  const spool = await api.post<{ id: string }>('/api/v1/spools', {
+    spool_id: `E2E-EDIT-${Math.random().toString(36).slice(2, 7)}`,
+    filament_type_id: filamentType.id,
+    initial_weight: 1000,
+    current_weight: 1000,
+    purchase_price: '25.00',
+  })
+  const model = await api.post<{ id: string }>('/api/v1/models', {
+    sku: `EDIT-${Date.now()}`,
+    name: 'Edit Flow Widget',
+  })
+  const run = await api.post<{ id: string }>('/api/v1/production-runs', {
+    status: 'in_progress',
+    started_at: new Date().toISOString(),
+    printer_name: TEST_RUN.printer,
+    estimated_print_time_hours: TEST_RUN.estimatedTime,
+    bed_temperature: TEST_RUN.bedTemp,
+    nozzle_temperature: TEST_RUN.nozzleTemp,
+    notes: TEST_RUN.notes,
+    items: [{ model_id: model.id, quantity: 2 }],
+    materials: [{ spool_id: spool.id, estimated_model_weight_grams: '40' }],
+  })
 
-  // Click "New Production Run" button
-  await page.click('button:has-text("New Production Run")')
-
-  // Wait for wizard to load
-  await expect(page.locator('text=Step 1 of 4: Basic Info')).toBeVisible()
-
-  // Fill in basic info
-  await page.fill('input[name="printer"]', TEST_RUN.printer)
-  await page.fill('input[name="estimated_print_time_hours"]', TEST_RUN.estimatedTime)
-  await page.fill('input[name="bed_temperature"]', TEST_RUN.bedTemp)
-  await page.fill('input[name="nozzle_temperature"]', TEST_RUN.nozzleTemp)
-  await page.fill('textarea[name="notes"]', TEST_RUN.notes)
-
-  // Navigate through wizard (skip models and materials for simplicity)
-  await page.click('button:has-text("Next")') // To Step 2 (Models)
-  await page.click('button:has-text("Next")') // To Step 3 (Materials)
-  await page.click('button:has-text("Next")') // To Step 4 (Review)
-
-  // Submit the production run
-  await page.click('button:has-text("Create Production Run")')
-
-  // Wait for redirect to production run detail page
-  await page.waitForURL(/\/production-runs\/[a-f0-9-]+$/, { timeout: 10000 })
-
-  // Extract run ID from URL
-  const url = page.url()
-  const runId = url.split('/').pop()!
-
-  return runId
+  await page.goto(`/production-runs/${run.id}`)
+  await expect(statusBadge(page, 'In Progress')).toBeVisible()
+  return run.id
 }
 
-async function deleteProductionRun(page: Page, runId: string) {
-  await page.goto(`/production-runs/${runId}`)
-  // Look for delete button (may require admin/specific permissions)
-  const deleteButton = page.locator('button:has-text("Delete")')
-  if (await deleteButton.isVisible()) {
-    await deleteButton.click()
-    await page.click('button:has-text("Confirm")')
-    await page.waitForURL('/production-runs')
-  }
+/** The status badge in the run header, beside the Edit Run button. */
+function statusBadge(page: Page, status: string) {
+  return page.getByRole('button', { name: 'Edit Run' }).locator('..').getByText(status, { exact: true })
+}
+
+function editDialog(page: Page) {
+  return page.getByRole('dialog').filter({ hasText: 'Edit Production Run' })
+}
+
+async function openEditDialog(page: Page) {
+  await page.getByRole('button', { name: 'Edit Run' }).click()
+  await expect(editDialog(page)).toBeVisible()
+  return editDialog(page)
 }
 
 test.describe('Production Run Edit Flow with Status-Based Restrictions', () => {
-  let runId: string
+  // Signup, API seeding and a multi-step wizard: more than the default 30 s
+  // when the shared stack is busy.
+  test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should allow full editing of in_progress run and restrict editing after completion', async ({ page }) => {
     // ============================================
     // PART 1: Create in_progress production run
     // ============================================
-    runId = await createProductionRun(page)
+    await createProductionRun(page)
 
-    // Verify we're on the detail page
-    await expect(page.locator(`text=${TEST_RUN.printer}`)).toBeVisible()
-    await expect(page.locator(`text=${TEST_RUN.notes}`)).toBeVisible()
-
-    // Verify status badge shows "In Progress"
-    await expect(page.locator('text=In Progress')).toBeVisible()
+    await expect(page.getByText(TEST_RUN.printer, { exact: true })).toBeVisible()
+    await expect(page.getByText(TEST_RUN.notes, { exact: true })).toBeVisible()
 
     // ============================================
     // PART 2: Edit in_progress run (full access)
     // ============================================
+    let dialog = await openEditDialog(page)
 
-    // Click "Edit Run" button
-    await page.click('button:has-text("Edit Run")')
+    // No lock alert (run is editable)
+    await expect(dialog.getByText('Only notes can be edited')).toBeHidden()
 
-    // Wait for Edit dialog to appear
-    await expect(page.locator('text=Edit Production Run')).toBeVisible()
-
-    // Verify NO lock alert (run is editable)
-    await expect(page.locator('text=Only notes can be edited')).not.toBeVisible()
-
-    // Verify all tabs are available
-    await expect(page.locator('text=Basic Info')).toBeVisible()
-    await expect(page.locator('button:has-text("Items")')).toBeVisible()
-    await expect(page.locator('button:has-text("Materials")')).toBeVisible()
+    // All tabs are available
+    await expect(dialog.getByRole('tab', { name: 'Basic Info' })).toBeVisible()
+    await expect(dialog.getByRole('tab', { name: /^Items/ })).toBeVisible()
+    await expect(dialog.getByRole('tab', { name: /^Materials/ })).toBeVisible()
 
     // Edit basic info fields
-    await page.fill('input[name="printer_name"], input[placeholder*="Prusa"]', EDIT_DATA.printer)
-    await page.fill('input[name="estimated_print_time_hours"]', EDIT_DATA.estimatedTime)
-
-    // Click on Basic Info tab to access temperature fields
-    await page.click('button:has-text("Basic Info")')
-    await page.fill('input[name="bed_temperature"]', EDIT_DATA.bedTemp)
-    await page.fill('input[name="nozzle_temperature"]', EDIT_DATA.nozzleTemp)
+    await dialog.getByLabel('Printer Name').fill(EDIT_DATA.printer)
+    await dialog.getByLabel('Estimated Print Time (hours)').fill(EDIT_DATA.estimatedTime)
+    await dialog.getByLabel('Bed Temperature (°C)').fill(EDIT_DATA.bedTemp)
+    await dialog.getByLabel('Nozzle Temperature (°C)').fill(EDIT_DATA.nozzleTemp)
 
     // Update notes
-    const notesField = page.locator('textarea[name="notes"], label:has-text("Notes") + textarea')
-    await notesField.fill(EDIT_DATA.notes)
+    await dialog.getByLabel('Notes').fill(EDIT_DATA.notes)
 
-    // Verify Save button is enabled (changes detected)
-    const saveButton = page.locator('button:has-text("Save Changes")')
+    // Save is enabled (changes detected)
+    const saveButton = dialog.getByRole('button', { name: 'Save Changes' })
     await expect(saveButton).toBeEnabled()
-
-    // Click Save
     await saveButton.click()
-
-    // Wait for dialog to close
-    await expect(page.locator('text=Edit Production Run')).not.toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeHidden()
 
     // ============================================
     // PART 3: Verify changes persisted
     // ============================================
-
-    // Reload the page to ensure changes are saved
     await page.reload()
-    await page.waitForLoadState('networkidle')
 
-    // Verify updated values are displayed
-    await expect(page.locator(`text=${EDIT_DATA.printer}`)).toBeVisible()
-    await expect(page.locator(`text=${EDIT_DATA.notes}`)).toBeVisible()
-
-    // Verify temperature values (may be in a card or table)
-    await expect(page.locator(`text=${EDIT_DATA.bedTemp}°C`)).toBeVisible()
-    await expect(page.locator(`text=${EDIT_DATA.nozzleTemp}°C`)).toBeVisible()
+    await expect(page.getByText(EDIT_DATA.printer, { exact: true })).toBeVisible()
+    await expect(page.getByText(EDIT_DATA.notes, { exact: true })).toBeVisible()
+    await expect(page.getByText(`${EDIT_DATA.bedTemp}°C`, { exact: true })).toBeVisible()
+    await expect(page.getByText(`${EDIT_DATA.nozzleTemp}°C`, { exact: true })).toBeVisible()
 
     // ============================================
     // PART 4: Complete the production run
     // ============================================
+    await page.getByRole('button', { name: 'Complete Run' }).click()
+    const completeDialog = page.getByRole('dialog').filter({ hasText: 'Complete Production Run' })
+    await expect(completeDialog).toBeVisible()
 
-    // Click "Complete Run" button
-    await page.click('button:has-text("Complete Run")')
+    // Actual weights default to the estimates; confirm as-is
+    await completeDialog.getByRole('button', { name: 'Complete Run' }).click()
+    await expect(completeDialog).toBeHidden({ timeout: 30000 })
 
-    // Wait for Complete dialog to appear
-    await expect(page.locator('text=Complete Production Run')).toBeVisible()
-
-    // Fill in completion details (minimal for test)
-    // Assuming there's a simple completion form
-    await page.click('button:has-text("Complete"), button:has-text("Mark as Complete")')
-
-    // Wait for dialog to close and status to update
-    await expect(page.locator('text=Complete Production Run')).not.toBeVisible({ timeout: 5000 })
-
-    // Verify status changed to "Completed"
-    await expect(page.locator('text=Completed')).toBeVisible({ timeout: 5000 })
+    await expect(statusBadge(page, 'Completed')).toBeVisible()
 
     // ============================================
     // PART 5: Try to edit completed run (restricted)
     // ============================================
+    dialog = await openEditDialog(page)
 
-    // Click "Edit Run" button again
-    await page.click('button:has-text("Edit Run")')
+    // Lock alert appears
+    await expect(dialog.getByText(/This run is completed\. Only notes can be edited\./)).toBeVisible()
 
-    // Wait for Edit dialog to appear
-    await expect(page.locator('text=Edit Production Run')).toBeVisible()
+    // Tabs are hidden for immutable runs
+    await expect(dialog.getByRole('tab')).toHaveCount(0)
+    await expect(dialog.getByLabel('Printer Name')).toBeHidden()
 
-    // Verify LOCK ALERT appears
-    await expect(page.locator('text=This run is completed')).toBeVisible()
-    await expect(page.locator('text=Only notes can be edited')).toBeVisible()
-
-    // Verify tabs are NOT available (hidden for immutable runs)
-    await expect(page.locator('button:has-text("Basic Info")')).not.toBeVisible()
-    await expect(page.locator('button:has-text("Items")')).not.toBeVisible()
-    await expect(page.locator('button:has-text("Materials")')).not.toBeVisible()
-
-    // Verify only Notes field is editable
-    const notesOnlyField = page.locator('textarea[name="notes"], label:has-text("Notes") + textarea')
-    await expect(notesOnlyField).toBeVisible()
+    // Only notes are editable
+    const notesOnlyField = dialog.getByLabel('Notes')
     await expect(notesOnlyField).toBeEditable()
-
-    // Update notes (only field available)
     await notesOnlyField.fill(COMPLETED_NOTES)
 
-    // Verify Save button is enabled (notes changed)
-    const saveButtonRestricted = page.locator('button:has-text("Save Changes")')
+    const saveButtonRestricted = dialog.getByRole('button', { name: 'Save Changes' })
     await expect(saveButtonRestricted).toBeEnabled()
-
-    // Click Save
     await saveButtonRestricted.click()
-
-    // Wait for dialog to close
-    await expect(page.locator('text=Edit Production Run')).not.toBeVisible({ timeout: 5000 })
+    await expect(dialog).toBeHidden()
 
     // ============================================
     // PART 6: Verify only notes changed, other fields unchanged
     // ============================================
-
-    // Reload to verify
     await page.reload()
-    await page.waitForLoadState('networkidle')
 
-    // Verify notes updated
-    await expect(page.locator(`text=${COMPLETED_NOTES}`)).toBeVisible()
-
-    // Verify other fields remain unchanged from EDIT_DATA (not reverted)
-    await expect(page.locator(`text=${EDIT_DATA.printer}`)).toBeVisible()
-    await expect(page.locator(`text=${EDIT_DATA.bedTemp}°C`)).toBeVisible()
-    await expect(page.locator(`text=${EDIT_DATA.nozzleTemp}°C`)).toBeVisible()
-
-    // Verify status is still "Completed"
-    await expect(page.locator('text=Completed')).toBeVisible()
+    await expect(page.getByText(COMPLETED_NOTES, { exact: true })).toBeVisible()
+    await expect(page.getByText(EDIT_DATA.printer, { exact: true })).toBeVisible()
+    await expect(page.getByText(`${EDIT_DATA.bedTemp}°C`, { exact: true })).toBeVisible()
+    await expect(page.getByText(`${EDIT_DATA.nozzleTemp}°C`, { exact: true })).toBeVisible()
+    await expect(statusBadge(page, 'Completed')).toBeVisible()
   })
 
   test('should show immutable warning for failed runs', async ({ page }) => {
-    // This test verifies that failed runs also have edit restrictions
+    await createProductionRun(page)
 
-    // Create a run (would need to fail it via Cancel/Fail dialog)
-    runId = await createProductionRun(page)
+    // Open the Cancel / Fail dialog and switch to "Mark as Failed"
+    await page.getByRole('button', { name: 'Cancel / Fail' }).click()
+    const failDialog = page.getByRole('dialog')
+    await expect(failDialog.getByText('Cancel Production Run')).toBeVisible()
+    await failDialog.getByRole('radio', { name: 'Mark as Failed' }).click()
+    await expect(failDialog.getByText('Mark Run as Failed')).toBeVisible()
 
-    // Click "Cancel / Fail" button
-    await page.click('button:has-text("Cancel / Fail")')
+    // A failure needs a reason and the filament wasted
+    await failDialog.getByRole('combobox', { name: /Failure Reason/ }).click()
+    await page.getByRole('option').first().click()
+    await failDialog.getByRole('spinbutton').first().fill('5')
+    await failDialog.getByRole('button', { name: 'Mark as Failed' }).click()
+    await expect(failDialog).toBeHidden({ timeout: 30000 })
 
-    // Wait for Cancel dialog
-    await expect(page.locator('text=Cancel / Fail Production Run')).toBeVisible()
+    await expect(statusBadge(page, 'Failed')).toBeVisible()
 
-    // Select "Failed" as failure reason (assuming there's a radio/select)
-    // This depends on actual UI implementation
-    await page.click('button:has-text("Mark as Failed"), button:has-text("Fail Run")')
-
-    // Wait for status to update
-    await expect(page.locator('text=Failed')).toBeVisible({ timeout: 5000 })
-
-    // Click "Edit Run" button
-    await page.click('button:has-text("Edit Run")')
-
-    // Wait for Edit dialog
-    await expect(page.locator('text=Edit Production Run')).toBeVisible()
-
-    // Verify lock alert for failed status
-    await expect(page.locator('text=This run is failed')).toBeVisible()
-    await expect(page.locator('text=Only notes can be edited')).toBeVisible()
-
-    // Verify tabs hidden
-    await expect(page.locator('button:has-text("Basic Info")')).not.toBeVisible()
+    // Edit: lock alert for failed status, tabs hidden
+    const dialog = await openEditDialog(page)
+    await expect(dialog.getByText(/This run is failed\. Only notes can be edited\./)).toBeVisible()
+    await expect(dialog.getByRole('tab', { name: 'Basic Info' })).toHaveCount(0)
   })
 
   test('should show immutable warning for cancelled runs', async ({ page }) => {
-    // This test verifies that cancelled runs also have edit restrictions
+    await createProductionRun(page)
 
-    // Create a run
-    runId = await createProductionRun(page)
+    // Cancel with the default full reversal
+    await page.getByRole('button', { name: 'Cancel / Fail' }).click()
+    const cancelDialog = page.getByRole('dialog')
+    await expect(cancelDialog.getByText('Cancel Production Run')).toBeVisible()
+    await cancelDialog.getByRole('button', { name: 'Cancel Run', exact: true }).click()
+    await expect(cancelDialog).toBeHidden({ timeout: 30000 })
 
-    // Click "Cancel / Fail" button
-    await page.click('button:has-text("Cancel / Fail")')
+    await expect(statusBadge(page, 'Cancelled')).toBeVisible()
 
-    // Wait for Cancel dialog
-    await expect(page.locator('text=Cancel / Fail Production Run')).toBeVisible()
-
-    // Select "Cancelled" option
-    await page.click('button:has-text("Cancel Run"), button:has-text("Mark as Cancelled")')
-
-    // Wait for status to update
-    await expect(page.locator('text=Cancelled')).toBeVisible({ timeout: 5000 })
-
-    // Click "Edit Run" button
-    await page.click('button:has-text("Edit Run")')
-
-    // Wait for Edit dialog
-    await expect(page.locator('text=Edit Production Run')).toBeVisible()
-
-    // Verify lock alert for cancelled status
-    await expect(page.locator('text=This run is cancelled')).toBeVisible()
-    await expect(page.locator('text=Only notes can be edited')).toBeVisible()
-  })
-
-  test.afterEach(async ({ page }) => {
-    // Cleanup: Delete the test production run if it was created
-    if (runId) {
-      await deleteProductionRun(page, runId)
-    }
+    // Edit: lock alert for cancelled status
+    const dialog = await openEditDialog(page)
+    await expect(dialog.getByText(/This run is cancelled\. Only notes can be edited\./)).toBeVisible()
+    await expect(dialog.getByRole('tab', { name: 'Basic Info' })).toHaveCount(0)
   })
 })

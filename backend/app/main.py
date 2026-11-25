@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import get_settings
-from app.core.rate_limit import limiter
+from app.core.rate_limit import limiter, rate_limiting_enabled
 from app.database import close_db, get_db, init_db
 from app.middleware.security import SecurityHeadersMiddleware
 
@@ -32,17 +32,20 @@ CORS_ALLOW_HEADERS = [
 async def lifespan(app: FastAPI):
     """Application lifespan manager (startup and shutdown)."""
     # Startup
-    print(f"🚀 Starting {settings.app_name} ({settings.environment})")
+    # NOTE: these use logger.info (not print) with plain ASCII text because
+    # print() with emoji crashes on startup on Windows terminals whose
+    # console codepage (e.g. cp1252) can't encode them (UnicodeEncodeError).
+    logger.info(f"Starting {settings.app_name} ({settings.environment})")
 
     # Initialize Sentry error monitoring (before other services)
     from app.observability.sentry import init_sentry
 
     if init_sentry():
-        print("✓ Sentry error monitoring enabled")
+        logger.info("Sentry error monitoring enabled")
 
     # Initialize database
     await init_db()
-    print("✓ Database initialized")
+    logger.info("Database initialized")
 
     # Set up OpenTelemetry (if enabled)
     if settings.enable_tracing:
@@ -52,21 +55,27 @@ async def lifespan(app: FastAPI):
         from app.database import engine
 
         instrument_app(app, engine)
-        print("✓ OpenTelemetry tracing enabled")
+        logger.info("OpenTelemetry tracing enabled")
 
     # Set up OpenTelemetry Metrics (if enabled)
     if settings.enable_metrics:
         from app.observability.metrics import setup_metrics
 
         setup_metrics(prometheus_port=9090)
-        print("✓ OpenTelemetry metrics enabled")
+        logger.info("OpenTelemetry metrics enabled")
+
+    # Follow prints sent to Bambu printers through their MQTT status (spec 011)
+    from app.services.bambu_mqtt import get_bambu_mqtt_service
+    from app.services.print_send_tracker import register_print_send_tracker
+
+    register_print_send_tracker(get_bambu_mqtt_service())
 
     yield
 
     # Shutdown
-    print("👋 Shutting down...")
+    logger.info("Shutting down...")
     await close_db()
-    print("✓ Database connections closed")
+    logger.info("Database connections closed")
 
 
 # Create FastAPI app
@@ -83,7 +92,8 @@ app = FastAPI(
     redirect_slashes=False,  # Don't auto-redirect trailing slashes (causes CORS issues)
 )
 
-# Configure rate limiter
+# Configure rate limiter (off only for local e2e runs; see rate_limiting_enabled)
+limiter.enabled = rate_limiting_enabled(settings)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -197,6 +207,7 @@ async def live():
 # Include API routers
 from app.api.v1 import (
     analytics,
+    api_tokens,
     audit,
     auth,
     categories,
@@ -207,26 +218,40 @@ from app.api.v1 import (
     designers,
     discounts,
     exports,
+    fee_rules,
+    fx_rates,
+    ideas,
+    provenance,
+    scenarios,
     forecasting,
+    model_file_notes,
+    model_file_versions,
     model_files,
     models,
     modules,
     newsletter,
     onboarding,
     orders,
+    packaging,
+    packaging_catalogue,
+    postage_catalogue,
     pages,
     payments,
     platform,
+    pricing_policy,
     print_queue,
+    print_sends,
     printer_bambu,
     printer_ws,
     printers,
     products,
     production_runs,
+    reconciliation,
     returns,
     reviews,
     sales_channels,
     settings as settings_api,
+    shipping_profiles,
     shopify_webhooks,
     shipping,
     shop,
@@ -234,12 +259,14 @@ from app.api.v1 import (
     sku,
     spoolmandb,
     spools,
+    filament_purchases,
     filament_types,
     tenant_members,
     test,
     users,
     webhooks,
 )
+from app.api.v1 import genai, genai_e2e, genai_platform, genai_settings  # spec 008
 
 app.include_router(auth.router, prefix=f"{settings.api_v1_prefix}/auth", tags=["auth"])
 app.include_router(
@@ -257,11 +284,24 @@ app.include_router(
     tags=["filament-types"],
 )
 app.include_router(
+    filament_purchases.router,
+    prefix=f"{settings.api_v1_prefix}/filament-purchases",
+    tags=["filament-purchases"],
+)
+app.include_router(
     consumables.router, prefix=f"{settings.api_v1_prefix}/consumables", tags=["consumables"]
 )
 app.include_router(models.router, prefix=f"{settings.api_v1_prefix}/models", tags=["models"])
 app.include_router(
     model_files.router, prefix=f"{settings.api_v1_prefix}/models", tags=["model-files"]
+)
+app.include_router(
+    model_file_versions.router,
+    prefix=f"{settings.api_v1_prefix}/models",
+    tags=["model-file-versions"],
+)
+app.include_router(
+    model_file_notes.router, prefix=f"{settings.api_v1_prefix}/models", tags=["model-file-notes"]
 )
 app.include_router(modules.router, prefix=f"{settings.api_v1_prefix}/modules", tags=["modules"])
 app.include_router(printers.router, prefix=f"{settings.api_v1_prefix}/printers", tags=["printers"])
@@ -269,6 +309,11 @@ app.include_router(
     printer_bambu.router,
     prefix=f"{settings.api_v1_prefix}/printers",
     tags=["printers-bambu"],
+)
+app.include_router(
+    print_sends.router,
+    prefix=f"{settings.api_v1_prefix}/printers",
+    tags=["printers-send"],
 )
 # WebSocket endpoint — mounted at /ws/printers (no /api/v1 prefix)
 app.include_router(printer_ws.router, tags=["printers-ws"])
@@ -278,6 +323,17 @@ app.include_router(
     tags=["print-queue"],
 )
 app.include_router(products.router, prefix=f"{settings.api_v1_prefix}/products", tags=["products"])
+# Packaging spans products, variants and models (dimensions, suggestions), so
+# it sits at the API root with the full paths in the router (feature 003).
+app.include_router(packaging.router, prefix=settings.api_v1_prefix, tags=["packaging"])
+# The standard packaging catalogue and carrier postage (spec 006): full paths
+# in the routers (/packaging/catalogue, /postage/carriers, /settings/postage).
+app.include_router(
+    packaging_catalogue.router, prefix=settings.api_v1_prefix, tags=["packaging-catalogue"]
+)
+app.include_router(
+    postage_catalogue.router, prefix=settings.api_v1_prefix, tags=["postage-catalogue"]
+)
 app.include_router(
     categories.router, prefix=f"{settings.api_v1_prefix}/categories", tags=["categories"]
 )
@@ -285,6 +341,44 @@ app.include_router(
     sales_channels.router,
     prefix=f"{settings.api_v1_prefix}/sales-channels",
     tags=["sales-channels"],
+)
+# Fee rules hang off a channel, so they share its prefix: a rule has no
+# meaning apart from the channel that charges it (FR-020).
+app.include_router(
+    fee_rules.router,
+    prefix=f"{settings.api_v1_prefix}/sales-channels",
+    tags=["fee-rules"],
+)
+app.include_router(
+    reconciliation.router,
+    prefix=f"{settings.api_v1_prefix}/reconciliation",
+    tags=["reconciliation"],
+)
+app.include_router(
+    fx_rates.router,
+    prefix=f"{settings.api_v1_prefix}/fx-rates",
+    tags=["fx-rates"],
+)
+# Provenance and estimate proposals sit at the API root rather than under an
+# entity: `GET /provenance?entity_type=` answers for any of eleven entity
+# types, and a prefix per type would be eleven near-identical routers
+# (contracts/pricing-api.md).
+app.include_router(
+    provenance.router,
+    prefix=settings.api_v1_prefix,
+    tags=["provenance"],
+)
+# Scenarios sit at the API root for the same reason provenance does: a shock is
+# asked of the whole catalogue, not of one product (contracts/pricing-api.md).
+app.include_router(
+    scenarios.router,
+    prefix=settings.api_v1_prefix,
+    tags=["scenarios"],
+)
+app.include_router(
+    shipping_profiles.router,
+    prefix=f"{settings.api_v1_prefix}/shipping-profiles",
+    tags=["shipping-profiles"],
 )
 app.include_router(
     production_runs.router,
@@ -322,8 +416,39 @@ app.include_router(
 app.include_router(
     designers.router, prefix=f"{settings.api_v1_prefix}/designers", tags=["designers"]
 )
+# Product ideas, their timeline and conversion (spec 007)
+app.include_router(ideas.router, prefix=f"{settings.api_v1_prefix}/ideas", tags=["ideas"])
+# Generative AI layer, Replicate first (spec 008)
+app.include_router(genai.router, prefix=f"{settings.api_v1_prefix}/genai", tags=["genai"])
+app.include_router(
+    genai.webhook_router, prefix=f"{settings.api_v1_prefix}/genai", tags=["genai-webhooks"]
+)
+app.include_router(
+    genai_settings.router,
+    prefix=f"{settings.api_v1_prefix}/settings/replicate",
+    tags=["genai"],
+)
+app.include_router(
+    genai_platform.router, prefix=f"{settings.api_v1_prefix}/platform", tags=["genai"]
+)
+# Inert unless E2E test hooks are on (and never in production): a local fake provider.
+app.include_router(
+    genai_e2e.router, prefix=f"{settings.api_v1_prefix}/genai/e2e-fake", include_in_schema=False
+)
+# Personal API tokens for scripts and AI agents (spec 010)
+app.include_router(
+    api_tokens.router, prefix=f"{settings.api_v1_prefix}/api-tokens", tags=["api-tokens"]
+)
 app.include_router(
     settings_api.router, prefix=f"{settings.api_v1_prefix}/settings", tags=["settings"]
+)
+# Pricing policy shares the /settings prefix: it is a settings screen to the
+# operator, and a separate module only because its temporal write path has
+# nothing in common with the rest of settings.
+app.include_router(
+    pricing_policy.router,
+    prefix=f"{settings.api_v1_prefix}/settings",
+    tags=["pricing-policy"],
 )
 app.include_router(
     tenant_members.router,

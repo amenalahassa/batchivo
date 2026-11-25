@@ -78,25 +78,25 @@ export function SpoolLabelPage() {
         {/* Material and Brand */}
         <div className="text-center text-sm">
           <div className="font-semibold">
-            {spool.material_type_name} • {spool.brand}
+            {spool.filament_type?.material_type_name} • {spool.filament_type?.brand}
           </div>
         </div>
 
         {/* Color and Finish */}
         <div className="text-center text-sm">
           <div>
-            {spool.color}
-            {spool.finish && ` • ${spool.finish}`}
+            {spool.filament_type?.color}
+            {spool.filament_type?.finish && ` • ${spool.filament_type?.finish}`}
           </div>
         </div>
 
         {/* Special properties */}
-        {(spool.translucent || spool.glow || spool.pattern) && (
+        {(spool.filament_type?.translucent || spool.filament_type?.glow || spool.filament_type?.pattern) && (
           <div className="text-center text-xs text-gray-600">
             {[
-              spool.translucent && 'Translucent',
-              spool.glow && 'Glow',
-              spool.pattern,
+              spool.filament_type?.translucent && 'Translucent',
+              spool.filament_type?.glow && 'Glow',
+              spool.filament_type?.pattern,
             ]
               .filter(Boolean)
               .join(' • ')}
@@ -105,7 +105,7 @@ export function SpoolLabelPage() {
 
         {/* Diameter */}
         <div className="text-center text-xs text-gray-500">
-          {spool.diameter}mm
+          {spool.filament_type?.diameter}mm
         </div>
       </div>
     </div>

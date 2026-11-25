@@ -1,5 +1,7 @@
 """OpenTelemetry metrics and Prometheus exporter setup."""
 
+import logging
+
 from opentelemetry import metrics
 from opentelemetry.exporter.prometheus import PrometheusMetricReader
 from opentelemetry.sdk.metrics import MeterProvider
@@ -8,6 +10,7 @@ from prometheus_client import start_http_server
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
@@ -21,7 +24,7 @@ def setup_metrics(prometheus_port: int = 9090) -> None:
         prometheus_port: Port to expose Prometheus metrics (default: 9090)
     """
     if not settings.enable_metrics:
-        print("⏭️  Metrics disabled (ENABLE_METRICS=false)")
+        logger.info("Metrics disabled (ENABLE_METRICS=false)")
         return
 
     # Create resource with service information
@@ -41,12 +44,12 @@ def setup_metrics(prometheus_port: int = 9090) -> None:
 
         # Start Prometheus HTTP server
         start_http_server(port=prometheus_port, addr="0.0.0.0")
-        print(f"✓ Prometheus metrics server started on port {prometheus_port}")
-        print(f"  Metrics available at http://0.0.0.0:{prometheus_port}/metrics")
+        logger.info(f"Prometheus metrics server started on port {prometheus_port}")
+        logger.info(f"Metrics available at http://0.0.0.0:{prometheus_port}/metrics")
 
     except Exception as e:
-        print(f"⚠️  Failed to configure Prometheus exporter: {e}")
-        print("   Continuing without metrics export...")
+        logger.warning(f"Failed to configure Prometheus exporter: {e}")
+        logger.warning("Continuing without metrics export...")
 
 
 # Global meter for creating instruments

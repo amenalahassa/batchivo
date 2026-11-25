@@ -7,6 +7,7 @@
 
 import { useParams, Link } from '@tanstack/react-router'
 import { PlatformLayout } from '@/components/platform/PlatformLayout'
+import { formatMoney, symbolForCurrency } from '@/lib/money'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -42,6 +43,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { PlatformGenaiCard } from '@/components/genai/PlatformGenaiCard'
 
 export function TenantDetailPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string }
@@ -238,7 +240,7 @@ export function TenantDetailPage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                £{tenant.total_revenue.toLocaleString('en-GB', { minimumFractionDigits: 2 })}
+                {formatMoney(tenant.total_revenue, symbolForCurrency(tenant.currency_code))}
               </div>
             </CardContent>
           </Card>
@@ -328,6 +330,9 @@ export function TenantDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Generative AI: the platform Replicate token switch (spec 008) */}
+          <PlatformGenaiCard tenantId={tenant.id} />
         </div>
       </div>
     </PlatformLayout>

@@ -1,13 +1,20 @@
 """Print Queue API endpoints."""
 
+from datetime import date
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.auth.dependencies import get_current_tenant, RequireAdmin
+from app.auth.dependencies import (
+    CurrentUser,
+    RequireAdmin,
+    RequireMember,
+    get_current_tenant,
+    get_tenant_db,
+)
+from app.core import clock
 from app.models.print_job import JobPriority, JobStatus
 from app.models.tenant import Tenant
 from app.schemas.print_queue import (
@@ -18,6 +25,8 @@ from app.schemas.print_queue import (
     PrintJobResponse,
     PrintJobStatusUpdate,
     PrintJobUpdate,
+    JobProfitabilityResponse,
+    ProfitabilityRankingResponse,
     QueueOverview,
 )
 from app.services.print_queue_service import PrintQueueService
@@ -26,10 +35,19 @@ router = APIRouter(prefix="/print-queue", tags=["Print Queue"])
 
 
 def get_queue_service(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_tenant_db),
     tenant: Tenant = Depends(get_current_tenant),
 ) -> PrintQueueService:
-    """Get print queue service instance."""
+    """Get print queue service instance.
+
+    The session is the tenant-scoped one, not `get_db`. Every handler in this
+    router depends on this single factory, and `PrintQueueService.
+    profitability_ranking` reads each job's product, resolves its cost policy
+    and asks the engine for a breakdown and a list price -- the whole US7
+    surface, and FR-043's profit-per-machine-hour figure. On `get_db` none of
+    those reads had `app.current_tenant_id` set, so row-level security never
+    engaged and the application-level filter was the only belt (Constitution I).
+    """
     return PrintQueueService(db=db, tenant=tenant)
 
 
@@ -39,6 +57,7 @@ def get_queue_service(
 @router.post("", response_model=PrintJobResponse, status_code=status.HTTP_201_CREATED)
 async def create_print_job(
     data: PrintJobCreate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -87,6 +106,46 @@ async def get_queue_overview(
     return await service.get_queue_overview()
 
 
+@router.get("/profitability", response_model=ProfitabilityRankingResponse)
+async def get_profitability_ranking(
+    user: CurrentUser,
+    status_filter: Optional[JobStatus] = Query(
+        JobStatus.PENDING, alias="status", description="Jobs in this status; pending by default"
+    ),
+    sales_channel_id: Optional[UUID] = Query(None, description="Price each job on this channel"),
+    as_of: Optional[date] = Query(None, description="Price and cost as at this date"),
+    service: PrintQueueService = Depends(get_queue_service),
+) -> ProfitabilityRankingResponse:
+    """The queue ordered by profit per machine-hour (task T234, FR-043, US7).
+
+    Read-only and open to every role: it reorders nothing. The operator's
+    priority still comes first; within it, what pays per machine-hour replaces
+    arrival order. A job with no figure sorts last with its reason.
+    """
+    reference = as_of or clock.today()
+    ranking = await service.profitability_ranking(
+        status=status_filter, sales_channel_id=sales_channel_id, reference=reference
+    )
+    return ProfitabilityRankingResponse(
+        as_of=reference,
+        entries=[
+            JobProfitabilityResponse(
+                job_id=entry.job.id,
+                status=entry.job.status,
+                priority=entry.job.priority,
+                queue_position=entry.queue_position,
+                model_name=getattr(entry.job.model, "name", None),
+                product_name=getattr(entry.job.product, "name", None),
+                profit_per_machine_hour=entry.profit_per_machine_hour,
+                margin_pct=entry.margin_pct,
+                machine_hours=entry.machine_hours,
+                reason=entry.reason,
+            )
+            for entry in ranking
+        ],
+    )
+
+
 @router.get("/{job_id}", response_model=PrintJobResponse)
 async def get_print_job(
     job_id: UUID,
@@ -106,6 +165,7 @@ async def get_print_job(
 async def update_print_job(
     job_id: UUID,
     data: PrintJobUpdate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -148,6 +208,7 @@ async def delete_print_job(
 async def assign_job_to_printer(
     job_id: UUID,
     data: PrintJobAssign,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -166,6 +227,7 @@ async def assign_job_to_printer(
 
 @router.post("/auto-assign", response_model=AutoAssignResult)
 async def auto_assign_jobs(
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> AutoAssignResult:
     """
@@ -188,6 +250,7 @@ async def auto_assign_jobs(
 @router.post("/{job_id}/cancel", response_model=PrintJobResponse)
 async def cancel_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -207,6 +270,7 @@ async def cancel_print_job(
 @router.post("/{job_id}/start", response_model=PrintJobResponse)
 async def start_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -226,6 +290,7 @@ async def start_print_job(
 @router.post("/{job_id}/complete", response_model=PrintJobResponse)
 async def complete_print_job(
     job_id: UUID,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """
@@ -246,6 +311,7 @@ async def complete_print_job(
 async def fail_print_job(
     job_id: UUID,
     data: PrintJobStatusUpdate,
+    _member: RequireMember,
     service: PrintQueueService = Depends(get_queue_service),
 ) -> PrintJobResponse:
     """

@@ -15,6 +15,7 @@ import {
   LogOut,
   User,
   Package,
+  PackageOpen,
   Box,
   Play,
   Wrench,
@@ -35,7 +36,10 @@ import {
   Loader2,
   Shield,
   Activity,
+  TrendingUp,
   type LucideIcon,
+  ListOrdered,
+  Lightbulb,
 } from 'lucide-react'
 import { Link, useRouter } from '@tanstack/react-router'
 import { type ReactNode } from 'react'
@@ -59,6 +63,7 @@ const ICON_COMPONENTS: Record<string, LucideIcon> = {
   'play': Play,
   'printer': Printer,
   'wrench': Wrench,
+  'package-open': PackageOpen,
   'store': Store,
   'shopping-bag': ShoppingBag,
   'folder-open': FolderOpen,
@@ -70,6 +75,9 @@ const ICON_COMPONENTS: Record<string, LucideIcon> = {
   'settings': Settings,
   'help-circle': HelpCircle,
   'activity': Activity,
+  'trending-up': TrendingUp, // Catalogue-wide price-shock scenarios
+  'list-ordered': ListOrdered, // The queue by profit per machine-hour
+  'lightbulb': Lightbulb,  // Product ideas (spec 007)
 }
 
 // Get icon component by name, with fallback
@@ -119,11 +127,14 @@ export function AppLayout({ children }: AppLayoutProps) {
     { path: '/designers', label: 'Designers', icon: 'brush' },
     { path: '/categories', label: 'Categories', icon: 'folder-open' },
     { path: '/production-runs', label: 'Runs', icon: 'play' },
+    { path: '/queue', label: 'Queue', icon: 'list-ordered' },
     { path: '/dashboard/printers', label: 'Fleet', icon: 'activity' },
     { path: '/printers', label: 'Printers', icon: 'printer' },
     { path: '/consumables', label: 'Consumables', icon: 'wrench' },
+    { path: '/packaging', label: 'Packaging', icon: 'package-open' },
     { path: '/sales-channels', label: 'Channels', icon: 'store' },
     { path: '/orders', label: 'Orders', icon: 'shopping-bag' },
+    { path: '/scenarios', label: 'Scenarios', icon: 'trending-up' },
   ]
 
   // Use dynamic nav items if loaded, otherwise fallback

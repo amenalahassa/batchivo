@@ -1,5 +1,7 @@
 """Material type schemas for API requests and responses."""
 
+from decimal import Decimal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -10,7 +12,9 @@ class MaterialTypeBase(BaseModel):
     name: str = Field(..., max_length=100, description="Full material name")
     description: str | None = Field(None, description="Material properties and uses")
     typical_density: float | None = Field(None, ge=0, description="Typical density in g/cm³")
-    typical_cost_per_kg: float | None = Field(None, ge=0, description="Typical cost per kg")
+    typical_cost_per_kg: Decimal | None = Field(
+        None, ge=0, decimal_places=2, description="Typical cost per kg"
+    )
     min_temp: int | None = Field(None, ge=0, le=500, description="Min printing temp (°C)")
     max_temp: int | None = Field(None, ge=0, le=500, description="Max printing temp (°C)")
     bed_temp: int | None = Field(None, ge=0, le=200, description="Bed temperature (°C)")
@@ -29,7 +33,7 @@ class MaterialTypeUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     typical_density: float | None = None
-    typical_cost_per_kg: float | None = None
+    typical_cost_per_kg: Decimal | None = None
     min_temp: int | None = None
     max_temp: int | None = None
     bed_temp: int | None = None

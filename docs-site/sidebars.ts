@@ -8,6 +8,31 @@ const sidebars: SidebarsConfig = {
       label: 'Introduction',
     },
     {
+      type: 'doc',
+      id: 'pricing-model',
+      label: 'How Pricing Works',
+    },
+    {
+      type: 'doc',
+      id: 'packaging',
+      label: 'Packaging & Parcels',
+    },
+    {
+      type: 'doc',
+      id: 'model-files-and-versions',
+      label: 'Model Files & Versions',
+    },
+    {
+      type: 'doc',
+      id: 'ideas',
+      label: 'Ideas',
+    },
+    {
+      type: 'doc',
+      id: 'mcp',
+      label: 'MCP Server for AI Agents',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,

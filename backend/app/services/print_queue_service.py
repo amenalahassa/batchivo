@@ -1,7 +1,8 @@
 """Print Queue Service for managing print jobs and assignments."""
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -11,9 +12,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.filament_type import FilamentType
 from app.models.model import Model
+from app.models.model_material import ModelMaterial
 from app.models.print_job import JobPriority, JobStatus, PrinterStatus, PrintJob
 from app.models.printer import Printer
+from app.models.spool import Spool
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.print_queue import (
@@ -25,12 +29,38 @@ from app.schemas.print_queue import (
     PrintJobUpdate,
     QueueOverview,
 )
+from app.core import clock
+from app.services.currency_edge import books_to_channel
+from app.services.dims import Dims
 from app.services.commerce_job_ownership import (
     protect_commerce_job_identity,
     verify_commerce_job_work,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JobProfitability:
+    """One queued job and what it earns for the machine time it takes.
+
+    ``profit_per_machine_hour`` is ``None`` rather than zero wherever no figure
+    can be had -- a job printing a model directly, an unpriced product, an
+    untimed print. Zero would read as "this earns nothing an hour" and would
+    rank a job that simply has not been measured below one that genuinely
+    loses money. ``reason`` says which it is, so the gap is actionable rather
+    than puzzling.
+    """
+
+    job: "PrintJob"
+    #: Where the job sat in the queue own order, used as the final tiebreak so
+    #: the ranking is stable and arrival order still decides ties.
+    queue_position: int
+    profit_per_machine_hour: Optional[Decimal] = None
+    margin_pct: Optional[Decimal] = None
+    machine_hours: Optional[Decimal] = None
+    reason: Optional[str] = None
+
 
 # Priority weights for queue ordering (higher = more urgent)
 PRIORITY_WEIGHTS = {
@@ -169,6 +199,203 @@ class PrintQueueService:
             page_size=page_size,
             pages=pages,
         )
+
+    # ==================== Ordering by what actually pays ====================
+
+    async def profitability_ranking(
+        self,
+        *,
+        status: Optional[JobStatus] = JobStatus.PENDING,
+        sales_channel_id: Optional[UUID] = None,
+        reference: Optional[date] = None,
+    ) -> list[JobProfitability]:
+        """The queue ordered by what each job earns per machine-hour (FR-043).
+
+        ## Why this is a separate view and not the default order
+
+        In a print shop the binding constraint is the machine, so profit per
+        machine-hour is the figure that should decide what prints next: a 2%
+        margin on a forty-hour print outranks a healthy one on a two-hour print
+        under any percentage ranking, and a shop ordered that way fills its
+        printers with work that pays nothing.
+
+        But the queue existing order is **priority, then arrival**, and
+        priority is an operator decision (FR-002). Silently reordering a
+        production queue around an economic figure would override that decision
+        without being asked. So this is an explicit ranking an operator asks
+        for, and within it their priority still comes first: capacity
+        economics replace *arrival order*, not urgency.
+
+        A job with no figure -- printing a model directly, or a product nobody
+        has priced -- sorts last with the reason stated, rather than being
+        dropped or ranked as though it earned nothing.
+        """
+        from app.models.product import Product
+        from app.models.product_pricing import ProductPricing
+        from app.models.sales_channel import SalesChannel
+        from app.services import fee_engine
+        from app.services.cost_resolution import cost_load_options, product_cost_breakdown
+        from app.services.channel_economics import resolve_channel_economics
+        from app.services.costing import (
+            CircularReferenceError,
+            CostingService,
+            MaxDepthExceededError,
+        )
+        from app.services.pricing_policy import resolve_cost_policy
+
+        as_of = reference or clock.today()
+
+        query = select(PrintJob).where(PrintJob.tenant_id == self.tenant.id)
+        if status is not None:
+            query = query.where(PrintJob.status == status)
+        jobs = list(
+            (
+                await self.db.execute(
+                    query.order_by(PrintJob.priority.desc(), PrintJob.created_at.asc()).options(
+                        selectinload(PrintJob.model),
+                        selectinload(PrintJob.product),
+                        selectinload(PrintJob.assigned_printer),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not jobs:
+            return []
+
+        policy = await resolve_cost_policy(self.db, self.tenant)
+        ranked: list[JobProfitability] = []
+
+        for index, job in enumerate(jobs):
+            if job.product_id is None:
+                ranked.append(
+                    JobProfitability(
+                        job=job,
+                        queue_position=index,
+                        reason=(
+                            "this job prints a model directly, so there is no "
+                            "price to earn anything against"
+                        ),
+                    )
+                )
+                continue
+
+            pricing_query = (
+                select(ProductPricing)
+                .where(
+                    ProductPricing.product_id == job.product_id,
+                    ProductPricing.valid_from <= as_of,
+                    ProductPricing.valid_to.is_(None),
+                    ProductPricing.min_quantity == 1,
+                )
+                .options(
+                    selectinload(ProductPricing.sales_channel).selectinload(SalesChannel.fee_rules)
+                )
+            )
+            if sales_channel_id is not None:
+                pricing_query = pricing_query.where(
+                    ProductPricing.sales_channel_id == sales_channel_id
+                )
+            pricing = (await self.db.execute(pricing_query)).scalars().first()
+
+            if pricing is None or pricing.sales_channel is None:
+                ranked.append(
+                    JobProfitability(
+                        job=job,
+                        queue_position=index,
+                        reason="this product has no current price on a channel",
+                    )
+                )
+                continue
+
+            product = (
+                await self.db.execute(
+                    select(Product)
+                    .where(Product.id == job.product_id)
+                    .options(*cost_load_options())
+                )
+            ).scalar_one_or_none()
+            if product is None:  # pragma: no cover - FK-guarded
+                ranked.append(
+                    JobProfitability(
+                        job=job, queue_position=index, reason="the product no longer exists"
+                    )
+                )
+                continue
+
+            try:
+                # A job assigned to a machine is costed on that machine, not on
+                # the one its items were planned on (FR-011, T243).
+                breakdown = await product_cost_breakdown(
+                    self.db,
+                    self.tenant,
+                    product,
+                    policy=policy,
+                    printer_for_model=_assigned_printer_for(product, job.assigned_printer),
+                )
+            except (CircularReferenceError, MaxDepthExceededError) as exc:
+                ranked.append(JobProfitability(job=job, queue_position=index, reason=str(exc)))
+                continue
+
+            channel = pricing.sales_channel
+            # Costs in the books currency, the price in the channel's: put in
+            # one before ranking (task T231), and a job with no rate between
+            # them is unranked rather than ranked at parity.
+            conversion = await books_to_channel(self.db, self.tenant, channel, as_of)
+            if not conversion.known:
+                ranked.append(
+                    JobProfitability(job=job, queue_position=index, reason=conversion.reasons[0])
+                )
+                continue
+            context, treatment = fee_engine.exclusive_context(
+                item_subtotal=Decimal(str(pricing.list_price)), quantity=1
+            )
+            # The one margin implementation (Constitution III). The queue asks
+            # the same engine the margin endpoint asks, so a job ranked here and
+            # a product read on a pricing screen cannot disagree.
+            margin = CostingService.margin(
+                context=context,
+                make_cost=conversion.apply(breakdown.total_make_cost),
+                channel=channel,
+                fees=fee_engine.compute(
+                    channel, context, as_of, rules=list(channel.fee_rules or [])
+                ),
+                policy=policy,
+                economics=await resolve_channel_economics(self.db, channel, as_of),
+                tax=treatment,
+                machine_hours=breakdown.machine_hours,
+            )
+
+            ranked.append(
+                JobProfitability(
+                    job=job,
+                    queue_position=index,
+                    profit_per_machine_hour=margin.profit_per_machine_hour,
+                    margin_pct=margin.margin_pct,
+                    machine_hours=margin.machine_hours,
+                    reason=(
+                        None
+                        if margin.profit_per_machine_hour is not None
+                        else "nobody has recorded how long this takes to print"
+                    ),
+                )
+            )
+
+        # Priority first -- it is the operator own decision -- then earnings per
+        # machine-hour, then the queue own arrival order for everything that
+        # cannot be compared.
+        def _key(entry: JobProfitability) -> tuple:
+            weight = PRIORITY_WEIGHTS.get(entry.job.priority, 0)
+            has_figure = entry.profit_per_machine_hour is not None
+            return (
+                -weight,
+                0 if has_figure else 1,
+                -(entry.profit_per_machine_hour or Decimal("0")) if has_figure else Decimal("0"),
+                entry.queue_position,
+            )
+
+        return sorted(ranked, key=_key)
 
     async def update_job(
         self,
@@ -416,16 +643,31 @@ class PrintQueueService:
             if config.printer_id == printer.id:
                 return True
 
-        # Check bed size (if model has dimension requirements)
-        # This would require model dimensions to be stored
-        # For now, assume compatibility if no specific config
+        # The model must fit the bed (research D12): its height under the
+        # printer's Z, its footprint on X × Y either way round. Without the
+        # model's dimensions or all three bed sizes, nothing is known to rule
+        # the printer out.
+        if not fits_bed(model, printer):
+            logger.info(
+                f"Printer {printer.name} excluded for model {model.sku}: "
+                f"{model.length_mm} × {model.width_mm} × {model.height_mm} mm does not fit "
+                f"its {printer.bed_size_str} mm bed"
+            )
+            return False
 
-        # Check material compatibility from capabilities
+        # Check material compatibility from capabilities. Capability codes are
+        # typed by hand, so they are compared without regard to case.
         if printer.capabilities and model.materials:
-            printer_materials = printer.capabilities.get("materials", [])
+            printer_materials = {
+                str(code).upper() for code in printer.capabilities.get("materials", [])
+            }
             for material in model.materials:
-                if material.material_code not in printer_materials:
-                    # Material not supported
+                code = _material_code(material)
+                if code is None:
+                    # No spool, filament type or material type to read: unknown,
+                    # which is not the same as unsupported.
+                    continue
+                if code.upper() not in printer_materials:
                     return False
 
         return True
@@ -596,6 +838,8 @@ class PrintQueueService:
 
     async def _get_pending_jobs(self) -> list[PrintJob]:
         """Get pending jobs ordered by priority."""
+        from app.services.cost_resolution import with_landed_cost
+
         result = await self.db.execute(
             select(PrintJob)
             .where(PrintJob.tenant_id == self.tenant.id)
@@ -603,7 +847,13 @@ class PrintQueueService:
             .order_by(PrintJob.priority.desc(), PrintJob.created_at.asc())
             .options(
                 selectinload(PrintJob.model).selectinload(Model.printer_configs),
-                selectinload(PrintJob.model).selectinload(Model.materials),
+                with_landed_cost(selectinload(PrintJob.model).selectinload(Model.materials)),
+                # What the compatibility check reads: line -> spool -> filament type -> material.
+                selectinload(PrintJob.model)
+                .selectinload(Model.materials)
+                .selectinload(ModelMaterial.spool)
+                .selectinload(Spool.filament_type)
+                .selectinload(FilamentType.material_type),
             )
         )
         return list(result.scalars().all())
@@ -710,3 +960,52 @@ class PrintQueueService:
 
         for i, job in enumerate(jobs, start=1):
             job.queue_position = i
+
+
+def _assigned_printer_for(product, printer: Optional[Printer]) -> Optional[dict]:
+    """Every model in the product, bundles included, mapped to the job's printer."""
+    if printer is None:
+        return None
+    mapping: dict = {}
+    pending = [product]
+    while pending:
+        current = pending.pop()
+        for pm in getattr(current, "product_models", None) or []:
+            if getattr(pm, "model_id", None) is not None:
+                mapping[pm.model_id] = printer
+        for pc in getattr(current, "child_products", None) or []:
+            child = getattr(pc, "child_product", None)
+            if child is not None:
+                pending.append(child)
+    return mapping
+
+
+def _material_code(material: ModelMaterial) -> Optional[str]:
+    """The material code ("PLA") a bill-of-materials line prints in, if known.
+
+    The code lives on the material type, reached through the line's spool and
+    the spool's filament type; any link may be missing.
+    """
+    spool = material.spool
+    filament_type = spool.filament_type if spool else None
+    material_type = filament_type.material_type if filament_type else None
+    return material_type.code if material_type else None
+
+
+def fits_bed(model: Model, printer: Printer) -> bool:
+    """Whether the model fits the printer's build volume (research D12, US7).
+
+    Height against Z; the footprint against X × Y as placed or turned 90°.
+    True when either side's sizes are not all known: missing data is not a
+    reason to rule a printer out.
+    """
+    dims = Dims.from_row(model)
+    bed = [getattr(printer, f"bed_size_{axis}_mm", None) for axis in "xyz"]
+    if dims is None or any(side is None for side in bed):
+        return True
+    bed_x, bed_y, bed_z = (Decimal(str(side)) for side in bed)
+    if dims.height > bed_z:
+        return False
+    return (dims.length <= bed_x and dims.width <= bed_y) or (
+        dims.width <= bed_x and dims.length <= bed_y
+    )

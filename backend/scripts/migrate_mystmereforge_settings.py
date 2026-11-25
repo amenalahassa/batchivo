@@ -102,8 +102,9 @@ MYSTMERE_FORGE_SETTINGS = {
         "analytics_dashboard": True,
         "export_data": True,
     },
-    # Legacy fields for backward compatibility
-    "default_labor_rate": 20.0,
+    # Legacy fields for backward compatibility. The labor rate is not among
+    # them any more: it lives in `tenant_pricing_policy`, and writing it here
+    # would put a second figure beside the one the engine reads (task T123).
     "currency": "GBP",
 }
 

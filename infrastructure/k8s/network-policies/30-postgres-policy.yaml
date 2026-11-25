@@ -2,7 +2,8 @@
 # PostgreSQL is the primary datastore
 #
 # Ingress:
-#   - Backend pods only (for database queries)
+#   - Backend pods
+#   - Celery worker pods (catalogue-wide scenarios) (for database queries)
 #
 # Egress:
 #   - None required (PostgreSQL is a data sink)
@@ -25,6 +26,15 @@ spec:
         - podSelector:
             matchLabels:
               app: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Allow ingress from the Celery worker, which reads the catalogue to run a
+    # scenario and writes that run's state (task T120)
+    - from:
+        - podSelector:
+            matchLabels:
+              app: celery-worker
       ports:
         - protocol: TCP
           port: 5432

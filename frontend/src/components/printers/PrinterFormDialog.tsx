@@ -32,6 +32,7 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Loader2 } from 'lucide-react'
+import { apiErrorDetail } from '@/lib/apiError'
 
 interface PrinterFormDialogProps {
   open: boolean
@@ -153,7 +154,9 @@ export function PrinterFormDialog({ open, onOpenChange, printerId }: PrinterForm
     }
   }
 
-  const handleInputChange = (field: keyof PrinterCreate, value: unknown) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof PrinterCreate>(field: K, value: PrinterCreate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -404,7 +407,7 @@ export function PrinterFormDialog({ open, onOpenChange, printerId }: PrinterForm
               <div className="bg-destructive/10 border border-destructive rounded-md p-3">
                 <p className="text-sm text-destructive">
                   Failed to {isEdit ? 'update' : 'create'} printer:{' '}
-                  {mutation.error instanceof Error ? mutation.error.message : 'Unknown error'}
+                  {apiErrorDetail(mutation.error)}
                 </p>
               </div>
             )}

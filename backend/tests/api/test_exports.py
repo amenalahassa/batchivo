@@ -2,14 +2,16 @@
 
 import csv
 import io
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
+from app.models.product_pricing import ProductPricing
 from app.models.product_variant import FulfilmentType, ProductVariant
+from app.models.sales_channel import SalesChannel
 
 
 class TestExportProducts:
@@ -458,3 +460,147 @@ class TestExportAuth:
         # Orders export
         response = await unauthenticated_client.get("/api/v1/exports/orders")
         assert response.status_code == 401
+
+
+class TestTheExportedPriceIsTheOneInForce:
+    """Task T274: never a superseded row, a quantity tier or another channel's price."""
+
+    @staticmethod
+    async def _priced_product(db_session, test_tenant) -> tuple[Product, SalesChannel]:
+        shopify = SalesChannel(
+            tenant_id=test_tenant.id, name="Shopify", platform_type="shopify", is_active=True
+        )
+        fair = SalesChannel(
+            tenant_id=test_tenant.id, name="Fair", platform_type="fair", is_active=True
+        )
+        product = Product(
+            tenant_id=test_tenant.id,
+            name="Priced Dragon",
+            sku="PRICED-DRAGON",
+            is_active=True,
+            shop_visible=True,
+            units_in_stock=1,
+        )
+        db_session.add_all([shopify, fair, product])
+        await db_session.flush()
+        db_session.add_all(
+            [
+                # Superseded: last spring's price, no longer in force.
+                ProductPricing(
+                    product_id=product.id,
+                    sales_channel_id=shopify.id,
+                    list_price=Decimal("20.00"),
+                    is_active=True,
+                    valid_from=date(2026, 1, 1),
+                    valid_to=date(2026, 3, 31),
+                ),
+                ProductPricing(
+                    product_id=product.id,
+                    sales_channel_id=shopify.id,
+                    list_price=Decimal("25.00"),
+                    is_active=True,
+                    valid_from=date(2026, 4, 1),
+                ),
+                # A ten-or-more tier is not the price of one.
+                ProductPricing(
+                    product_id=product.id,
+                    sales_channel_id=shopify.id,
+                    list_price=Decimal("22.00"),
+                    is_active=True,
+                    valid_from=date(2026, 4, 1),
+                    min_quantity=10,
+                ),
+                ProductPricing(
+                    product_id=product.id,
+                    sales_channel_id=fair.id,
+                    list_price=Decimal("30.00"),
+                    is_active=True,
+                    valid_from=date(2026, 4, 1),
+                ),
+            ]
+        )
+        await db_session.commit()
+        return product, fair
+
+    @staticmethod
+    async def _row(async_client, auth_headers, params=None) -> dict:
+        response = await async_client.get(
+            "/api/v1/exports/products", headers=auth_headers, params=params or {}
+        )
+        assert response.status_code == 200, response.text
+        rows = list(csv.DictReader(io.StringIO(response.text)))
+        return next(r for r in rows if r["Variant SKU"] == "PRICED-DRAGON")
+
+    @pytest.mark.asyncio
+    async def test_the_shopify_price_of_one_is_exported(
+        self, async_client: AsyncClient, auth_headers: dict, test_tenant, db_session
+    ):
+        await self._priced_product(db_session, test_tenant)
+        row = await self._row(async_client, auth_headers)
+        assert row["Variant Price"] == "25.00"
+        assert row["Cost per item"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_named_channel_exports_its_own_price(
+        self, async_client: AsyncClient, auth_headers: dict, test_tenant, db_session
+    ):
+        _, fair = await self._priced_product(db_session, test_tenant)
+        row = await self._row(async_client, auth_headers, {"channel_id": str(fair.id)})
+        assert row["Variant Price"] == "30.00"
+
+    @pytest.mark.asyncio
+    async def test_a_product_unpriced_on_the_channel_exports_no_price(
+        self, async_client: AsyncClient, auth_headers: dict, test_tenant, db_session
+    ):
+        fair = SalesChannel(
+            tenant_id=test_tenant.id, name="Fair only", platform_type="fair", is_active=True
+        )
+        product = Product(
+            tenant_id=test_tenant.id,
+            name="Fair Dragon",
+            sku="PRICED-DRAGON",
+            is_active=True,
+            shop_visible=True,
+            units_in_stock=1,
+        )
+        db_session.add_all([fair, product])
+        await db_session.flush()
+        db_session.add(
+            ProductPricing(
+                product_id=product.id,
+                sales_channel_id=fair.id,
+                list_price=Decimal("30.00"),
+                is_active=True,
+                valid_from=date(2026, 4, 1),
+            )
+        )
+        await db_session.commit()
+
+        row = await self._row(async_client, auth_headers)
+        assert row["Variant Price"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_typed_variant_cost_is_not_exported_as_the_cost(
+        self, async_client: AsyncClient, auth_headers: dict, test_tenant, db_session
+    ):
+        product, _ = await self._priced_product(db_session, test_tenant)
+        db_session.add(
+            ProductVariant(
+                tenant_id=test_tenant.id,
+                product_id=product.id,
+                size="Large",
+                display_order=0,
+                sku="PRICED-DRAGON-L",
+                price_adjustment_pence=500,
+                units_in_stock=1,
+                fulfilment_type=FulfilmentType.STOCK,
+                material_cost_pence=1234,
+            )
+        )
+        await db_session.commit()
+
+        response = await async_client.get("/api/v1/exports/products", headers=auth_headers)
+        rows = list(csv.DictReader(io.StringIO(response.text)))
+        large = next(r for r in rows if r["Variant SKU"] == "PRICED-DRAGON-L")
+        assert Decimal(large["Variant Price"]) == Decimal("30.00")
+        assert large["Cost per item"] == ""

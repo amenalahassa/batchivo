@@ -111,7 +111,7 @@ describe('SquareSettings', () => {
       enabled: true,
     })
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<SquareSettings />)
 
@@ -146,7 +146,7 @@ describe('SquareSettings', () => {
   it('expands credentials form when clicked', async () => {
     vi.mocked(settingsApi.getSquareSettings).mockResolvedValue(mockSettingsNotConfigured)
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<SquareSettings />)
 
@@ -175,7 +175,7 @@ describe('SquareSettings', () => {
       location_name: 'Test Location',
     })
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<SquareSettings />)
 
@@ -204,7 +204,7 @@ describe('SquareSettings', () => {
       location_name: null,
     })
 
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
 
     renderWithQueryClient(<SquareSettings />)
 

@@ -250,8 +250,10 @@ class TestProductionRunMaterialSchemas:
         # Variance %: (5 / 110) * 100 ≈ 4.55%
         assert abs(material.variance_percentage - 4.545) < 0.01
 
-        # Total cost: 115 * 0.025 = 2.875
-        assert abs(material.total_cost - 2.875) < 0.01
+        # Total cost: 115 * 0.025 = 2.875, to the fraction of a penny. The
+        # grams and the rate are both Decimal, so the product is exact and
+        # needs no tolerance (Constitution IV, task T144).
+        assert material.total_cost == Decimal("2.875")
 
     def test_production_run_material_response_manual_entry(self):
         """Test computed fields with manual weight entry."""
@@ -366,7 +368,12 @@ class TestProductionRunDetailResponse:
         assert abs(detail.overall_success_rate - 93.33) < 0.01
 
         # Total material cost: (115 * 0.025) + (52 * 0.030) = 2.875 + 1.56 = 4.435
-        assert abs(detail.total_material_cost - 4.435) < 0.001
+        #
+        # Asserted to the cent rather than within a tolerance. The tolerance
+        # was there because the figure was coerced to `float` on the way out,
+        # and a cost that can only be checked approximately is a cost nobody
+        # can reconcile (Constitution IV, task T144).
+        assert detail.total_material_cost == Decimal("4.435")
 
         # Total estimated cost: 50 + 30 = 80
-        assert abs(detail.total_estimated_cost - 80.0) < 0.01
+        assert detail.total_estimated_cost == Decimal("80")

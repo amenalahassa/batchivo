@@ -62,6 +62,11 @@ CurrentTenant = Annotated[Tenant, Depends(get_current_tenant)]
 MODULE_NAVIGATION: dict[str, list[dict]] = {
     "products": [
         {"path": "/products", "label": "Products", "icon": "package", "exact": False},
+        # A catalogue-wide price shock sweeps the product catalogue (FR-044),
+        # so it belongs to the products module: a tenant without products has
+        # nothing to shock, and `ModuleGuard` reads this list to decide whether
+        # `/scenarios` is reachable at all.
+        {"path": "/scenarios", "label": "Scenarios", "icon": "trending-up", "exact": False},
     ],
     "models": [
         {"path": "/models", "label": "Models", "icon": "layers", "exact": False},
@@ -83,12 +88,19 @@ MODULE_NAVIGATION: dict[str, list[dict]] = {
     ],
     "consumables": [
         {"path": "/consumables", "label": "Consumables", "icon": "wrench", "exact": False},
+        # Boxes, mailers and void fill: the same consumables, their own page
+        # (spec 006, FR-001).
+        {"path": "/packaging", "label": "Packaging", "icon": "package-open", "exact": False},
     ],
     "sales_channels": [
         {"path": "/sales-channels", "label": "Channels", "icon": "store", "exact": False},
     ],
     "orders": [
         {"path": "/orders", "label": "Orders", "icon": "shopping-bag", "exact": False},
+    ],
+    # Product ideas, their brainstorming timeline and conversion (spec 007).
+    "ideas": [
+        {"path": "/ideas", "label": "Ideas", "icon": "lightbulb", "exact": False},
     ],
 }
 
@@ -104,6 +116,7 @@ MODULE_ORDER: dict[str, int] = {
     "consumables": 8,
     "sales_channels": 9,
     "orders": 10,
+    "ideas": 11,
 }
 
 

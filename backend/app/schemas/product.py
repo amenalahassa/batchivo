@@ -1,6 +1,6 @@
 """Pydantic schemas for Product API (sellable items composed of models)."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.product_variant import FulfilmentType
+from app.schemas.dimensions import DimensionsOut
 
 
 # Product Model (join table) schemas
@@ -77,19 +78,44 @@ class ProductPricingBase(BaseModel):
     sales_channel_id: UUID = Field(..., description="Sales channel ID")
     list_price: Decimal = Field(..., ge=0, description="List price on this channel")
     is_active: bool = Field(True, description="Whether this pricing is active")
+    min_quantity: int = Field(
+        1,
+        ge=1,
+        description=(
+            "Lower bound of the quantity tier this price applies from. The "
+            "tier is half-open, so the price at exactly a break quantity is "
+            "unambiguous: the highest tier the quantity reaches wins"
+        ),
+    )
 
 
 class ProductPricingCreate(ProductPricingBase):
-    """Schema for creating product pricing."""
+    """Schema for creating product pricing.
 
-    pass
+    ``valid_from`` backdates the period. Left unset it is today, which is the
+    case an operator means when they change a price: today's orders get the new
+    figure and yesterday's keep the old one (FR-039).
+    """
+
+    valid_from: Optional[date] = Field(
+        None, description="First day this price applies; defaults to today"
+    )
 
 
 class ProductPricingUpdate(BaseModel):
-    """Schema for updating product pricing."""
+    """Schema for changing a product's price.
+
+    A change **closes the current period and opens a new one** rather than
+    editing the row in place, so an order still reports the price effective
+    when it was placed (FR-039, Constitution VI). `is_active` is the exception:
+    delisting is a status rather than a price, so it edits the current row.
+    """
 
     list_price: Optional[Decimal] = Field(None, ge=0)
     is_active: Optional[bool] = None
+    valid_from: Optional[date] = Field(
+        None, description="First day the new price applies; defaults to today"
+    )
 
 
 class ProductPricingResponse(ProductPricingBase):
@@ -97,12 +123,29 @@ class ProductPricingResponse(ProductPricingBase):
 
     id: UUID
     product_id: UUID
+    valid_from: date = Field(..., description="First day this price applied")
+    valid_to: Optional[date] = Field(
+        None, description="Last day it applied, or null for the price in effect now"
+    )
+    is_current: bool = Field(
+        ..., description="Whether this is the row in effect now (valid_to is null)"
+    )
     channel_name: Optional[str] = Field(None, description="Sales channel name")
     platform_type: Optional[str] = Field(None, description="Platform type")
+    currency: Optional[str] = Field(
+        None, description="ISO 4217 code the row's amounts are in: the channel's (T261)"
+    )
     platform_fee: Optional[Decimal] = Field(None, description="Calculated platform fee")
     net_revenue: Optional[Decimal] = Field(None, description="Net revenue after fees")
     profit: Optional[Decimal] = Field(None, description="Profit after make cost")
     margin_percentage: Optional[Decimal] = Field(None, description="Profit margin %")
+    profit_per_machine_hour: Optional[Decimal] = Field(
+        None,
+        description=(
+            "Profit per hour of machine time, beside the margin (FR-043); null, never "
+            "zero, where nobody has timed the print"
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -134,6 +177,16 @@ class ProductCostBreakdown(BaseModel):
         0, description="Number of models with actual production cost data"
     )
     models_total: int = Field(0, description="Total number of distinct models in product")
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: Carried here so the flat shape is as honest as the itemised one: a
+    #: screen reading this breakdown must be able to tell a cost from a floor
+    #: (FR-019). It is projected from the same engine pass as the amounts
+    #: above, never recomputed.
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the total is a floor",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -178,6 +231,9 @@ class ProductBase(BaseModel):
     weight_grams: Optional[int] = Field(None, ge=0, description="Product weight in grams")
     size_cm: Optional[Decimal] = Field(None, ge=0, description="Product size/length in centimeters")
     print_time_hours: Optional[Decimal] = Field(None, ge=0, description="Print time in hours")
+    is_fragile: bool = Field(
+        False, description="Needs the fragile clearance and protective wrap (FR-020)"
+    )
     # Multi-channel publishing fields
     tags: list[str] = Field(
         default_factory=list, description="Keyword tags for Shopify/Etsy discoverability"
@@ -224,6 +280,11 @@ class ProductUpdate(BaseModel):
     packaging_cost: Optional[Decimal] = Field(None, ge=0)
     packaging_consumable_id: Optional[UUID] = None
     packaging_quantity: Optional[int] = Field(None, ge=1)
+    # Spec 006 (FR-023a): the service this product ships with instead of the
+    # shop's default; null returns it to the default.
+    postage_service: Optional[str] = Field(
+        None, min_length=1, max_length=100, description="'<carrier>:<service>' or null"
+    )
     assembly_minutes: Optional[int] = Field(None, ge=0)
     is_active: Optional[bool] = None
     shop_visible: Optional[bool] = None
@@ -239,6 +300,7 @@ class ProductUpdate(BaseModel):
     weight_grams: Optional[int] = Field(None, ge=0)
     size_cm: Optional[Decimal] = Field(None, ge=0)
     print_time_hours: Optional[Decimal] = Field(None, ge=0)
+    is_fragile: Optional[bool] = None
     # Multi-channel publishing fields
     tags: Optional[list[str]] = None
     product_type: Optional[str] = Field(None, max_length=100)
@@ -255,17 +317,49 @@ class ProductResponse(ProductBase):
 
     id: UUID
     tenant_id: UUID
+    #: The idea this record was converted from (spec 007); null for every
+    #: record not created from an idea.
+    source_idea_id: Optional[UUID] = Field(None, description="Idea it was converted from")
+    source_idea_title: Optional[str] = Field(None, description="That idea's title")
+    source_idea_archived: Optional[bool] = Field(None, description="Whether that idea is archived")
+    postage_service: Optional[str] = Field(
+        None, description="Postage service override, '<carrier>:<service>'; null = shop default"
+    )
     created_at: datetime
     updated_at: datetime
     # Computed fields for list views
     total_make_cost: Optional[Decimal] = Field(None, description="Total make cost (all components)")
-    suggested_price: Optional[Decimal] = Field(
-        None, description="Suggested retail price (2.5x markup)"
+    #: What the engine could not cost, in the operator's words.
+    #:
+    #: A list screen is where a product is picked, so it is where an item that
+    #: is missing its print time or its machine rate must say so rather than
+    #: show a finished-looking figure built from a zero. `total_make_cost`
+    #: above is still the cost of the lines the engine could resolve; this is
+    #: the part it could not, and a non-empty list means the figure is a floor,
+    #: not a cost (FR-019).
+    incomplete_reasons: list[str] = Field(
+        default_factory=list,
+        description="What the engine could not cost; non-empty means the cost is a floor (FR-019)",
     )
+    # No suggested price here, deliberately. This used to publish
+    # `total_make_cost * 2.5`, a price derived in a route from a markup no
+    # operator configured -- and cost plus a flat markup lands several points
+    # below the margin actually asked for, which is what the solver exists to
+    # get right. A price belongs to the pricing engine: `POST /products/{id}/
+    # solve-price` and the ladder behind `PriceSolverPanel` and `PriceLadder`
+    # on the pricing editor (FR-007/FR-048, Constitution III and IV).
     # Designer info (populated from join)
     designer_name: Optional[str] = Field(None, description="Designer name")
     designer_slug: Optional[str] = Field(None, description="Designer slug for URLs")
     designer_logo_url: Optional[str] = Field(None, description="Designer logo URL")
+    # Packaging advisor (feature 003). `size_cm` above is kept unchanged (FR-005).
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="Length × width × height in mm, with source and date (FR-001/002)"
+    )
+    packaging_warnings: list[str] = Field(
+        default_factory=list,
+        description="e.g. 'accepted_packaging_does_not_fit', computed on read (FR-024)",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -409,5 +503,38 @@ class ProductVariantResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    # Packaging advisor overrides (clarification Q1). Null inherits the product's.
+    dimensions: Optional[DimensionsOut] = Field(
+        None, description="The variant's dimensions, or the product's marked inherited"
+    )
+    packaging_consumable_id: Optional[UUID] = Field(
+        None, description="The variant's own packaging (null = the product's)"
+    )
+    packaging_quantity: Optional[int] = Field(
+        None, description="The variant's own packaging quantity (null = the product's)"
+    )
+    effective_packaging: Optional["EffectivePackaging"] = Field(
+        None, description="The packaging in force for one unit of this size"
+    )
+    packaging_notes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "'variant_packaging_not_costed' when this size's packaging differs from the "
+            "product's, whose packaging the cost breakdown uses (FR-039)"
+        ),
+    )
+    packaging_warnings: list[str] = Field(default_factory=list, description="FR-024")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EffectivePackaging(BaseModel):
+    """The container and quantity one unit ships in, and whether it is the product's."""
+
+    consumable_id: UUID
+    name: str
+    quantity: int
+    inherited: bool
+
+
+ProductVariantResponse.model_rebuild()

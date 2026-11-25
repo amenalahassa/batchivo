@@ -23,6 +23,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Loader2 } from 'lucide-react'
+import { PackagingFieldsSection } from './PackagingFieldsSection'
+import { useAuth } from '@/contexts/AuthContext'
+import { canEditOperationalFigures } from '@/lib/pricing/permissions'
+import { useCurrency } from '@/hooks/useCurrency'
 
 interface EditConsumableDialogProps {
   open: boolean
@@ -31,6 +35,10 @@ interface EditConsumableDialogProps {
 }
 
 export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditConsumableDialogProps) {
+  // A viewer meets the form disabled rather than missing (T238, FR-007c).
+  const { user } = useAuth()
+  const canEdit = canEditOperationalFigures(user)
+
   const queryClient = useQueryClient()
 
   // Fetch consumable details
@@ -42,6 +50,14 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
 
   // Form state
   const [formData, setFormData] = useState<ConsumableTypeUpdate>({})
+  // The consumable the form was last filled from. The form is not rendered
+  // before then: its selects would mount on their fallbacks ("hardware", "not
+  // packaging") and Radix's hidden select writes those back over the loaded
+  // values, so saving a box opened for the first time stripped its kind
+  // (spec 006 walkthrough).
+  const [filledFrom, setFilledFrom] = useState<string | null>(null)
+  const pricedByPurchase = consumable?.priced_by_purchase_id != null
+  const { currency } = useCurrency()
 
   // Populate form when consumable is loaded
   useEffect(() => {
@@ -61,7 +77,22 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
         supplier_url: consumable.supplier_url,
         typical_lead_days: consumable.typical_lead_days,
         is_active: consumable.is_active,
+        packaging_kind: consumable.packaging_kind ?? null,
+        inner_length_mm: consumable.inner_length_mm ?? null,
+        inner_width_mm: consumable.inner_width_mm ?? null,
+        inner_height_mm: consumable.inner_height_mm ?? null,
+        wall_mm: consumable.wall_mm ?? null,
+        empty_weight_grams: consumable.empty_weight_grams ?? null,
+        fill_volume_ml: consumable.fill_volume_ml ?? null,
+        // The select starts at what the stored figures say (FR-038).
+        packaging_provenance: {
+          source:
+            consumable.packaging_provenance?.inner_length_mm === 'measured'
+              ? 'measured'
+              : 'assumed',
+        },
       })
+      setFilledFrom(consumable.id)
     }
   }, [consumable])
 
@@ -84,10 +115,20 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
       return
     }
 
+    // A purchase prices the unit, so the cost is not this form's to send: the
+    // backend refuses a typed figure it would otherwise ignore (task T277).
+    if (pricedByPurchase) {
+      const { current_cost_per_unit: _priced, ...rest } = formData
+      void _priced
+      updateMutation.mutate(rest)
+      return
+    }
     updateMutation.mutate(formData)
   }
 
-  const handleInputChange = (field: keyof ConsumableTypeUpdate, value: string | number | boolean | null) => {
+  // Generic over the field so a value must be what that field's own type
+  // permits: a `Money` field takes a decimal string, never a number (T212).
+  const handleInputChange = <K extends keyof ConsumableTypeUpdate>(field: K, value: ConsumableTypeUpdate[K]) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -106,8 +147,9 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
           </div>
         )}
 
-        {consumable && (
+        {consumable && filledFrom === consumable.id && (
           <form onSubmit={handleSubmit} className="space-y-4">
+            <fieldset disabled={!canEdit} className="m-0 min-w-0 space-y-4 border-0 p-0">
             {/* Basic Info */}
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
@@ -206,21 +248,31 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="current_cost_per_unit">Cost per Unit</Label>
+                  <Label htmlFor="current_cost_per_unit">
+                    Cost per Unit ({currency.symbol})
+                  </Label>
                   <Input
                     id="current_cost_per_unit"
                     type="number"
                     step="0.0001"
                     min="0"
                     placeholder="0.00"
+                    readOnly={pricedByPurchase}
+                    disabled={pricedByPurchase}
                     value={formData.current_cost_per_unit ?? ''}
                     onChange={(e) =>
-                      handleInputChange(
-                        'current_cost_per_unit',
-                        e.target.value ? parseFloat(e.target.value) : null
-                      )
+                      // The typed string, not a double: the costing engine
+                      // reads this for a linked packaging consumable, and the
+                      // backend takes a `Decimal` (FR-047, task T210).
+                      handleInputChange('current_cost_per_unit', e.target.value || null)
                     }
                   />
+                  {pricedByPurchase && (
+                    <p className="text-xs text-muted-foreground" data-testid="unit-cost-from-purchase">
+                      From the purchase of {consumable.priced_by_purchase_date ?? 'an undated day'}.
+                      Record a new purchase to change it.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -315,6 +367,12 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
               </div>
             </div>
 
+            <PackagingFieldsSection
+              value={formData}
+              onChange={handleInputChange}
+              origins={consumable?.packaging_provenance}
+            />
+
             {/* Status */}
             <div className="border-t pt-4">
               <div className="flex items-center gap-2">
@@ -341,6 +399,18 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
               </div>
             )}
 
+            </fieldset>
+
+            {!canEdit && (
+
+              <p className="text-sm text-muted-foreground" data-testid="read-only-notice">
+
+                Changing this needs a member, admin or owner role.
+
+              </p>
+
+            )}
+
             <DialogFooter>
               <Button
                 type="button"
@@ -350,7 +420,7 @@ export function EditConsumableDialog({ open, onOpenChange, consumableId }: EditC
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={updateMutation.isPending}>
+              <Button type="submit" disabled={updateMutation.isPending || !canEdit}>
                 {updateMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Save Changes
               </Button>

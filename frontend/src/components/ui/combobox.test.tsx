@@ -22,7 +22,7 @@ describe('Combobox', () => {
   })
 
   it('opens dropdown on click', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<Combobox options={mockOptions} />)
 
     const trigger = screen.getByRole('combobox')
@@ -35,7 +35,7 @@ describe('Combobox', () => {
   })
 
   it('calls onValueChange when option selected', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleChange = vi.fn()
 
     render(<Combobox options={mockOptions} onValueChange={handleChange} />)
@@ -50,7 +50,7 @@ describe('Combobox', () => {
   })
 
   it('clears value when selecting same option', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const handleChange = vi.fn()
 
     render(
@@ -70,7 +70,7 @@ describe('Combobox', () => {
   })
 
   it('filters options by search', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<Combobox options={mockOptions} />)
 
     const trigger = screen.getByRole('combobox')
@@ -86,7 +86,7 @@ describe('Combobox', () => {
   })
 
   it('shows empty message when no results', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<Combobox options={mockOptions} emptyText="Nothing found" />)
 
     const trigger = screen.getByRole('combobox')
@@ -106,7 +106,7 @@ describe('Combobox', () => {
   })
 
   it('uses custom searchPlaceholder', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<Combobox options={mockOptions} searchPlaceholder="Type to search..." />)
 
     const trigger = screen.getByRole('combobox')
@@ -126,7 +126,7 @@ describe('Combobox', () => {
   })
 
   it('uses custom renderOption', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     const renderOption = (option: ComboboxOption, isSelected: boolean) => {
       return (
         <span data-testid={`option-${option.value}`}>
@@ -145,7 +145,7 @@ describe('Combobox', () => {
   })
 
   it('shows check mark for selected option', async () => {
-    const user = userEvent.setup()
+    const user = userEvent.setup({ delay: null })
     render(<Combobox options={mockOptions} value="cherry" />)
 
     const trigger = screen.getByRole('combobox')

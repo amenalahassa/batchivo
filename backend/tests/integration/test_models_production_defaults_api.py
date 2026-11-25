@@ -294,6 +294,7 @@ class TestModelsProductionDefaultsEndpoint:
         assert data["machine"] == "Prusa XL"
         assert data["print_time_minutes"] == 480
         assert data["prints_per_plate"] == 5
+        assert Decimal(data["print_minutes_per_item"]) == Decimal("96")  # 480 / 5
 
         # Verify BOM has two materials
         assert len(data["bom_materials"]) == 2
@@ -304,6 +305,8 @@ class TestModelsProductionDefaultsEndpoint:
         assert bom_blue["color_hex"] == "#0000FF"
         assert bom_blue["material_type_code"] == "PLA"
         assert float(bom_blue["weight_grams"]) == 50.0
+        # The bill holds a whole plate run of 5 items; one item takes a fifth.
+        assert bom_blue["weight_grams_per_item"] == "10.0"
         assert float(bom_blue["current_weight"]) == 800.0
         assert bom_blue["is_active"] is True
 
@@ -313,8 +316,49 @@ class TestModelsProductionDefaultsEndpoint:
         assert bom_red["color_hex"] == "#FF0000"
         assert bom_red["material_type_code"] == "PLA"
         assert float(bom_red["weight_grams"]) == 30.0
+        assert bom_red["weight_grams_per_item"] == "6.0"
         assert float(bom_red["current_weight"]) == 600.0
         assert bom_red["is_active"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_planned_printers_measured_weight_is_shared_across_lines(
+        self,
+        client: AsyncClient,
+        auth_headers: dict,
+        db_session: AsyncSession,
+        test_model_with_multi_material_bom: Model,
+        test_printer,
+    ):
+        """A per-printer weight is one item's; each line takes its bill share of it."""
+        from app.models.model_printer_config import ModelPrinterConfig
+
+        model = test_model_with_multi_material_bom
+        model.planned_printer_id = test_printer.id
+        db_session.add(
+            ModelPrinterConfig(
+                id=uuid4(),
+                model_id=model.id,
+                printer_id=test_printer.id,
+                prints_per_plate=5,
+                material_weight_grams=Decimal("8"),
+            )
+        )
+        await db_session.commit()
+        # The request shares this session; drop its stale, empty collection.
+        await db_session.refresh(model, ["printer_configs"])
+
+        response = await client.get(
+            f"/api/v1/models/{model.id}/production-defaults", headers=auth_headers
+        )
+        assert response.status_code == 200
+        lines = {
+            m["color"]: Decimal(m["weight_grams_per_item"])
+            for m in response.json()["bom_materials"]
+        }
+        # Bill 50 g + 30 g; the A1 measured 8 g an item: 5 g and 3 g.
+        assert lines == {"Blue": Decimal("5"), "Red": Decimal("3")}
+        # No per-printer time on the row: the model's 480 min over the row's 5 items.
+        assert Decimal(response.json()["print_minutes_per_item"]) == Decimal("96")
 
     @pytest.mark.asyncio
     async def test_get_production_defaults_inactive_spool(
