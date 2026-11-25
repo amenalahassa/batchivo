@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.password import get_password_hash
+from tests.passwords import hashed_test_password
 from app.core.security import create_access_token
 from app.models.api_token import ApiToken
 from app.models.tenant import Tenant
@@ -45,7 +45,7 @@ async def make_member(db: AsyncSession, tenant: Tenant, role: UserRole = UserRol
         id=uuid4(),
         email=f"{role.value}-{uuid4().hex[:8]}@example.com",
         full_name=f"Token {role.value}",
-        hashed_password=get_password_hash("tokenpassword123"),
+        hashed_password=hashed_test_password("tokenpassword123"),
         is_active=True,
     )
     db.add(user)

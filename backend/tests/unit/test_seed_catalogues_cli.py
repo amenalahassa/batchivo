@@ -5,6 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -29,8 +30,20 @@ def _today(monkeypatch):
     cd.clear_caches()
 
 
-@pytest.fixture
-def factory(db_engine):
+@pytest_asyncio.fixture
+async def factory(db_engine):
+    """Sessions on this worker's own database, holding no tenant yet.
+
+    `cli.run` without a slug seeds every active tenant it can see, so these
+    tests are only cheap and deterministic if the only tenants are the ones
+    the test creates. `db_engine` empties this worker's database before the
+    test; the check below turns any tenant left over -- a shared database, a
+    cleanup that did not run -- into an immediate failure rather than a run
+    that seeds a whole database's tenants and overruns its timeout.
+    """
+    async with db_engine.connect() as conn:
+        leftover = (await conn.execute(select(func.count()).select_from(Tenant))).scalar_one()
+    assert leftover == 0, f"{leftover} tenant(s) already in the test database"
     return async_sessionmaker(db_engine, expire_on_commit=False)
 
 

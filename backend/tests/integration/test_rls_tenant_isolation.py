@@ -72,13 +72,13 @@ async def tenant_b(db_session: AsyncSession) -> Tenant:
 @pytest_asyncio.fixture(scope="function")
 async def user_a(db_session: AsyncSession, tenant_a: Tenant) -> User:
     """Create User A belonging to Tenant A."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="user_a@tenanta.com",
         full_name="User A",
-        hashed_password=get_password_hash("password123"),
+        hashed_password=hashed_test_password("password123"),
         is_active=True,
     )
     db_session.add(user)
@@ -98,13 +98,13 @@ async def user_a(db_session: AsyncSession, tenant_a: Tenant) -> User:
 @pytest_asyncio.fixture(scope="function")
 async def user_b(db_session: AsyncSession, tenant_b: Tenant) -> User:
     """Create User B belonging to Tenant B."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="user_b@tenantb.com",
         full_name="User B",
-        hashed_password=get_password_hash("password123"),
+        hashed_password=hashed_test_password("password123"),
         is_active=True,
     )
     db_session.add(user)

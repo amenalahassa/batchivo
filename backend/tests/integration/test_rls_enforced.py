@@ -48,7 +48,7 @@ def _id() -> str:
 @pytest.fixture(scope="module")
 def database():
     """A scratch database at head, two tenants in it, and both connection URLs."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     base_url = os.environ["DATABASE_URL"]
     scratch = f"rls_enforced_{uuid.uuid4().hex[:10]}"
@@ -83,7 +83,7 @@ def database():
             "admin": _id(),
             "slug_a": f"shop-a-{uuid.uuid4().hex[:6]}",
         }
-        hashed = get_password_hash(PASSWORD)
+        hashed = hashed_test_password(PASSWORD)
         with owner.connect() as conn:
             for tenant, slug in (("tenant_a", ids["slug_a"]), ("tenant_b", f"shop-b-{_id()[:6]}")):
                 conn.execute(

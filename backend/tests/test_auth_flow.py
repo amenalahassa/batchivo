@@ -318,7 +318,7 @@ class TestAuthenticationFlow:
         # Create tenant 1
         from app.models.tenant import Tenant
         from app.models.user import User
-        from app.auth.password import get_password_hash
+        from tests.passwords import hashed_test_password
 
         from app.models.user import UserTenant, UserRole
 
@@ -328,7 +328,7 @@ class TestAuthenticationFlow:
 
         user1 = User(
             email="user1@test.com",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=hashed_test_password("password123"),
             full_name="User 1",
         )
         db.add(user1)
@@ -349,7 +349,7 @@ class TestAuthenticationFlow:
 
         user2 = User(
             email="user2@test.com",
-            hashed_password=get_password_hash("password123"),
+            hashed_password=hashed_test_password("password123"),
             full_name="User 2",
         )
         db.add(user2)
