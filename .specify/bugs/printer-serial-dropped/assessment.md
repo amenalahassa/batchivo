@@ -32,7 +32,7 @@ The field exists only in the frontend. Confidence: high.
 
 ## Proposed Remediation
 
-**Preferred**: Add a nullable `printers.serial_number` (String 100) with a migration on the single head (`print_sends_v1`), and the field on `PrinterBase` and `PrinterUpdate` (max 100). The service already maps every schema field onto the model.
+**Preferred**: Add a nullable `printers.serial_number` (String 100) with a migration on the single head (`api_tokens_v1`), and the field on `PrinterBase` and `PrinterUpdate` (max 100). The service already maps every schema field onto the model.
 
 **Files likely to change**:
 - `backend/app/models/printer.py`

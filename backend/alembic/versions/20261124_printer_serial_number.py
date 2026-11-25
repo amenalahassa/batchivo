@@ -1,7 +1,7 @@
 """Printer serial number.
 
 Revision ID: printer_serial_v1
-Revises: print_sends_v1
+Revises: api_tokens_v1
 Create Date: 2026-11-24
 
 The printer form has always offered a Serial Number field, but the printers
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "printer_serial_v1"
-down_revision = "print_sends_v1"
+down_revision = "api_tokens_v1"
 branch_labels = None
 depends_on = None
 

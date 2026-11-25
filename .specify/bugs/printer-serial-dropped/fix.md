@@ -7,7 +7,7 @@
 
 ## Summary
 
-Add a nullable `printers.serial_number` (String 100) with a migration on the single head (`print_sends_v1`), and the field on `PrinterBase` and `PrinterUpdate` (max 100). The service already maps every schema field onto the model.
+Add a nullable `printers.serial_number` (String 100) with a migration on the single head (`api_tokens_v1`), and the field on `PrinterBase` and `PrinterUpdate` (max 100). The service already maps every schema field onto the model.
 
 ## Changes
 
@@ -15,7 +15,7 @@ Add a nullable `printers.serial_number` (String 100) with a migration on the sin
 |------|--------|-------|
 | `backend/app/models/printer.py` | modified | `serial_number` column |
 | `backend/app/schemas/printer.py` | modified | field on base and update schemas |
-| `backend/alembic/versions/20261124_printer_serial_number.py` | added | `printer_serial_v1`, down_revision `print_sends_v1` |
+| `backend/alembic/versions/20261124_printer_serial_number.py` | added | `printer_serial_v1`, down_revision `api_tokens_v1` |
 | `backend/tests/integration/test_printers_api.py` | added tests | round trip and length |
 | `frontend/e2e/tests/printers/printer-fields.spec.ts` | modified | fixme removed |
 
