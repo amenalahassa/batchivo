@@ -14,7 +14,8 @@ import re
 
 _PATTERNS = (
     re.compile(r"r8_[A-Za-z0-9]+"),
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),
+    # A personal API token already masked by spec 010 (`bvt_****`) stays as it is.
+    re.compile(r"(?i)(bearer\s+)(?!bvt_\*{4})[A-Za-z0-9._\-]+"),
 )
 REDACTED = "[redacted]"
 

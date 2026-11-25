@@ -10,7 +10,8 @@ Routes and screens show these figures; they never multiply anything.
 
 from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Optional
+from typing import Any, Optional
+from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +85,7 @@ class GenAICostService:
         return quantize(job.estimated_cost or ZERO), "estimated"
 
     async def month_to_date(
-        self, db: AsyncSession, tenant_id, now: Optional[datetime] = None
+        self, db: AsyncSession, tenant_id: UUID, now: Optional[datetime] = None
     ) -> tuple[Decimal, int]:
         """This UTC month's spend (final costs, plus estimates of active jobs) and job count."""
         start = month_start(now)
@@ -115,10 +116,12 @@ class GenAICostService:
         ).scalar_one()
         return quantize(Decimal(str(row[0] or 0))), int(jobs)
 
-    async def usage_by_month(self, db: AsyncSession, tenant_id, months: int) -> list[dict]:
+    async def usage_by_month(
+        self, db: AsyncSession, tenant_id: UUID, months: int
+    ) -> list[dict[str, Any]]:
         """Spend and job count for each of the last ``months`` calendar months, newest first."""
         start = month_start()
-        out: list[dict] = []
+        out: list[dict[str, Any]] = []
         cursor = start
         for _ in range(max(1, months)):
             nxt = (

@@ -19,7 +19,8 @@ from PIL import Image
 from app.config import Settings, get_settings
 from app.services.genai.glb import build_glb
 
-router = APIRouter()
+# Hidden from the published API on every route, not only where main.py mounts it.
+router = APIRouter(include_in_schema=False)
 
 FAKE_SECRET = "whsec_" + "ZTJlLWZha2Utd2ViaG9vay1zZWNyZXQtMDAwMDAwMDA="
 _predictions: dict[str, dict[str, Any]] = {}

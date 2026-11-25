@@ -60,6 +60,10 @@ NOT_MONEY_PATHS: dict[str, str] = {
         "ranks containers by the unit cost `costing.consumable_unit_cost` serves and shows "
         "no cost (FR-021); computes none"
     ),
+    "tenant_settings": (
+        "stores the Replicate monthly budget an operator types (spec 008) and returns the "
+        "month-to-date spend `genai.costs`, which is listed, sums; computes no money"
+    ),
 }
 
 
