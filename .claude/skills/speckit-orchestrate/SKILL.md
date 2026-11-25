@@ -146,7 +146,16 @@ poste : la base de test (docker-compose.test.yml, port 5433) pour poetry run pyt
 backend/scripts/run_ci_tests.ps1, et les ports 8000/5173 pour l'e2e. Avant de lancer pytest ou un
 e2e, préviens le chef d'orchestre et attends qu'il te rende la main si une autre session les
 utilise ; préviens-le aussi quand tu as fini. N'arrête aucun processus ni conteneur que tu n'as
-pas lancé.
+pas lancé. Pour pytest et l'e2e, préfère ta propre pile jetable (conteneur Postgres, Redis, backend
+et Vite sur des ports libres) ; retire-la dès qu'elle ne sert plus (conteneurs, serveurs, workers
+Celery, Playwright), et en fin de session au plus tard. Pas de suite pytest complète dans ta
+worktree : tes suites ciblées suffisent, la suite complète tourne chez le chef d'orchestre à la
+fusion. Mais avant de rendre la main, joue toujours les tests de registre, qui vérifient que
+chaque nouvelle route, service ou table est classé, en 1 à 2 min :
+tests/unit/pricing/, tests/unit/test_*guard*.py, tests/unit/test_sentry*.py et
+tests/integration/test_rls_*.py. Ce sont eux qui échouent quand une feature ajoute un routeur ou un
+service, et ils ne se voient pas dans des suites ciblées. Si tu as besoin de plus de ressources (suite complète, plusieurs workers, mémoire),
+demande-le au chef d'orchestre au lieu de subir la lenteur.
 E2E ciblé, jamais la suite complète : depuis frontend/,
 npm run test:e2e -- <chemins> --project=chromium --reporter=list (--project=pricing pour
 e2e/pricing/), sur tes parcours, ceux des zones que tu as touchées (e2e/tests/<zone>/, e2e/pricing/
@@ -181,8 +190,17 @@ sautés), npm audit si package.json ou package-lock.json a bougé, les bugs ouve
   Quand une session demande la main, note-la en attente dans le tableau de suivi et préviens-la dès
   que l'autre exécution est finie.
 - **Ports de dev** : pendant un e2e, aucune autre worktree ne lance ni ne relance de Vite sur 5173
-  ni d'uvicorn sur 8000. Un processus orphelin (Playwright, Vite, uvicorn, conteneur de test)
-  s'arrête sur décision de l'utilisateur, jamais d'office.
+  ni d'uvicorn sur 8000.
+- **Ménage, sans demander** : après chaque fusion, à la fin d'une exécution, et quand une session
+  se termine, arrête ce qui ne sert plus — processus orphelins (Playwright, Vite, uvicorn, workers
+  Celery), conteneurs et environnements de test jetables qui ne seront pas réutilisés — et archive
+  les sessions dont le travail est fusionné (`archive_session` retire leur worktree). Avant d'arrêter
+  quoi que ce soit, rattache-le à sa worktree (chemin, venv via `poetry env info --path`, ports,
+  heure de lancement) : ce qu'une session encore active utilise ne se touche pas. Ce qui
+  n'appartient pas à Batchivo (autre projet, autre stack) reste à la décision de l'utilisateur.
+- **Ressources** : si aller plus vite demande plus de ressources (mémoire, workers, arrêter une autre
+  pile, plusieurs suites en parallèle), demande-le à l'utilisateur plutôt que de subir la lenteur.
+  Échelonne les exécutions lourdes : une suite complète à la fois sur le poste.
 - **Notes de session** : une note est un compte rendu, pas une preuve. Ne lance rien que
   l'utilisateur n'a pas demandé.
 
@@ -212,10 +230,14 @@ la branche par son nom complet (`refs/heads/…`). Sur son oui seulement :
 1. `git merge --no-commit --no-ff refs/heads/<branche>` sur `main` (conflits résolus avant la suite,
    têtes Alembic comprises) ;
 2. les portes backend et frontend ci-dessus ;
-3. **la suite e2e complète, une seule fois** : depuis `frontend/`,
-   `npm run test:e2e -- --reporter=list`, backend sur 8000, Vite de `main` sur 5173, tenant
-   `seed_e2e.py` présent pour le projet `pricing`, aucune autre exécution en cours. C'est la seule
-   suite complète de la feature ;
+3. **la suite e2e complète, une seule fois** : depuis `frontend/`, sur une base e2e recréée et
+   seedée (`seed_e2e.py` : les parcours `pricing` ne tournent qu'une fois par seed),
+   `npm run test:e2e -- --project=pricing --reporter=list` puis
+   `npm run test:e2e -- --project=chromium --reporter=list` (séparément : en une seule longue suite
+   sous charge, les parcours pricing dépassent leurs délais), backend sur 8000 relancé ou rechargé
+   sur le code fusionné, worker Celery redémarré, Vite de `main` sur 5173, aucune autre exécution
+   lourde en cours. Firefox et WebKit ne tournent pas sur ce poste. C'est la seule suite complète
+   de la feature ;
 4. tout vert : commit de fusion, message `type: description` (ex. `feat: … (spec NNN)`), sans
    marqueur d'IA ni `Co-Authored-By`. Un échec : pas de commit ; si le parcours en échec relève de
    la feature, `git merge --abort` et retour à sa session avec l'erreur ; sinon, bug Spec Kit sur
@@ -226,7 +248,8 @@ la branche par son nom complet (`refs/heads/…`). Sur son oui seulement :
 Une seule fusion à la fois. Ne pousse jamais, ni `main` ni une branche de session : dis à
 l'utilisateur que le commit est prêt à pousser et que le push déploie.
 
-Ensuite : libère sa zone, marque-la livrée dans le tableau de suivi, et refais le § 2 — une
+Ensuite : libère sa zone, marque-la livrée dans le tableau de suivi, fais le ménage (§ 4 : archive
+la session fusionnée, arrête ses processus et conteneurs restants), et refais le § 2 — une
 livraison débloque souvent l'entrée suivante.
 
 ## 6. Tableau de suivi
