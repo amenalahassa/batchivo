@@ -139,3 +139,26 @@ async def test_copy_of_missing_image_raises(storage):
         await storage.copy_image(
             f"/uploads/ideas/{uuid.uuid4()}/missing.jpg", "products", str(uuid.uuid4())
         )
+
+
+# ============================================
+# Display size (spec 008 T108)
+# ============================================
+
+
+@pytest.mark.asyncio
+async def test_display_size_caps_by_default_and_none_keeps_full_resolution(storage):
+    owner = str(uuid.uuid4())
+    capped = await storage.save_image(_jpeg(1600, 1200), "image/jpeg", owner)
+    content, _ = await storage.get_image(capped["image_url"])
+    assert Image.open(BytesIO(content)).size == (800, 600)
+
+    full = await storage.copy_image(capped["image_url"], "ideas", owner, display_size=None)
+    content, _ = await storage.get_image(full["image_url"])
+    assert Image.open(BytesIO(content)).size == (800, 600)  # a copy keeps what it was given
+
+    kept = await storage.save_image(_jpeg(1600, 1200), "image/jpeg", owner, display_size=None)
+    content, _ = await storage.get_image(kept["image_url"])
+    assert Image.open(BytesIO(content)).size == (1600, 1200)
+    thumb, _ = await storage.get_image(kept["thumbnail_url"])
+    assert max(Image.open(BytesIO(thumb)).size) <= 300

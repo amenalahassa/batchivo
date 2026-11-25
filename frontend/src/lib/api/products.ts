@@ -527,7 +527,11 @@ export interface ProductImage {
   content_type?: string
   created_at: string
   updated_at: string
+  /** How the picture was made (spec 008, FR-017); "ai" is set only by adoption. */
+  origin: ProductImageOrigin
 }
+
+export type ProductImageOrigin = 'photo' | 'render' | 'ai'
 
 /**
  * Upload an image for a product
@@ -570,7 +574,7 @@ export async function getProductImages(productId: string): Promise<ProductImage[
 export async function updateProductImage(
   productId: string,
   imageId: string,
-  data: { alt_text?: string; display_order?: number }
+  data: { alt_text?: string; display_order?: number; origin?: Exclude<ProductImageOrigin, 'ai'> }
 ): Promise<ProductImage> {
   const response = await apiClient.patch<ProductImage>(
     `/api/v1/products/${productId}/images/${imageId}`,

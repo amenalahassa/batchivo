@@ -11,6 +11,7 @@ import { ModelFilesEditor } from './ModelFilesEditor'
 import { listFileVersions, getActivationPreview } from '@/lib/api/modelFileVersions'
 import { deleteModelFile, uploadModelFileWithResult, type ModelFile } from '@/lib/api/models'
 import type { FileVersion } from '@/types/model-file-version'
+import { capabilities } from '@/components/genai/genaiTestData'
 
 const auth = vi.hoisted(() => ({ role: 'member' }))
 vi.mock('@/contexts/AuthContext', () => {
@@ -33,7 +34,21 @@ vi.mock('@/lib/api/models', async (importOriginal) => ({
   getModelFileDownloadUrl: vi.fn(() => '/download'),
   linkLocalModelFile: vi.fn(),
   validateLocalPath: vi.fn(),
+  getModel: vi.fn(),
 }))
+
+const genai = vi.hoisted(() => ({
+  capabilities: vi.fn(),
+  estimate: vi.fn(),
+  createJob: vi.fn(),
+  getJob: vi.fn(),
+  listJobs: vi.fn(),
+  cancelJob: vi.fn(),
+  adopt: vi.fn(),
+  upload: vi.fn(),
+  getBlob: vi.fn(() => new Promise(() => {})),
+}))
+vi.mock('@/lib/api/genai', () => ({ genaiApi: genai }))
 
 // The viewer chunk is not under test here.
 vi.mock('@/components/viewer/ModelViewerDialog', () => ({ default: () => null }))
@@ -194,5 +209,144 @@ describe('ModelFilesEditor', () => {
     const row = (await screen.findByText('plate_v1b.gcode')).closest('li') as HTMLElement
     await user.click(within(row).getByTitle('Use as print file'))
     await waitFor(() => expect(getActivationPreview).toHaveBeenCalledWith('m1', 'v1', 'g2'))
+  })
+})
+
+// ============================================
+// Generative AI (spec 008, US4)
+// ============================================
+
+describe('ModelFilesEditor generative AI', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    auth.role = 'member'
+    ;(listFileVersions as Mock).mockResolvedValue([V1, V2])
+    genai.getBlob.mockImplementation(() => new Promise(() => {}))
+    genai.capabilities.mockResolvedValue({ connected: false, token_source: 'none', currency: 'USD', capabilities: [] })
+  })
+
+  it('offers "Draft 3D from image" to a member and opens the dialog', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('list', { name: 'Versions' })
+    await user.click(screen.getByRole('button', { name: 'Draft 3D from image' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByRole('heading', { name: /Draft 3D from image/ })).toBeInTheDocument()
+  })
+
+  it('hides "Draft 3D from image" from a viewer', async () => {
+    auth.role = 'viewer'
+    renderEditor()
+    await screen.findByRole('list', { name: 'Versions' })
+    expect(screen.queryByRole('button', { name: 'Draft 3D from image' })).not.toBeInTheDocument()
+  })
+
+  it('marks a version labelled "AI draft" with the AI badge', async () => {
+    ;(listFileVersions as Mock).mockResolvedValue([
+      V1,
+      version({ id: 'v3', sequence: 3, label: 'AI draft', files: [file({ id: 's3', original_filename: 'ai-draft.stl' })] }),
+    ])
+    renderEditor()
+    const draft = await screen.findByRole('listitem', { name: 'Version AI draft' })
+    expect(within(draft).getByLabelText('AI draft: made with generative AI')).toBeInTheDocument()
+    const v1 = screen.getByRole('listitem', { name: 'Version 1' })
+    expect(within(v1).queryByLabelText(/made with generative AI/)).not.toBeInTheDocument()
+  })
+
+  it('lists the model generations in a collapsible section', async () => {
+    genai.listJobs.mockResolvedValue({ items: [], total: 0 })
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('list', { name: 'Versions' })
+    await user.click(screen.getByRole('button', { name: /AI generations/ }))
+    expect(await screen.findByText('No AI generations yet.')).toBeInTheDocument()
+  })
+})
+
+// ============================================
+// The model's own image as the 3D input (spec 008 US4 AS1, FR-032, T109)
+// ============================================
+
+describe('ModelFilesEditor AI input', () => {
+  const withDraft3d = () => {
+    const response = capabilities()
+    response.capabilities.push({
+      ...response.capabilities[1],
+      capability: 'image_to_3d',
+      label: 'Draft 3D from image',
+      output_kind: 'mesh',
+      shows_real_item: false,
+    })
+    return response
+  }
+
+  function renderWithModel(imageUrl: string | null) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    })
+    client.setQueryData(['model', 'm1'], { id: 'm1', name: 'Visor clip', image_url: imageUrl })
+    return render(
+      <QueryClientProvider client={client}>
+        <ModelFilesEditor modelId="m1" />
+      </QueryClientProvider>,
+    )
+  }
+
+  function refused(status: number, code: string, message: string) {
+    const headers = new AxiosHeaders()
+    return new AxiosError('refused', String(status), undefined, undefined, {
+      status,
+      statusText: '',
+      headers,
+      config: { headers },
+      data: { detail: { code, message } },
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    auth.role = 'member'
+    ;(listFileVersions as Mock).mockResolvedValue([V1, V2])
+    genai.getBlob.mockImplementation(() => new Promise(() => {}))
+    genai.capabilities.mockResolvedValue(withDraft3d())
+    genai.estimate.mockResolvedValue({
+      estimated_cost: '0.0100',
+      month_to_date: '0.0000',
+      budget: null,
+      would_exceed_budget: false,
+      currency: 'USD',
+    })
+  })
+
+  async function openDraft() {
+    const user = userEvent.setup()
+    await screen.findByRole('list', { name: 'Versions' })
+    await user.click(screen.getByRole('button', { name: 'Draft 3D from image' }))
+    return { user, dialog: await screen.findByRole('dialog') }
+  }
+
+  it("offers the model's image and sends it as a model_image input", async () => {
+    genai.createJob.mockRejectedValue(
+      refused(422, 'input_invalid', "This model's image is not stored in Batchivo; upload it instead")
+    )
+    renderWithModel('/uploads/products/m1/a.png')
+    const { user, dialog } = await openDraft()
+    const image = await within(dialog).findByRole('button', { name: 'Visor clip image' })
+    if (image.getAttribute('aria-pressed') !== 'true') await user.click(image)
+    await user.click(within(dialog).getByRole('button', { name: 'Generate' }))
+    await waitFor(() => expect(genai.createJob).toHaveBeenCalled())
+    expect(genai.createJob.mock.calls[0][0].inputs.input_assets).toEqual([
+      { type: 'model_image', id: 'm1' },
+    ])
+    expect(
+      await within(dialog).findByText(/This model's image is not stored in Batchivo/)
+    ).toBeInTheDocument()
+  })
+
+  it('offers no model image when the model has none', async () => {
+    renderWithModel(null)
+    const { dialog } = await openDraft()
+    await within(dialog).findByRole('heading', { name: /Draft 3D from image/ })
+    expect(within(dialog).queryByRole('button', { name: 'Visor clip image' })).not.toBeInTheDocument()
   })
 })

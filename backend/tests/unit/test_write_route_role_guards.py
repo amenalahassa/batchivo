@@ -27,6 +27,7 @@ PUBLIC_MODULES: dict[str, str] = {
     "shop_resolver": "resolves a storefront domain to a tenant",
     "shopify_webhooks": "inbound Shopify webhooks, verified by HMAC signature",
     "printer_ws": "printer monitoring socket",
+    "genai_e2e": "spec 008's local fake provider: 404 unless E2E hooks are on, never in production",
 }
 
 #: Single routes on tenant routers that take no role, each with why. Keyed by
@@ -35,6 +36,7 @@ _INLINE = "guarded inline: the handler calls `_require_admin_role(user, tenant)`
 
 NOT_ROLE_GUARDED: dict[tuple[str, str, str], str] = {
     ("shipping", "POST", "/rates"): "a read: quotes postage for a parcel, writes nothing",
+    ("genai", "POST", "/estimate"): "a read: prices an AI job against the budget, writes nothing",
     # Spec 010: any member, viewer included, manages their own tokens; the service
     # scopes every row to the caller, and a token never exceeds its owner's role.
     ("api_tokens", "POST", ""): "own tokens only; a token never exceeds its owner's role",

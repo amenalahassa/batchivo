@@ -93,6 +93,7 @@ class ImageStorage:
         *,
         owner_type: str = "products",
         product_id: Optional[str] = None,
+        display_size: Optional[tuple[int, int]] = DISPLAY_SIZE,
     ) -> dict:
         """
         Save an image and generate thumbnail.
@@ -104,6 +105,9 @@ class ImageStorage:
             original_filename: Original filename for reference
             owner_type: One of OWNER_TYPES; "products" keeps the historical paths
             product_id: Deprecated alias of ``owner_id`` (existing callers)
+            display_size: Largest size of the stored image; ``None`` keeps the full
+                resolution (an adopted AI upscale, spec 008 T108). The thumbnail is
+                always made.
 
         Returns:
             dict with:
@@ -146,14 +150,32 @@ class ImageStorage:
 
         if self.storage_type == "local":
             return await self._save_local(
-                img, file_content, owner_dir, filename, thumbnail_filename, content_type
+                img,
+                file_content,
+                owner_dir,
+                filename,
+                thumbnail_filename,
+                content_type,
+                display_size,
             )
         else:
             return await self._save_s3(
-                img, file_content, owner_dir, filename, thumbnail_filename, content_type
+                img,
+                file_content,
+                owner_dir,
+                filename,
+                thumbnail_filename,
+                content_type,
+                display_size,
             )
 
-    async def copy_image(self, source_url: str, owner_type: str, owner_id: str) -> dict:
+    async def copy_image(
+        self,
+        source_url: str,
+        owner_type: str,
+        owner_id: str,
+        display_size: Optional[tuple[int, int]] = DISPLAY_SIZE,
+    ) -> dict:
         """
         Copy a stored image to another owner, through the same validation and
         thumbnailing as an upload.
@@ -170,6 +192,7 @@ class ImageStorage:
             owner_id,
             original_filename=source_url.rsplit("/", 1)[-1],
             owner_type=owner_type,
+            display_size=display_size,
         )
 
     async def _save_local(
@@ -180,6 +203,7 @@ class ImageStorage:
         filename: str,
         thumbnail_filename: str,
         content_type: str,
+        display_size: Optional[tuple[int, int]] = DISPLAY_SIZE,
     ) -> dict:
         """Save image to local filesystem."""
         # Create product directory
@@ -188,7 +212,8 @@ class ImageStorage:
 
         # Resize for display (if larger than DISPLAY_SIZE)
         display_img = img.copy()
-        display_img.thumbnail(DISPLAY_SIZE, Image.Resampling.LANCZOS)
+        if display_size is not None:
+            display_img.thumbnail(display_size, Image.Resampling.LANCZOS)
 
         # Convert to RGB if necessary (for JPEG)
         if content_type == "image/jpeg" and display_img.mode in ("RGBA", "P"):
@@ -232,12 +257,14 @@ class ImageStorage:
         filename: str,
         thumbnail_filename: str,
         content_type: str,
+        display_size: Optional[tuple[int, int]] = DISPLAY_SIZE,
     ) -> dict:
         """Save image to S3/MinIO storage."""
         try:
             # Resize for display (if larger than DISPLAY_SIZE)
             display_img = img.copy()
-            display_img.thumbnail(DISPLAY_SIZE, Image.Resampling.LANCZOS)
+            if display_size is not None:
+                display_img.thumbnail(display_size, Image.Resampling.LANCZOS)
 
             # Convert to RGB if necessary (for JPEG)
             if content_type == "image/jpeg" and display_img.mode in ("RGBA", "P"):

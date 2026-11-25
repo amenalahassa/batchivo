@@ -69,6 +69,13 @@ NOT_PRICING_MODULES: frozenset[str] = frozenset(
         "api_tokens",
         "audit",
         "auth",
+        # Spec 008: AI generation jobs, their USD provider cost and the monthly AI
+        # budget. That spend goes through `services/genai/costs.py`, not the pricing
+        # engine, and changes no product price. `genai_e2e` is a test-only fake.
+        "genai",
+        "genai_e2e",
+        "genai_platform",
+        "genai_settings",
         "categories",
         "customer_account",
         "customer_auth",

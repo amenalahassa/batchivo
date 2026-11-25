@@ -48,6 +48,8 @@ celery_app = Celery(
         "app.tasks.power",
         # Large model files measured after upload (packaging advisor, T037).
         "app.tasks.mesh_measure",
+        # Generation jobs: submit, poll, sweep (spec 008).
+        "app.tasks.genai",
     ],
 )
 
@@ -95,6 +97,13 @@ celery_app.conf.beat_schedule = {
     "telemetry-learning-daily": {
         "task": "telemetry.learn",
         "schedule": crontab(hour="5", minute="0"),
+    },
+    # Generation jobs whose submit/poll chain broke (a broker restart): stale queued
+    # jobs fail with a reason, unpolled running jobs are polled again, and deadlines
+    # hold even without a poll (spec 008, research R6).
+    "genai-sweep": {
+        "task": "genai.sweep",
+        "schedule": crontab(minute="*/5"),
     },
 }
 

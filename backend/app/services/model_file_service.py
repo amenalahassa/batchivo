@@ -522,9 +522,17 @@ class ModelFileService:
         version_id: Optional[UUID] = None,
         new_version_label: Optional[str] = None,
         new_version_note: Optional[str] = None,
+        commit: bool = True,
+        offer_measurement: bool = True,
     ) -> ModelFile:
         """
         Upload a 3D model file into a version (see `version_for_upload`).
+
+        ``commit=False`` flushes instead of committing, for a caller that owns the
+        transaction (spec 008: an AI draft added inside an adoption or a conversion).
+        ``offer_measurement=False`` records the file's measured size on the file only
+        and never offers it to the model's dimensions (spec 008 FR-019: an AI draft has
+        no real-world scale).
 
         ``version_created`` is set on the returned row (response only) when a
         new version was made for it, so the client can offer to make it active.
@@ -608,8 +616,13 @@ class ModelFileService:
 
         self.db.add(model_file)
         await versions.attach_file(version, model_file)
-        queue = await self._measure(model, model_file, extension, file_content, len(file_content))
-        await self.db.commit()
+        queue = await self._measure(
+            model, model_file, extension, file_content, len(file_content), offer=offer_measurement
+        )
+        if commit:
+            await self.db.commit()
+        else:
+            await self.db.flush()
         await self.db.refresh(model_file)
         model_file.version_created = version_created
         if queue:
@@ -736,8 +749,12 @@ class ModelFileService:
         extension: str,
         content: Optional[bytes],
         size: Optional[int],
+        offer: bool = True,
     ) -> bool:
         """Measure an STL or 3MF and offer it to the model (research D3, FR-007 to FR-010).
+
+        With ``offer=False`` (spec 008, an AI draft) the measurement is recorded on
+        the file only: never offered to the model, and never queued for later.
 
         Up to ``INLINE_MEASURE_BYTES`` the file is measured here; a larger one
         is marked ``pending`` and the caller queues it, which this returns True
@@ -761,6 +778,9 @@ class ModelFileService:
             record_measurement(model_file, mesh_bounds.skipped(size))
             return False
         if content is None or size > mesh_bounds.INLINE_MEASURE_BYTES:
+            if not offer:
+                record_measurement(model_file, mesh_bounds.skipped(size))
+                return False
             model_file.measurement_status = "pending"
             return True
 
@@ -769,6 +789,8 @@ class ModelFileService:
             return False
         record_measurement(model_file, measurement)
         await self.db.flush()
+        if not offer:
+            return False
         model_file.measurement_applied_to = await apply_measurement(
             self.db, self.tenant, model, model_file
         )
@@ -1126,6 +1148,18 @@ class ModelFileService:
 
         logger.info(f"Deleted file {file_id} ({model_file.original_filename})")
         return True
+
+    async def delete_stored_file(self, file_url: Optional[str]) -> bool:
+        """Delete only the stored object behind ``file_url`` (no database row).
+
+        For a caller that stored a file inside a transaction it then rolled back
+        (spec 008: an AI draft added during an adoption or a conversion).
+        """
+        if not file_url:
+            return False
+        if self.storage_type == "local":
+            return await self._delete_local(file_url)
+        return await self._delete_s3(file_url)
 
     async def _delete_local(self, file_url: str) -> bool:
         """Delete file from local filesystem."""

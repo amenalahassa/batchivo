@@ -266,6 +266,7 @@ from app.api.v1 import (
     users,
     webhooks,
 )
+from app.api.v1 import genai, genai_e2e, genai_platform, genai_settings  # spec 008
 
 app.include_router(auth.router, prefix=f"{settings.api_v1_prefix}/auth", tags=["auth"])
 app.include_router(
@@ -417,6 +418,23 @@ app.include_router(
 )
 # Product ideas, their timeline and conversion (spec 007)
 app.include_router(ideas.router, prefix=f"{settings.api_v1_prefix}/ideas", tags=["ideas"])
+# Generative AI layer, Replicate first (spec 008)
+app.include_router(genai.router, prefix=f"{settings.api_v1_prefix}/genai", tags=["genai"])
+app.include_router(
+    genai.webhook_router, prefix=f"{settings.api_v1_prefix}/genai", tags=["genai-webhooks"]
+)
+app.include_router(
+    genai_settings.router,
+    prefix=f"{settings.api_v1_prefix}/settings/replicate",
+    tags=["genai"],
+)
+app.include_router(
+    genai_platform.router, prefix=f"{settings.api_v1_prefix}/platform", tags=["genai"]
+)
+# Inert unless E2E test hooks are on (and never in production): a local fake provider.
+app.include_router(
+    genai_e2e.router, prefix=f"{settings.api_v1_prefix}/genai/e2e-fake", include_in_schema=False
+)
 # Personal API tokens for scripts and AI agents (spec 010)
 app.include_router(
     api_tokens.router, prefix=f"{settings.api_v1_prefix}/api-tokens", tags=["api-tokens"]

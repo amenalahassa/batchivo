@@ -141,6 +141,8 @@ module = [
     "app.services.run_costs",
     # Spec 006: the overlap rule shared by the postage route and the seeding.
     "app.services.shipping_profile_rules",
+    # Spec 008: the one place a generation cost is computed (USD, Decimal).
+    "app.services.genai.costs",
 ]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true

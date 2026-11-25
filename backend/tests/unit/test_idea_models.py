@@ -126,9 +126,30 @@ class TestEntryRows:
     async def test_generation_entry_has_room_for_a_job(
         self, db_session: AsyncSession, test_tenant: Tenant
     ):
-        """Feature 008 writes these; the kind and job reference exist from 007 on."""
+        """Feature 008 writes these; the kind and job reference exist from 007 on.
+
+        Since 008 the reference is a foreign key, so it names a real job.
+        """
+        from app.models.generation_job import GenerationJob
+
         idea = await idea_in(db_session, test_tenant)
-        job = uuid.uuid4()
+        generation = GenerationJob(
+            tenant_id=test_tenant.id,
+            capability="concept_image",
+            provider="replicate",
+            model_ref="owner/model",
+            model_version="official",
+            inputs={"prompt": "a clip"},
+            seed=7,
+            target_type="idea",
+            target_id=idea.id,
+            status="succeeded",
+            estimated_cost=0,
+            price_snapshot={"unit": "per_output", "amount_usd": "0.003"},
+        )
+        db_session.add(generation)
+        await db_session.flush()
+        job = generation.id
         entry = await entry_in(
             db_session,
             idea,

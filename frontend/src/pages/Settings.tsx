@@ -12,14 +12,16 @@ import { ShippingProfilesPanel } from '@/components/settings/ShippingProfilesPan
 import { GeneralSettings } from '@/components/settings/GeneralSettings'
 import { PricingPolicySettings } from '@/components/settings/PricingPolicySettings'
 import { PackagingSettings } from '@/components/settings/PackagingSettings'
+import { ReplicateSettings } from '@/components/settings/ReplicateSettings'
 import { MarginDivergencePanel } from '@/components/pricing/MarginDivergencePanel'
 import { SquareSettings } from '@/components/settings/SquareSettings'
 import { TeamSettings } from '@/components/settings/TeamSettings'
 import { ApiTokensSettings } from '@/components/settings/ApiTokensSettings'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { initialSettingsTab } from '@/lib/settingsTab'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditMonetaryPolicy, canEditOperationalFigures } from '@/lib/pricing/permissions'
-import { Building2, Coins, CreditCard, KeyRound, Store, Users } from 'lucide-react'
+import { Building2, Coins, CreditCard, KeyRound, Sparkles, Store, Users } from 'lucide-react'
 
 export function Settings() {
   const { user } = useAuth()
@@ -28,6 +30,10 @@ export function Settings() {
   const canEditPricing = canEditMonetaryPolicy(user)
   // Clearance is an operational figure, not money: a member may set it.
   const canEditPackaging = canEditOperationalFigures(user)
+  const defaultTab = initialSettingsTab(
+    typeof window === 'undefined' ? '' : window.location.search,
+    canEditPricing
+  )
 
   return (
     <AppLayout>
@@ -39,7 +45,7 @@ export function Settings() {
           </p>
         </div>
 
-        <Tabs defaultValue="general" className="space-y-6">
+        <Tabs defaultValue={defaultTab} className="space-y-6">
           <TabsList>
             <TabsTrigger value="general" className="gap-2">
               <Building2 className="h-4 w-4" />
@@ -61,6 +67,13 @@ export function Settings() {
               <Users className="h-4 w-4" />
               Team
             </TabsTrigger>
+            {/* Replicate settings are admin and up (spec 008, contracts/genai-api.md). */}
+            {canEditPricing && (
+              <TabsTrigger value="ai" className="gap-2">
+                <Sparkles className="h-4 w-4" />
+                AI
+              </TabsTrigger>
+            )}
             <TabsTrigger value="api-tokens" className="gap-2">
               <KeyRound className="h-4 w-4" />
               API tokens
@@ -113,6 +126,11 @@ export function Settings() {
             <TeamSettings />
           </TabsContent>
 
+          {canEditPricing && (
+            <TabsContent value="ai">
+              <ReplicateSettings />
+            </TabsContent>
+          )}
           <TabsContent value="api-tokens">
             <ApiTokensSettings />
           </TabsContent>

@@ -417,7 +417,9 @@ Constraints:
 
 ## Generative AI layer with Replicate: concept images, product photo enhancement, sales images, image to 3D
 
-**Status:** not specified (feature 008, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §5). Needs 007.
+**Status:** built in `specs/008-genai/` (spec, plan, tasks; see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §5). Needs 007.
+**MCP (010):** 010 merged first, so 008 adds `mcp_server/tools/genai.py` (scope `read` for
+reads, `genai` to start, cancel, upload or adopt), its `TOKEN_ROUTE_SCOPES` rows and its tests.
 
 **Why:** idea concepts, product photos and sales images are made by hand outside
 Batchivo. A generative AI provider can draft concept images from an idea, clean
@@ -448,8 +450,10 @@ images, and drafting a 3D shape from an image.
      reference images), image edit (image + instruction), product photo
      enhancement, background removal, upscaling, lifestyle scene (a product photo
      placed in a described scene), image to 3D (mesh).
-   - Each capability maps to a Replicate model with a pinned version and default
-     parameters; the operator can override the model per capability in settings.
+   - Each capability maps to a Replicate model with default parameters: a community
+     model is pinned to a version; a provider-maintained ("official") model, which
+     cannot be pinned, records on each job the version it actually ran. The operator
+     can override the model per capability in settings.
      The design must allow adding another provider later without changing screens.
 
 2. Generation jobs

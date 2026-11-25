@@ -864,6 +864,11 @@ _STATIC = "a fixed list from code, not from any table: there is no tenant row to
 _GLOBAL = "reads shared reference data (SpoolmanDB, material types) that has no tenant_id"
 _CART = "the cart lives in Redis, keyed by session; no table is read"
 _SHIPPING = "quotes from the carrier's rules in code; no table is read"
+_GENAI_FAKE = (
+    "spec 008's local imitation of the Replicate API for e2e runs: 404 unless E2E test "
+    "hooks are on and the instance is not production; it keeps its predictions in "
+    "memory and answers with generated PNG/GLB bytes, so no table is read or written"
+)
 
 UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
     ("POST", f"{API}/payments/webhooks/square"): (
@@ -910,6 +915,14 @@ UNSCOPED_ROUTES_BY_DESIGN: dict[tuple[str, str], str] = {
     ("GET", f"{API}/shipping/methods"): _SHIPPING,
     ("GET", f"{API}/payments/config"): "Square's public configuration; no table",
     ("GET", f"{API}/payments/status/{{payment_id}}"): "asks Square for a payment's state; no table",
+    ("GET", f"{API}/genai/e2e-fake/status"): _GENAI_FAKE,
+    ("GET", f"{API}/genai/e2e-fake/account"): _GENAI_FAKE,
+    ("GET", f"{API}/genai/e2e-fake/webhooks/default/secret"): _GENAI_FAKE,
+    ("POST", f"{API}/genai/e2e-fake/files"): _GENAI_FAKE,
+    ("POST", f"{API}/genai/e2e-fake/predictions"): _GENAI_FAKE,
+    ("GET", f"{API}/genai/e2e-fake/predictions/{{prediction_id}}"): _GENAI_FAKE,
+    ("POST", f"{API}/genai/e2e-fake/predictions/{{prediction_id}}/cancel"): _GENAI_FAKE,
+    ("GET", f"{API}/genai/e2e-fake/outputs/{{name}}"): _GENAI_FAKE,
 }
 
 

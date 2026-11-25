@@ -23,7 +23,7 @@ cannot touch your account, team, settings or payments.
    |---|---|
    | **Read** | List and read ideas, models, file versions, notes, printers, AMS slots, spools, print jobs, production runs, print sends |
    | **Write** | Create and change ideas (timeline, images, import, convert to a model) and pinned notes |
-   | **AI generation** | Start and adopt AI generations (tools arrive with the AI generation feature) |
+   | **AI generation** | Start, cancel and adopt AI generations, and upload an input image. Each run is paid on the shop's Replicate account and refused over its monthly budget. Listing capabilities, estimating, and reading jobs and output images need only **Read** |
    | **Print** | Prepare and start prints on your Bambu printers. Never ticked by default. |
 
 4. Choose when it expires: 30 days, 90 days, 1 year, or a date. **Every token

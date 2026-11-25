@@ -49,3 +49,17 @@ def test_filtered_exceptions_are_still_dropped():
 
     error = HTTPException(status_code=401)
     assert before_send(_event(), {"exc_info": (HTTPException, error, None)}) is None
+
+
+def test_a_replicate_token_is_removed_and_the_api_token_mask_kept():
+    """Spec 008's scrub runs after the spec 010 mask and leaves `bvt_****` readable."""
+    replicate = "r8_" + "Abc123" * 6
+    event = _event()
+    event["extra"]["replicate"] = f"Bearer {replicate}"
+    event["request"]["data"] = {"api_token": replicate}
+    sent = before_send(event, {})
+    dumped = json.dumps(sent)
+    assert replicate not in dumped and SECRET not in dumped
+    assert sent["request"]["headers"]["Authorization"] == f"Bearer {API_TOKEN_MASK}"
+    assert sent["extra"]["replicate"] == "Bearer [redacted]"
+    assert sent["request"]["data"]["api_token"] == "[redacted]"
