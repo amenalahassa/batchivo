@@ -18,17 +18,17 @@ in CI, which is the opposite of what a data-migration check is for.
 """
 
 import os
-import uuid
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from tests.integration.migration_support import (
     alembic_against,
-    database_named,
-    sync_url,
+    scratch_database_at,
+    templates_needed,
 )
 
 TIER1_REVISION = "pricing_tier1_v1"
@@ -59,33 +59,19 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def migrated_tier1():
-    """A scratch database upgraded to the Tier 1 parent, seeded, then upgraded.
+templates_needed(TIER1_PARENT)
+
+
+@contextmanager
+def _migrated_tier1():
+    """A scratch database at the Tier 1 parent, seeded, then upgraded.
 
     Yields a connected engine against the migrated database. The data is
     inserted *between* the two upgrades, which is the only way to exercise the
     seeding statements: run on an empty database they are all no-ops and prove
     nothing.
     """
-    base_url = _database_url()
-    scratch = f"tier1_seed_{uuid.uuid4().hex[:10]}"
-    admin_url = database_named(base_url, "postgres")
-    scratch_url = database_named(base_url, scratch)
-
-    admin = create_engine(sync_url(admin_url), isolation_level="AUTOCOMMIT")
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{scratch}"'))
-
-        engine = create_engine(sync_url(scratch_url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, TIER1_PARENT)
-
+    with scratch_database_at(TIER1_PARENT, "tier1_seed") as (engine, scratch_url):
         with engine.connect() as conn:
             conn.execute(
                 text(
@@ -122,12 +108,20 @@ def migrated_tier1():
             command.upgrade(config, TIER1_REVISION)
 
         yield engine
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
-        admin.dispose()
+
+
+@pytest.fixture(scope="module")
+def migrated_tier1():
+    """The migrated database, shared by the tests that only read it."""
+    with _migrated_tier1() as engine:
+        yield engine
+
+
+@pytest.fixture
+def migrated_tier1_alone():
+    """A migrated database of its own, for the test that downgrades it."""
+    with _migrated_tier1() as engine:
+        yield engine
 
 
 class TestThePolicyRowIsSeededFromTheOperatorsOwnSettings:
@@ -309,13 +303,15 @@ class TestRowLevelSecurityIsEnabledOnEveryNewTable:
 
 
 class TestTheDowngradeIsReversible:
-    def test_downgrading_removes_what_it_added_and_keeps_the_rest(self, migrated_tier1) -> None:
+    def test_downgrading_removes_what_it_added_and_keeps_the_rest(
+        self, migrated_tier1_alone
+    ) -> None:
         """The copied labor figure stays where it came from."""
-        url = migrated_tier1.url.render_as_string(hide_password=False)
+        url = migrated_tier1_alone.url.render_as_string(hide_password=False)
         with alembic_against(url) as config:
             command.downgrade(config, TIER1_PARENT)
 
-        with migrated_tier1.connect() as conn:
+        with migrated_tier1_alone.connect() as conn:
             tables = (
                 (
                     conn.execute(

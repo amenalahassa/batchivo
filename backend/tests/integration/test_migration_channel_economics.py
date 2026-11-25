@@ -26,17 +26,17 @@ the opposite of what a data-migration check is for.
 """
 
 import os
-import uuid
+from contextlib import contextmanager
 from decimal import Decimal
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from tests.integration.migration_support import (
     alembic_against,
-    database_named,
-    sync_url,
+    scratch_database_at,
+    templates_needed,
 )
 
 REVISION = "pricing_channel_economics_v1"
@@ -76,31 +76,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def scratch_database():
+templates_needed(PARENT)
+
+
+@contextmanager
+def _seeded_parent():
     """A scratch database at the migration's parent, with a channel in it.
 
     The channel goes in *between* the upgrades: against an empty database the
     backfill is a no-op and proves nothing.
     """
-    base_url = _database_url()
-    scratch = f"chan_econ_{uuid.uuid4().hex[:10]}"
-    admin_url = database_named(base_url, "postgres")
-    scratch_url = database_named(base_url, scratch)
-
-    admin = create_engine(sync_url(admin_url), isolation_level="AUTOCOMMIT")
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{scratch}"'))
-
-        engine = create_engine(sync_url(scratch_url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, PARENT)
-
+    with scratch_database_at(PARENT, "chan_econ") as (engine, scratch_url):
         with engine.connect() as conn:
             conn.execute(
                 text(
@@ -138,12 +124,22 @@ def scratch_database():
             )
 
         yield engine, scratch_url
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
-        admin.dispose()
+
+
+@pytest.fixture
+def scratch_database():
+    """The seeded parent, for a test that writes to it or migrates it itself."""
+    with _seeded_parent() as database:
+        yield database
+
+
+@pytest.fixture(scope="module")
+def upgraded():
+    """The seeded parent after the upgrade, shared by the tests that only read it."""
+    with _seeded_parent() as (engine, scratch_url):
+        with alembic_against(scratch_url) as config:
+            command.upgrade(config, REVISION)
+        yield engine, scratch_url
 
 
 def _periods(conn) -> list[dict]:
@@ -162,11 +158,8 @@ def _periods(conn) -> list[dict]:
 
 
 class TestTheBackfill:
-    def test_every_channel_gets_one_open_period(self, scratch_database) -> None:
-        engine, scratch_url = scratch_database
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, REVISION)
+    def test_every_channel_gets_one_open_period(self, upgraded) -> None:
+        engine, _ = upgraded
 
         with engine.connect() as conn:
             periods = _periods(conn)
@@ -174,11 +167,8 @@ class TestTheBackfill:
         assert len(periods) == 1
         assert periods[0]["effective_to"] is None
 
-    def test_it_carries_the_channel_s_own_figures(self, scratch_database) -> None:
-        engine, scratch_url = scratch_database
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, REVISION)
+    def test_it_carries_the_channel_s_own_figures(self, upgraded) -> None:
+        engine, _ = upgraded
 
         with engine.connect() as conn:
             period = _periods(conn)[0]
@@ -188,26 +178,20 @@ class TestTheBackfill:
         assert period["free_shipping_threshold"] == THRESHOLD
         assert period["rounding_rule"] == ROUNDING
 
-    def test_the_period_starts_when_the_channel_did(self, scratch_database) -> None:
+    def test_the_period_starts_when_the_channel_did(self, upgraded) -> None:
         # Dating from today would leave every order before today resolving to
         # nothing, which is the fallback this migration exists to end.
-        engine, scratch_url = scratch_database
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, REVISION)
+        engine, _ = upgraded
 
         with engine.connect() as conn:
             period = _periods(conn)[0]
 
         assert str(period["effective_from"]) == CREATED_ON
 
-    def test_the_columns_are_left_in_place(self, scratch_database) -> None:
+    def test_the_columns_are_left_in_place(self, upgraded) -> None:
         # They are the fallback the pure costing functions read, so the
         # migration must not drop them.
-        engine, scratch_url = scratch_database
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, REVISION)
+        engine, _ = upgraded
 
         with engine.connect() as conn:
             remaining = conn.execute(
@@ -224,12 +208,9 @@ class TestTheBackfill:
             ).scalars()
             assert len(list(remaining)) == 4
 
-    def test_the_table_is_under_row_level_security(self, scratch_database) -> None:
+    def test_the_table_is_under_row_level_security(self, upgraded) -> None:
         """Constitution I: isolation is enforced by the database, not by hope."""
-        engine, scratch_url = scratch_database
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, REVISION)
+        engine, _ = upgraded
 
         with engine.connect() as conn:
             enabled = conn.execute(

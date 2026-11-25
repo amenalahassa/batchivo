@@ -24,21 +24,21 @@ Windows event loop.
 """
 
 import os
-import uuid
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from app.services import fee_engine
 from app.services.fee_engine import OrderContext
 from tests.integration.migration_support import (
     alembic_against,
-    database_named,
-    sync_url,
+    scratch_database_at,
+    templates_needed,
 )
 
 TIER2_REVISION = "pricing_tier2_v1"
@@ -135,32 +135,18 @@ def _superseded_fee(percentage: Decimal, fixed: Decimal, price: Decimal) -> Deci
     return price * (percentage / Decimal("100")) + fixed
 
 
-@pytest.fixture
-def migrated_tier2_db():
+templates_needed(TIER2_PARENT)
+
+
+@contextmanager
+def _migrated_tier2():
     """A scratch database with pre-Tier-2 channels in it, then migrated.
 
     The channels are inserted *between* the two upgrades. Run on an empty
     database the conversion statements are no-ops and prove nothing, which is
     the trap this fixture exists to avoid.
     """
-    base_url = _database_url()
-    scratch = f"tier2_parity_{uuid.uuid4().hex[:10]}"
-    admin_url = database_named(base_url, "postgres")
-    scratch_url = database_named(base_url, scratch)
-
-    admin = create_engine(sync_url(admin_url), isolation_level="AUTOCOMMIT")
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{scratch}"'))
-
-        engine = create_engine(sync_url(scratch_url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, TIER2_PARENT)
-
+    with scratch_database_at(TIER2_PARENT, "tier2_parity") as (engine, scratch_url):
         with engine.connect() as conn:
             conn.execute(
                 text(
@@ -197,18 +183,21 @@ def migrated_tier2_db():
             command.upgrade(config, TIER2_REVISION)
 
         yield SimpleNamespace(engine=engine, url=scratch_url)
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
-        admin.dispose()
 
 
 @pytest.fixture
-def migrated_tier2(migrated_tier2_db):
-    """Just the engine, which is all most of these tests need."""
-    return migrated_tier2_db.engine
+def migrated_tier2_db():
+    """A migrated database of its own, for the test that downgrades it."""
+    with _migrated_tier2() as database:
+        yield database
+
+
+@pytest.fixture(scope="module")
+def migrated_tier2():
+    """Just the engine, which is all most of these tests need: they only read,
+    so they share one migrated database."""
+    with _migrated_tier2() as database:
+        yield database.engine
 
 
 def _channels_with_rules(engine) -> list[tuple[str, Decimal, Decimal, _Channel]]:
