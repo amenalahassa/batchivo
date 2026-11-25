@@ -5,7 +5,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Annotated, Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,13 +20,16 @@ settings = get_settings()
 
 
 async def get_current_user(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     authorization: Annotated[Optional[str], Header()] = None,
 ) -> User:
     """
     Get the current authenticated user from JWT token.
 
-    Validates JWT access token and returns the user.
+    Validates JWT access token and returns the user. A personal API token
+    (`bvt_...`, spec 010) takes its own path, `authenticate_api_token`; the
+    JWT code below that branch is unchanged.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -36,6 +39,13 @@ async def get_current_user(
         )
 
     token = authorization.replace("Bearer ", "")
+
+    # Personal API token (spec 010): its own path, never decoded as a JWT. A JWT
+    # always starts with "eyJ", so no JWT can take this branch.
+    from app.auth.api_tokens import authenticate_api_token, is_api_token
+
+    if is_api_token(token):
+        return await authenticate_api_token(request, db, token)
 
     # Decode JWT token using our security module
     from app.core.security import decode_token, verify_token_type
@@ -75,6 +85,7 @@ async def get_current_user(
 
 
 async def get_current_tenant(
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     x_tenant_id: Annotated[Optional[str], Header()] = None,
@@ -87,7 +98,16 @@ async def get_current_tenant(
     2. User's first tenant (default)
 
     In production, this might also check subdomain or path.
+
+    A request authenticated with a personal API token (spec 010) is bound to
+    the token's tenant: no other tenant, no auto-created workspace.
     """
+    from app.auth.api_tokens import token_context
+
+    api_token = token_context(request)
+    if api_token is not None:
+        return await _api_token_tenant(db, api_token.tenant_id, x_tenant_id)
+
     # Get user's tenants
     result = await db.execute(
         select(UserTenant)
@@ -169,6 +189,34 @@ async def get_current_tenant(
     tenant = result.scalar_one()
     # Membership is established: scope the request's session to this tenant.
     # Every dependency and handler on `get_db` in this request shares it.
+    await set_rls_context(db, tenant_id=tenant.id)
+    return tenant
+
+
+async def _api_token_tenant(
+    db: AsyncSession, tenant_id: uuid.UUID, x_tenant_id: Optional[str]
+) -> Tenant:
+    """The tenant an API token is bound to; another tenant in X-Tenant-ID is refused."""
+    if x_tenant_id:
+        try:
+            requested = uuid.UUID(x_tenant_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid tenant ID format"
+            )
+        if requested != tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="API token is bound to another tenant",
+            )
+    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+    tenant = result.scalar_one_or_none()
+    if not tenant or not tenant.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired API token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     await set_rls_context(db, tenant_id=tenant.id)
     return tenant
 

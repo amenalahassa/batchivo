@@ -25,6 +25,9 @@ from app.models.model_printer_config import ModelPrinterConfig
 from app.models.print_job import JobPriority, JobStatus, PrintJob
 from app.models.print_send import PrintSend
 
+# Personal API tokens (spec 010)
+from app.models.api_token import ApiToken
+
 # Product (sellable items composed of models and/or other products)
 from app.models.category import Category, product_categories
 from app.models.designer import Designer
@@ -159,6 +162,7 @@ __all__ = [
     # Print queue
     "PrintJob",
     "PrintSend",
+    "ApiToken",
     "JobPriority",
     "JobStatus",
     # Products (sellable items)

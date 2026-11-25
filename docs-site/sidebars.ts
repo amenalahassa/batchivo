@@ -28,6 +28,11 @@ const sidebars: SidebarsConfig = {
       label: 'Ideas',
     },
     {
+      type: 'doc',
+      id: 'mcp',
+      label: 'MCP Server for AI Agents',
+    },
+    {
       type: 'category',
       label: 'Getting Started',
       collapsed: false,

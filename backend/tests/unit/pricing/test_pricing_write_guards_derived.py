@@ -65,6 +65,8 @@ PRICING_MODULES: frozenset[str] = frozenset(
 NOT_PRICING_MODULES: frozenset[str] = frozenset(
     {
         "analytics",
+        # Spec 010: personal API tokens (create, list, revoke); no cost input.
+        "api_tokens",
         "audit",
         "auth",
         "categories",
