@@ -34,7 +34,7 @@ DISPLAY_SIZE = (800, 800)
 
 # Owners an image can be stored for. "products" also holds model thumbnails and
 # the shop logo, as it always has; their paths must not move (spec 007 FR-021).
-OWNER_TYPES = ("products", "ideas", "generations")
+OWNER_TYPES = ("products", "ideas", "generations", "print_tests")
 
 
 class ImageStorageError(Exception):

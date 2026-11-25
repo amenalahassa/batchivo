@@ -13,6 +13,7 @@ from app.mcp_server.tools import (
     genai,
     ideas,
     models,
+    preflight,
     print_sends,
     printers,
     production,
@@ -28,4 +29,5 @@ GROUPS: list[ModuleType] = [
     production,
     print_sends,
     genai,
+    preflight,
 ]

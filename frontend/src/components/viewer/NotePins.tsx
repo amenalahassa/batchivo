@@ -14,7 +14,7 @@ import { useState } from 'react'
 import { Html } from '@react-three/drei'
 
 import type { FileNote, Vector3 } from '@/types/model-file-version'
-import { statusText } from './noteText'
+import { SEVERITY_TEXT, measureText, statusText } from './noteText'
 
 export interface NoteActions {
   onResolve: (note: FileNote) => void
@@ -55,7 +55,11 @@ export function PinBadge({
             ? 'border border-dashed border-amber-500 bg-amber-100/70 text-amber-800 opacity-70'
             : done
               ? 'bg-slate-400 text-white'
-              : 'bg-orange-500 text-white',
+              : note.severity === 'failure'
+                ? 'bg-red-600 text-white'
+                : note.severity === 'warning'
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-orange-500 text-white',
         ].join(' ')}
       >
         {note.number}
@@ -66,6 +70,14 @@ export function PinBadge({
           className="absolute left-3 top-3 z-10 w-56 rounded-md border bg-popover p-2 text-xs text-popover-foreground shadow-md"
         >
           <p className="whitespace-pre-wrap">{note.text}</p>
+          {(note.rule_id || measureText(note)) && (
+            <p className="mt-1 break-words">
+              {note.severity !== 'info' && <strong>{SEVERITY_TEXT[note.severity]} </strong>}
+              {note.rule_id && <code>{note.rule_id}</code>}
+              {note.rule_id && measureText(note) && ' · '}
+              {measureText(note)}
+            </p>
+          )}
           <p className="mt-1 text-muted-foreground">
             {note.ghost ? 'Open in an earlier version' : statusText(note)}
             {note.author && <> · {note.author.name}</>}

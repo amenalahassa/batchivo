@@ -14,6 +14,7 @@ import { IdeaHeader } from '@/components/ideas/IdeaHeader'
 import { IdeaTimeline } from '@/components/ideas/IdeaTimeline'
 import { useIdeaRoles } from '@/components/ideas/useIdeaRoles'
 import { AppLayout } from '@/components/layout/AppLayout'
+import { DesignBriefPanel } from '@/components/preflight/DesignBriefPanel'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useIdea } from '@/hooks/useIdeas'
@@ -83,6 +84,7 @@ export function IdeaDetail({ ideaId }: { ideaId: string }) {
           <TabsTrigger value="timeline">Timeline</TabsTrigger>
           <TabsTrigger value="gallery">Gallery</TabsTrigger>
           <TabsTrigger value="ai">AI</TabsTrigger>
+          <TabsTrigger value="brief">Design brief</TabsTrigger>
         </TabsList>
         <TabsContent value="timeline" className="space-y-4">
           {canWrite && !idea.archived && (
@@ -103,6 +105,9 @@ export function IdeaDetail({ ideaId }: { ideaId: string }) {
         </TabsContent>
         <TabsContent value="ai">
           <JobHistory targetType="idea" targetId={idea.id} />
+        </TabsContent>
+        <TabsContent value="brief">
+          <DesignBriefPanel owner={{ ideaId: idea.id }} canWrite={canWrite} />
         </TabsContent>
       </Tabs>
     </div>

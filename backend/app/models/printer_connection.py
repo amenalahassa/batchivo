@@ -8,12 +8,23 @@ from typing import TYPE_CHECKING, Optional
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.encryption import encrypt_value, safe_decrypt
 from app.database import Base
 from app.models.base import TimestampMixin, UUIDMixin
 
 if TYPE_CHECKING:
     from app.models.printer import Printer
     from app.models.tenant import Tenant
+
+
+def _encrypt(value: Optional[str]) -> Optional[str]:
+    """Fernet token of ``value``; None for an empty value (nothing to protect)."""
+    return encrypt_value(value) if value else None
+
+
+def _decrypt(token: Optional[str]) -> Optional[str]:
+    """Clear value of a stored token; None when unset or unreadable."""
+    return safe_decrypt(token) if token else None
 
 
 class ConnectionType(str, Enum):
@@ -37,7 +48,7 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
     - Klipper/Moonraker (REST API)
 
     Each printer can have one active connection configuration.
-    Sensitive data (access codes, tokens) should be encrypted at rest.
+    Sensitive data (access codes, tokens) is encrypted at rest (spec 009).
 
     Multi-tenant: Each connection belongs to a single tenant.
     """
@@ -90,11 +101,14 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
         comment="Connection port (default 8883 for Bambu MQTT)",
     )
 
-    # Authentication (sensitive - consider encryption)
-    access_code: Mapped[Optional[str]] = mapped_column(
-        String(100),
+    # Authentication secrets, encrypted at rest (spec 009, research R8). The
+    # columns keep their names; the ORM attributes hold the Fernet token and the
+    # ``access_code`` / ``cloud_token`` properties below give the clear value.
+    access_code_encrypted: Mapped[Optional[str]] = mapped_column(
+        "access_code",
+        Text,
         nullable=True,
-        comment="LAN access code (from Bambu printer settings)",
+        comment="LAN access code (from Bambu printer settings), Fernet-encrypted",
     )
 
     # Cloud connection fields
@@ -104,10 +118,11 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
         comment="Cloud account username/user_id (for cloud connections)",
     )
 
-    cloud_token: Mapped[Optional[str]] = mapped_column(
+    cloud_token_encrypted: Mapped[Optional[str]] = mapped_column(
+        "cloud_token",
         Text,
         nullable=True,
-        comment="Cloud access token (for cloud connections)",
+        comment="Cloud access token (for cloud connections), Fernet-encrypted",
     )
 
     # AMS Configuration
@@ -184,6 +199,43 @@ class PrinterConnection(Base, UUIDMixin, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<PrinterConnection(printer_id={self.printer_id}, type={self.connection_type})>"
+
+    # -- secrets (spec 009) -------------------------------------------------
+    # Reading gives the clear value, or None when unset or unreadable (the
+    # server key changed); `services.printer_secrets.secret_state` tells which.
+    # Never log or return these values.
+
+    @property
+    def access_code(self) -> Optional[str]:
+        """The clear LAN access code (Moonraker API key for Moonraker connections)."""
+        return _decrypt(self.access_code_encrypted)
+
+    @access_code.setter
+    def access_code(self, value: Optional[str]) -> None:
+        self.access_code_encrypted = _encrypt(value)
+
+    @property
+    def cloud_token(self) -> Optional[str]:
+        """The clear cloud access token."""
+        return _decrypt(self.cloud_token_encrypted)
+
+    @cloud_token.setter
+    def cloud_token(self, value: Optional[str]) -> None:
+        self.cloud_token_encrypted = _encrypt(value)
+
+    @property
+    def access_code_state(self) -> str:
+        """``set``, ``unset`` or ``unreadable`` (decided by ``printer_secrets``)."""
+        from app.services.printer_secrets import secret_state
+
+        return secret_state(self, "access_code")
+
+    @property
+    def cloud_token_state(self) -> str:
+        """``set``, ``unset`` or ``unreadable`` (decided by ``printer_secrets``)."""
+        from app.services.printer_secrets import secret_state
+
+        return secret_state(self, "cloud_token")
 
     @property
     def is_bambu(self) -> bool:

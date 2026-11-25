@@ -16,6 +16,8 @@ import { DimensionsEditor } from '@/components/products/DimensionsEditor'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { FromIdeaLink } from '@/components/ideas/FromIdeaLink'
+import { DesignBriefPanel } from '@/components/preflight/DesignBriefPanel'
+import { TestResultsPanel } from '@/components/preflight/TestResultsPanel'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   AlertDialog,
@@ -423,6 +425,21 @@ export function ModelDetail({ modelId }: ModelDetailProps) {
           />
         </CardContent>
       </Card>
+
+      {/* Preflight (spec 009): the design brief, shared with the source idea, and test results */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Design brief</CardTitle>
+          <CardDescription>
+            Preflight&apos;s intent, risk, plan and step statuses for this part
+            {model.source_idea_id ? ', shared with the idea it came from' : ''}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <DesignBriefPanel owner={{ modelId }} canWrite={canEditProfile} />
+        </CardContent>
+      </Card>
+      <TestResultsPanel modelId={modelId} canWrite={canEditProfile} />
 
       {/* Bill of Materials */}
       <Card>

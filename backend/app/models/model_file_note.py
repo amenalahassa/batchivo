@@ -2,9 +2,20 @@
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -13,7 +24,10 @@ from app.models.base import TimestampMixin, UUIDMixin
 if TYPE_CHECKING:
     from app.models.user import User
 
-NOTE_STATUSES = ("open", "resolved", "carried_forward")
+NOTE_STATUSES = ("open", "resolved", "carried_forward", "dismissed")
+#: Who raised a note (spec 009): a person, a Preflight check, or a print result.
+NOTE_SOURCES = ("person", "preflight", "print")
+NOTE_SEVERITIES = ("info", "warning", "failure")
 
 
 class ModelFileNote(Base, UUIDMixin, TimestampMixin):
@@ -76,14 +90,47 @@ class ModelFileNote(Base, UUIDMixin, TimestampMixin):
     archived_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True, comment="Set when its file was deleted"
     )
+    # Typed notes (spec 009): all defaulted or nullable, so manual notes are unchanged.
+    source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="person", server_default="person"
+    )
+    rule_id: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, comment="Preflight rule id, e.g. fit.slide.clearance"
+    )
+    severity: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="info", server_default="info"
+    )
+    # Unconstrained Numeric keeps a measurement exactly as Preflight sent it (0.6 stays 0.6).
+    measured_value: Mapped[Optional[Decimal]] = mapped_column(Numeric, nullable=True)
+    expected_value: Mapped[Optional[Decimal]] = mapped_column(Numeric, nullable=True)
+    value_unit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    dismissal_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_model_file_notes_dismissed_by"),
+        nullable=True,
+    )
 
-    author: Mapped[Optional["User"]] = relationship("User", lazy="select")
+    author: Mapped[Optional["User"]] = relationship(
+        "User", lazy="select", foreign_keys=[author_user_id]
+    )
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('open', 'resolved', 'carried_forward')",
+            "status IN ('open', 'resolved', 'carried_forward', 'dismissed')",
             name="ck_model_file_notes_status",
         ),
+        CheckConstraint(
+            "status <> 'dismissed' OR dismissal_reason IS NOT NULL",
+            name="ck_model_file_notes_dismissed_reason",
+        ),
+        CheckConstraint(
+            "source IN ('person', 'preflight', 'print')", name="ck_model_file_notes_source"
+        ),
+        CheckConstraint(
+            "severity IN ('info', 'warning', 'failure')", name="ck_model_file_notes_severity"
+        ),
+        Index("ix_model_file_notes_model_source_severity", "model_id", "source", "severity"),
         CheckConstraint("layer IS NULL OR layer >= 0", name="ck_model_file_notes_layer"),
         CheckConstraint("length(text) BETWEEN 1 AND 2000", name="ck_model_file_notes_text_length"),
         CheckConstraint(

@@ -110,4 +110,21 @@ describe('PrinterConnectionDialog', () => {
     expect(await screen.findByText(/uses a moonraker connection/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
+
+  it('asks for the access code again when it can no longer be read (spec 009)', async () => {
+    vi.mocked(getPrinterConnection).mockResolvedValue(
+      connection({ access_code: null, access_code_state: 'unreadable', cloud_token_state: 'unset' })
+    )
+    open()
+    expect(await screen.findByText('Access code can no longer be read — enter it again.')).toBeInTheDocument()
+    expect(screen.getByLabelText('Access code')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByText(/Cloud token can no longer be read/)).not.toBeInTheDocument()
+  })
+
+  it('says nothing about a readable code', async () => {
+    vi.mocked(getPrinterConnection).mockResolvedValue(connection({ access_code_state: 'set' }))
+    open()
+    await screen.findByLabelText('Access code')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })

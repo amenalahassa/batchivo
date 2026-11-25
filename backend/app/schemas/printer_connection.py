@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -139,6 +139,14 @@ class PrinterConnectionResponse(PrinterConnectionBase):
     connection_error: Optional[str] = None
     can_send_prints: bool = Field(
         False, description="Developer Mode on and Bambu LAN: prints can be sent (spec 011)"
+    )
+    # Spec 009: "unreadable" means a secret is stored but can no longer be
+    # decrypted (server key changed): the operator must enter it again.
+    access_code_state: Literal["set", "unset", "unreadable"] = Field(
+        "unset", description="Whether the access code is set, unset or must be entered again"
+    )
+    cloud_token_state: Literal["set", "unset", "unreadable"] = Field(
+        "unset", description="Whether the cloud token is set, unset or must be entered again"
     )
 
     created_at: datetime

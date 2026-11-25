@@ -138,6 +138,11 @@ from app.models.tenant import Tenant
 from app.models.tenant_module import TenantModule
 from app.models.user import User, UserRole, UserTenant
 
+# Preflight foundations (spec 009)
+from app.models.design_brief import DesignBrief, DesignBriefRevision
+from app.models.print_test_result import PrintTestResult
+from app.models.calibration import Calibration
+
 # Platform admin
 from app.models.platform_admin import PlatformAdminAuditLog, PlatformSetting
 
@@ -160,6 +165,11 @@ __all__ = [
     "GenerationJob",
     "GenAIAsset",
     "GenAIAdoption",
+    # Preflight foundations
+    "DesignBrief",
+    "DesignBriefRevision",
+    "Calibration",
+    "PrintTestResult",
     # Printers
     "Printer",
     "PrinterConnection",

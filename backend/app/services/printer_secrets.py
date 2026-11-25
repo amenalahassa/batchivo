@@ -1,19 +1,41 @@
-"""Single access point for printer connection secrets (spec 011, FR-017).
+"""Single access point for printer connection secrets (spec 011 FR-017, spec 009 US5).
 
-Every read of a printer's LAN access code goes through :func:`get_access_code`.
-Today the column holds the code in clear; spec 009 (Preflight foundations)
-encrypts it and changes only this function to decrypt, so the code that sends
-files and print commands does not change.
+The access code and cloud token are stored encrypted (spec 009): the
+``PrinterConnection.access_code`` / ``cloud_token`` properties decrypt on read
+and encrypt on write, so every caller gets the clear value it needs without
+change. Printer operations read the access code through :func:`get_access_code`.
 
-The value returned here is a secret: never log it, never put it in an error
-message, never return it from an endpoint.
+:func:`secret_state` is the one place that tells "set", "unset" and
+"unreadable" apart; a stored secret becomes unreadable when the server key it
+was encrypted with changes, and the operator must then enter it again.
+
+Values returned here are secrets: never log them, never put them in an error
+message, never return them from an endpoint.
 """
 
-from typing import Optional
+import logging
+from typing import Literal, Optional
 
 from app.models.printer_connection import PrinterConnection
 
+logger = logging.getLogger(__name__)
+
+SecretField = Literal["access_code", "cloud_token"]
+SecretState = Literal["set", "unset", "unreadable"]
+
 
 def get_access_code(connection: PrinterConnection) -> Optional[str]:
-    """The LAN access code of ``connection``, or None when none is set."""
+    """The clear LAN access code of ``connection``, or None when none is usable."""
     return connection.access_code or None
+
+
+def secret_state(connection: PrinterConnection, field: SecretField) -> SecretState:
+    """Whether a secret is set, unset, or stored but no longer decryptable."""
+    stored = getattr(connection, f"{field}_encrypted")
+    if not stored:
+        return "unset"
+    if getattr(connection, field):
+        return "set"
+    # Only the connection id: neither the secret nor its ciphertext is logged.
+    logger.warning(f"Printer connection {connection.id}: stored {field} cannot be decrypted")
+    return "unreadable"

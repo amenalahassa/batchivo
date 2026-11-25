@@ -7,11 +7,11 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Gauge, Trash2 } from 'lucide-react'
+import { Loader2, Plus, Search, Printer as PrinterIcon, Edit, Gauge, Ruler, Trash2 } from 'lucide-react'
 
 import { listPrinters } from '@/lib/api/printers'
 import { useAuth } from '@/contexts/AuthContext'
-import { canEditMonetaryPolicy } from '@/lib/pricing/permissions'
+import { canEditMonetaryPolicy, canEditOperationalFigures } from '@/lib/pricing/permissions'
 import type { Printer } from '@/types/printer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,6 +31,7 @@ import { PrinterCostPolicyDialog } from './PrinterCostPolicyDialog'
 import { PrinterConnectionDialog } from './PrinterConnectionDialog'
 import { PrinterSendActions } from './PrinterSendActions'
 import { PrinterSendsDialog } from './PrinterSendsDialog'
+import { CalibrationsDialog } from '@/components/preflight/CalibrationsDialog'
 import { SendPrintDialog } from './SendPrintDialog'
 
 export function PrinterList() {
@@ -46,11 +47,14 @@ export function PrinterList() {
   const [connectionPrinter, setConnectionPrinter] = useState<Printer | null>(null)
   const [sendPrinter, setSendPrinter] = useState<Printer | null>(null)
   const [sendsPrinter, setSendsPrinter] = useState<Printer | null>(null)
+  const [calibrationPrinter, setCalibrationPrinter] = useState<Printer | null>(null)
 
   const { user } = useAuth()
   // The hourly rate is a monetary figure (FR-007a). A member or viewer opens
   // the same dialog and reads it; the controls inside arrive disabled.
   const canEditCost = canEditMonetaryPolicy(user)
+  // Spec 009: a fit clearance is a measurement, so a member records it.
+  const canRecordCalibration = canEditOperationalFigures(user)
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['printers', { isActiveFilter }],
@@ -264,6 +268,10 @@ export function PrinterList() {
                       <Gauge className="h-3 w-3 mr-1" />
                       Machine cost
                     </Button>
+                    <Button variant="outline" size="sm" onClick={() => setCalibrationPrinter(printer)}>
+                      <Ruler className="h-3 w-3 mr-1" />
+                      Calibrations
+                    </Button>
                     <PrinterSendActions
                       printer={printer}
                       onConnection={setConnectionPrinter}
@@ -349,6 +357,14 @@ export function PrinterList() {
                           >
                             <Gauge className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Calibrations for ${printer.name}`}
+                            onClick={() => setCalibrationPrinter(printer)}
+                          >
+                            <Ruler className="h-4 w-4" />
+                          </Button>
                           <PrinterSendActions
                             printer={printer}
                             compact
@@ -410,6 +426,15 @@ export function PrinterList() {
           onOpenChange={(open) => !open && setSendPrinter(null)}
           printerId={sendPrinter.id}
           printerName={sendPrinter.name}
+        />
+      )}
+      {calibrationPrinter && (
+        <CalibrationsDialog
+          open
+          onOpenChange={(open) => !open && setCalibrationPrinter(null)}
+          printerId={calibrationPrinter.id}
+          printerName={calibrationPrinter.name}
+          canWrite={canRecordCalibration}
         />
       )}
       {sendsPrinter && (

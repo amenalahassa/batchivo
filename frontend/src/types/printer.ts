@@ -129,6 +129,8 @@ export interface PrinterStateMessage {
  * The access code is masked in responses; send it only when the operator
  * types a new one.
  */
+export type SecretState = 'set' | 'unset' | 'unreadable';
+
 export interface PrinterConnection {
   id: string;
   printer_id: string;
@@ -137,6 +139,12 @@ export interface PrinterConnection {
   ip_address?: string | null;
   port: number;
   access_code?: string | null;
+  /**
+   * Spec 009: secrets are stored encrypted. "unreadable" means a stored value
+   * the server key can no longer decrypt; the operator must enter it again.
+   */
+  access_code_state?: SecretState;
+  cloud_token_state?: SecretState;
   ams_count: number;
   is_enabled: boolean;
   /** Operator-declared Bambu Developer Mode (spec 011). */

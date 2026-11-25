@@ -76,6 +76,11 @@ NOT_PRICING_MODULES: frozenset[str] = frozenset(
         "genai_e2e",
         "genai_platform",
         "genai_settings",
+        # Spec 009: Preflight design briefs, fit calibrations (clearances in mm, not
+        # a cost) and print test results; none is a cost input or moves a price.
+        "design_briefs",
+        "calibrations",
+        "print_test_results",
         "categories",
         "customer_account",
         "customer_auth",

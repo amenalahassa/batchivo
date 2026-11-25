@@ -6,13 +6,17 @@ ghost pins; each is either resolved in the newer version or carried forward.
 Carrying forward creates a new note on the newer file, linked to the original,
 and leaves the original where it was with the status ``carried_forward`` --
 each version's history stays exactly as it was (clarification Q2, FR-029a).
+
+Spec 009 types notes (source, rule id, severity, measured and expected values)
+and lets an open note be dismissed with a written reason; notes written without
+those fields read as source ``person``, severity ``info``.
 """
 
 import logging
 import math
 import uuid
 from datetime import UTC, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +29,18 @@ from app.models.user import User
 from app.services.model_file_version_service import VersionRuleError
 
 logger = logging.getLogger(__name__)
+
+#: Type fields of a note (spec 009); carried forward with it.
+NOTE_TYPE_FIELDS = (
+    "source",
+    "rule_id",
+    "severity",
+    "measured_value",
+    "expected_value",
+    "value_unit",
+)
+#: Type fields that always hold a value (server defaults ``person`` / ``info``).
+REQUIRED_TYPE_FIELDS = ("source", "severity")
 
 #: How far a normal's length may stray from 1 before it is refused.
 _NORMAL_TOLERANCE = 0.01
@@ -115,6 +131,8 @@ class ModelFileNoteService:
         status: Optional[str] = None,
         include_archived: bool = False,
         ghosts_for_file_id: Optional[uuid.UUID] = None,
+        source: Optional[str] = None,
+        severity: Optional[str] = None,
     ) -> list[tuple[ModelFileNote, bool]]:
         """Notes of a model, each with whether it is a ghost from an earlier version.
 
@@ -130,6 +148,13 @@ class ModelFileNoteService:
             query = query.where(ModelFileNote.status == status)
         if version_id is not None:
             query = query.where(ModelFileNote.version_id == version_id)
+        # Typed-note filters (spec 009, FR-011) apply to ghosts too.
+        type_filters = []
+        if source is not None:
+            type_filters.append(ModelFileNote.source == source)
+        if severity is not None:
+            type_filters.append(ModelFileNote.severity == severity)
+        query = query.where(*type_filters)
 
         if ghosts_for_file_id is None:
             if file_id is not None:
@@ -154,6 +179,7 @@ class ModelFileNoteService:
                     ModelFileNote.status == "open",
                     ModelFileNote.archived_at.is_(None),
                     ModelFileVersion.sequence < viewed_version.sequence,
+                    *type_filters,
                 )
                 .order_by(ModelFileVersion.sequence, ModelFileNote.number)
             )
@@ -172,7 +198,9 @@ class ModelFileNoteService:
         text: str,
         layer: Optional[int] = None,
         carried_from: Optional[ModelFileNote] = None,
+        note_type: Optional[dict[str, Any]] = None,
     ) -> ModelFileNote:
+        """Pin a note; ``note_type`` holds the spec 009 type fields (all optional)."""
         model_file = await self._file(model_id, file_id)
         check_normal(normal)
         number = (
@@ -200,7 +228,12 @@ class ModelFileNoteService:
             status="open",
             carried_from_note_id=carried_from.id if carried_from else None,
             author_user_id=self.user.id if self.user else None,
+            source="person",
+            severity="info",
         )
+        for field, value in (note_type or {}).items():
+            if field in NOTE_TYPE_FIELDS and value is not None:
+                setattr(note, field, value)
         self.db.add(note)
         await self.db.flush()
         return note
@@ -214,8 +247,14 @@ class ModelFileNoteService:
         normal: Optional[tuple[float, float, float]] = None,
         status: Optional[str] = None,
         resolved_in_version_id: Optional[uuid.UUID] = None,
+        dismissal_reason: Optional[str] = None,
+        note_type: Optional[dict[str, Any]] = None,
     ) -> ModelFileNote:
-        """Edit, move, resolve or reopen a note. A carried-forward note is final."""
+        """Edit, move, resolve, dismiss or reopen a note. A carried-forward note is final.
+
+        ``note_type`` holds only the type fields the caller sent (an explicit
+        None clears an optional one; ``source`` and ``severity`` cannot be cleared).
+        """
         if note.status == "carried_forward":
             raise VersionRuleError(
                 "note_carried_forward",
@@ -228,7 +267,25 @@ class ModelFileNoteService:
         if normal is not None:
             check_normal(normal)
             note.normal_x, note.normal_y, note.normal_z = normal
-        if status == "resolved":
+        for field, value in (note_type or {}).items():
+            if field not in NOTE_TYPE_FIELDS or (value is None and field in REQUIRED_TYPE_FIELDS):
+                continue
+            setattr(note, field, value)
+        if status in ("resolved", "dismissed") and note.status == "dismissed":
+            raise VersionRuleError("note_dismissed", "Reopen the dismissed note first")
+        if status == "dismissed":
+            # Spec 009 (clarification Q2): an ignored alert keeps its written reason.
+            if note.status != "open":
+                raise VersionRuleError("note_not_open", "Only an open note can be dismissed")
+            if not dismissal_reason or not dismissal_reason.strip():
+                raise VersionRuleError(
+                    "dismissal_reason_required", "Say why the note is dismissed", 422
+                )
+            note.status = "dismissed"
+            note.dismissal_reason = dismissal_reason
+            note.dismissed_at = datetime.now(UTC)
+            note.dismissed_by_user_id = self.user.id if self.user else None
+        elif status == "resolved":
             if resolved_in_version_id is None:
                 raise VersionRuleError(
                     "resolved_version_required", "Say which version resolved it", 422
@@ -237,6 +294,7 @@ class ModelFileNoteService:
             note.status = "resolved"
             note.resolved_in_version_id = resolved_in_version_id
         elif status == "open":
+            # Reopening a dismissed note keeps its last dismissal reason, who and when.
             note.status = "open"
             note.resolved_in_version_id = None
         await self.db.flush()
@@ -261,6 +319,7 @@ class ModelFileNoteService:
             text=note.text,
             layer=note.layer,
             carried_from=note,
+            note_type={field: getattr(note, field) for field in NOTE_TYPE_FIELDS},
         )
         note.status = "carried_forward"
         note.carried_to_version_id = target_version.id
