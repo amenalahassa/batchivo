@@ -194,7 +194,9 @@ class IdeaEntry(Base, UUIDMixin, TimestampMixin):
     file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     link_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     generation_job_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        nullable=True, comment="Generation job that produced the entry (FK added by feature 008)"
+        ForeignKey("generation_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Generation job that produced the entry (feature 008)",
     )
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     author_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(

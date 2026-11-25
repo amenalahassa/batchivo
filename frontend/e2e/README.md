@@ -210,6 +210,19 @@ PLAYWRIGHT_BASE_URL=http://localhost:5174 PLAYWRIGHT_API_URL=http://localhost:80
 The journeys change the seeded data (a tier, a fee actual, accepted
 proposals), so recreate and reseed the database before each full run.
 
+### Running the generative AI journeys locally (spec 008)
+
+`e2e/tests/genai/` never reaches Replicate. Start the backend with its built-in fake provider
+and inline jobs, and a fake token is all the tests type:
+
+```powershell
+$env:E2E_TEST_HOOKS_ENABLED = 'true'; $env:GENAI_PROVIDER_BASE_URL = 'http://localhost:8000/api/v1/genai/e2e-fake'; $env:GENAI_RUN_INLINE = 'true'; cd backend; poetry run uvicorn app.main:app --port 8000
+```
+
+The port in `GENAI_PROVIDER_BASE_URL` is the backend's own. The tests skip, and a skip is
+not a pass, unless `GET /api/v1/genai/e2e-fake/status` reports `provider_is_fake: true`.
+Both variables are ignored in production.
+
 ## Troubleshooting
 
 ### Tests Timeout

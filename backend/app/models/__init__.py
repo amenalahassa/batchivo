@@ -15,6 +15,9 @@ from app.models.model_component import ModelComponent
 # Ideas (feature 007)
 from app.models.idea import Idea, IdeaEntry
 
+# Generative AI (feature 008)
+from app.models.generation_job import GenAIAdoption, GenAIAsset, GenerationJob
+
 # Printers and printer-specific configurations
 from app.models.printer import Printer
 from app.models.printer_connection import ConnectionType, PrinterConnection
@@ -153,6 +156,10 @@ __all__ = [
     # Ideas
     "Idea",
     "IdeaEntry",
+    # Generative AI
+    "GenerationJob",
+    "GenAIAsset",
+    "GenAIAdoption",
     # Printers
     "Printer",
     "PrinterConnection",

@@ -34,6 +34,10 @@ vi.mock('@/hooks/usePlatformAdmin', () => ({
   useDeactivateTenant: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useReactivateTenant: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }))
+// The genai card queries the API; it has its own tests (PlatformGenaiCard.test.tsx).
+vi.mock('@/components/genai/PlatformGenaiCard', () => ({
+  PlatformGenaiCard: () => null,
+}))
 vi.mock('@/hooks/useImpersonation', () => ({
   useImpersonation: () => ({ startImpersonation: vi.fn(), isLoading: false }),
 }))

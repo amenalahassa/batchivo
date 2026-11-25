@@ -8,6 +8,24 @@ tests to `tests/mcp_server/test_tools_<group>.py`.
 
 from types import ModuleType
 
-from app.mcp_server.tools import account, ideas, models, print_sends, printers, production, spools
+from app.mcp_server.tools import (
+    account,
+    genai,
+    ideas,
+    models,
+    print_sends,
+    printers,
+    production,
+    spools,
+)
 
-GROUPS: list[ModuleType] = [account, ideas, models, printers, spools, production, print_sends]
+GROUPS: list[ModuleType] = [
+    account,
+    ideas,
+    models,
+    printers,
+    spools,
+    production,
+    print_sends,
+    genai,
+]

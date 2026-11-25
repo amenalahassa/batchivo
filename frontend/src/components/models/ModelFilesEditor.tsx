@@ -12,10 +12,12 @@
  */
 
 import { lazy, Suspense, useRef, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
+  Sparkles,
   Download,
   Eye,
   File,
@@ -37,6 +39,7 @@ import {
   inferModelFileType,
   linkLocalModelFile,
   validateLocalPath,
+  getModel,
   type ModelFile,
   type ModelFileType,
   type LocalPathValidationResponse,
@@ -80,6 +83,14 @@ import { cn } from '@/lib/utils'
 import { FileMeasurementSummary } from './FileMeasurementSummary'
 import { VersionActivationDialog } from './VersionActivationDialog'
 import { refusalMessage } from './fileMessages'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
+import { AIBadge } from '@/components/genai/AIBadge'
+import { GenerateDialog, type InputCandidate } from '@/components/genai/GenerateDialog'
+import { JobHistory } from '@/components/genai/JobHistory'
+import { useGenAIRoles } from '@/components/genai/useGenAIRoles'
+
+/** The label an adopted 3D draft's version carries (spec 008, US4). */
+const AI_DRAFT_LABEL = 'AI draft'
 
 // three.js weighs ~600 kB: keep it out of every other page (FR-024, SC-007).
 const ModelViewerDialog = lazy(() => import('@/components/viewer/ModelViewerDialog'))
@@ -153,6 +164,19 @@ export function ModelFilesEditor({ modelId }: ModelFilesEditorProps) {
   const [isLinking, setIsLinking] = useState(false)
 
   const updateVersion = useUpdateFileVersion(modelId)
+
+  // Generative AI (spec 008, US4): members and up draft a 3D model from an image.
+  const { canGenerate } = useGenAIRoles()
+  const [historyOpen, setHistoryOpen] = useState(false)
+  // The model the page already loaded; never fetched from here.
+  const { data: model } = useQuery({
+    queryKey: ['model', modelId],
+    queryFn: () => getModel(modelId),
+    enabled: false,
+  })
+  const draftInputs: InputCandidate[] = model?.image_url
+    ? [{ ref: { type: 'model_image', id: modelId }, label: `${model.name} image` }]
+    : []
 
   const deleteMutation = useMutation({
     mutationFn: (fileId: string) => deleteModelFile(modelId, fileId),
@@ -549,6 +573,38 @@ export function ModelFilesEditor({ modelId }: ModelFilesEditorProps) {
             No files uploaded yet. Upload STL, 3MF, or G-code files to get started.
           </div>
         )}
+
+        {canGenerate && (
+          <div className="flex justify-end">
+            <GenerateDialog
+              capability="image_to_3d"
+              title="Draft 3D from image"
+              target={{ type: 'model', id: modelId }}
+              adoptTarget={{ type: 'model', id: modelId }}
+              inputAssets={draftInputs}
+              trigger={
+                <Button variant="outline" size="sm" className="gap-2">
+                  <Sparkles className="h-4 w-4" aria-hidden />
+                  Draft 3D from image
+                </Button>
+              }
+            />
+          </div>
+        )}
+
+        {/* AI generations made for this model (spec 008, US5) */}
+        <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="gap-2">
+              <Sparkles className="h-4 w-4" aria-hidden />
+              AI generations
+              <ChevronDown className={cn('h-4 w-4 transition-transform', historyOpen && 'rotate-180')} aria-hidden />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="pt-2">
+            <JobHistory targetType="model" targetId={modelId} />
+          </CollapsibleContent>
+        </Collapsible>
       </CardContent>
 
       <VersionActivationDialog
@@ -614,6 +670,7 @@ function VersionBlock({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">Version {version.label}</span>
+            {version.label === AI_DRAFT_LABEL && <AIBadge label={AI_DRAFT_LABEL} />}
             {version.is_active && <Badge>Active</Badge>}
             {version.open_note_count > 0 && (
               <Badge variant="secondary">

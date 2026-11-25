@@ -176,6 +176,11 @@ def before_send(event: dict, hint: dict) -> dict | None:
         if isinstance(exc_value, RateLimitExceeded):
             return None
 
+    # Spec 008: no Replicate token leaves in an event (request body, frame locals).
+    from app.services.genai.logging import scrub
+
+    event = scrub(event)
+
     # Add custom context
     settings = get_settings()
     event.setdefault("tags", {})

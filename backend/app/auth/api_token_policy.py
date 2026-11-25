@@ -33,6 +33,7 @@ _SPOOLS = "app.api.v1.spools"
 _QUEUE = "app.api.v1.print_queue"
 _RUNS = "app.api.v1.production_runs"
 _TOKENS = "app.api.v1.api_tokens"
+_GENAI = "app.api.v1.genai"
 
 TOKEN_ROUTE_SCOPES: dict[tuple[str, str], TokenScope] = {
     # Ideas (007)
@@ -83,6 +84,17 @@ TOKEN_ROUTE_SCOPES: dict[tuple[str, str], TokenScope] = {
     ("POST", f"{_SENDS}.dismiss_print_consumption"): "print",
     # A token reading its own description (the MCP server's startup check)
     ("GET", f"{_TOKENS}.get_current_token"): ANY_SCOPE,
+    # Generative AI (spec 008): reads are `read`; starting, cancelling, uploading an
+    # input or adopting a result can spend money or change data, so `genai`.
+    ("GET", f"{_GENAI}.list_capabilities"): "read",
+    ("POST", f"{_GENAI}.estimate"): "read",
+    ("GET", f"{_GENAI}.list_jobs"): "read",
+    ("GET", f"{_GENAI}.get_job"): "read",
+    ("GET", f"{_GENAI}.asset_file"): "read",
+    ("POST", f"{_GENAI}.create_job"): "genai",
+    ("POST", f"{_GENAI}.cancel_job"): "genai",
+    ("POST", f"{_GENAI}.upload_input"): "genai",
+    ("POST", f"{_GENAI}.adopt_asset"): "genai",
 }
 
 

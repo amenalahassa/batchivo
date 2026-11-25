@@ -1,10 +1,12 @@
 """Application configuration using Pydantic settings."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+GENAI_DEFAULT_PROVIDER_URL = "https://api.replicate.com/v1"
 
 # Known weak secrets that should be rejected
 WEAK_SECRETS = [
@@ -134,6 +136,23 @@ class Settings(BaseSettings):
     fx_api_key: str = ""  # Sent as an apikey header when set
     fx_timeout_seconds: float = 5.0  # Short: a sale must not wait on a rate
 
+    # Generative AI, Replicate first (spec 008, research R6/R9).
+    #
+    # The platform token is a secret: it has no value in the repo or any manifest and is
+    # only ever read from the environment. It is used for a tenant without its own token
+    # only when a platform admin authorised that tenant, or when
+    # `genai_platform_token_all_tenants` is set (the single-shop VPS install).
+    replicate_api_token: Optional[SecretStr] = None
+    genai_platform_token_all_tenants: bool = False
+    genai_max_concurrent_jobs: int = 3
+    # Public base URL the provider can call back (e.g. https://api.batchivo.com). Empty =
+    # polling only, which works everywhere, including a local install.
+    genai_webhook_base_url: str = ""
+    # Test-only levers; read through `genai_provider_url` / `genai_inline`, which refuse
+    # them in production and outside development, test or e2e runs.
+    genai_provider_base_url: str = GENAI_DEFAULT_PROVIDER_URL
+    genai_run_inline: bool = False
+
     # Sentry Error Monitoring
     sentry_dsn: str = ""  # Sentry DSN for error tracking (leave empty to disable)
     sentry_traces_sample_rate: float = 0.1  # Performance monitoring sample rate
@@ -179,6 +198,25 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production mode."""
         return self.environment == "production"
+
+    @property
+    def genai_test_levers_allowed(self) -> bool:
+        """Whether the genai test levers may take effect: never in production."""
+        if self.is_production:
+            return False
+        return self.environment in ("development", "test") or self.e2e_test_hooks_enabled
+
+    @property
+    def genai_provider_url(self) -> str:
+        """The provider API base URL; a non-default one only where test levers are allowed."""
+        if self.genai_test_levers_allowed and self.genai_provider_base_url:
+            return self.genai_provider_base_url.rstrip("/")
+        return GENAI_DEFAULT_PROVIDER_URL
+
+    @property
+    def genai_inline(self) -> bool:
+        """Run generation steps in the API process instead of Celery (dev/e2e only)."""
+        return self.genai_run_inline and self.genai_test_levers_allowed
 
     @property
     def effective_database_url(self) -> str:

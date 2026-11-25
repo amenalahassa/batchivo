@@ -679,6 +679,7 @@ class IdeaService:
         name = (request.name or idea.title).strip()
         copied: list[dict] = []
         warnings: list[str] = []
+        ai_draft_files: list[str] = []  # spec 008: stored AI drafts to delete on rollback
         # A savepoint, not the whole transaction: a failure undoes the conversion
         # alone and leaves the session (tenant, user, RLS setting) usable.
         savepoint = await self.db.begin_nested()
@@ -708,6 +709,15 @@ class IdeaService:
                     if result:
                         copied.append(result)
                         model.image_url = result["image_url"]
+                # Spec 008 (FR-017a, Q4): adopted 3D drafts become inactive "AI draft"
+                # versions of the new model.
+                from app.services.genai.adoption import carry_idea_drafts
+
+                warnings.extend(
+                    await carry_idea_drafts(
+                        self.db, self.tenant, self.user, idea, model, ai_draft_files
+                    )
+                )
 
             product = None
             if request.target == "product":
@@ -763,6 +773,10 @@ class IdeaService:
                 await savepoint.rollback()
             for result in copied:
                 await self.storage.delete_image(result["image_url"], result["thumbnail_url"])
+            if ai_draft_files:
+                from app.services.genai.adoption import delete_model_files
+
+                await delete_model_files(self.db, self.tenant, ai_draft_files)
             logger.error(f"Conversion of idea {idea_id} failed and was rolled back")
             raise
 

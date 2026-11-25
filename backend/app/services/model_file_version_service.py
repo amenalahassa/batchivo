@@ -138,8 +138,13 @@ class ModelFileVersionService:
         model: Model,
         label: Optional[str] = None,
         note: Optional[str] = None,
+        activate_if_first: bool = True,
     ) -> ModelFileVersion:
-        """Add the next version. Inactive, unless the model has none yet (FR-009, Q3)."""
+        """Add the next version. Inactive, unless the model has none yet (FR-009, Q3).
+
+        ``activate_if_first=False`` keeps even a first version inactive (spec 008:
+        an AI draft never becomes the active version).
+        """
         last = (
             await self.db.execute(
                 select(func.max(ModelFileVersion.sequence)).where(
@@ -155,7 +160,7 @@ class ModelFileVersionService:
             sequence=sequence,
             label=(label or "").strip() or str(sequence),
             note=note,
-            is_active=last is None,
+            is_active=last is None and activate_if_first,
             created_by_user_id=self.user.id if self.user else None,
         )
         self.db.add(version)

@@ -43,6 +43,7 @@ import {
   Globe,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { PlatformGenaiCard } from '@/components/genai/PlatformGenaiCard'
 
 export function TenantDetailPage() {
   const { tenantId } = useParams({ strict: false }) as { tenantId: string }
@@ -329,6 +330,9 @@ export function TenantDetailPage() {
               )}
             </CardContent>
           </Card>
+
+          {/* Generative AI: the platform Replicate token switch (spec 008) */}
+          <PlatformGenaiCard tenantId={tenant.id} />
         </div>
       </div>
     </PlatformLayout>

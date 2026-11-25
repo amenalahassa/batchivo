@@ -2,7 +2,7 @@
  * Tests for Settings page
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -26,6 +26,11 @@ vi.mock('@/lib/api/settings', () => ({
   inviteTenantMember: vi.fn(),
   updateMemberRole: vi.fn(),
   removeTenantMember: vi.fn(),
+}))
+
+// The AI tab's own panel is tested in ReplicateSettings.test.tsx.
+vi.mock('@/components/settings/ReplicateSettings', () => ({
+  ReplicateSettings: () => <div>Replicate settings panel</div>,
 }))
 
 vi.mock('@/lib/api/orders', () => ({
@@ -323,6 +328,39 @@ describe('Settings Page', () => {
 
     await waitFor(() => {
       expect(settingsApi.listTenantMembers).toHaveBeenCalled()
+    })
+  })
+
+  describe('opening a tab from the URL (spec 008, US1 AS5)', () => {
+    afterEach(() => {
+      window.history.replaceState({}, '', '/')
+    })
+
+    it('opens the AI tab from /settings?tab=ai', async () => {
+      window.history.replaceState({}, '', '/settings?tab=ai')
+      renderWithQueryClient(<Settings />)
+      expect(screen.getByRole('tab', { name: /^ai$/i })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByText('Replicate settings panel')).toBeInTheDocument()
+    })
+
+    it('opens another known tab, e.g. ?tab=team', async () => {
+      window.history.replaceState({}, '', '/settings?tab=team')
+      renderWithQueryClient(<Settings />)
+      expect(screen.getByRole('tab', { name: /team/i })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('falls back to General for an unknown tab', async () => {
+      window.history.replaceState({}, '', '/settings?tab=nope')
+      renderWithQueryClient(<Settings />)
+      expect(screen.getByRole('tab', { name: /general/i })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('falls back to General when the AI tab is not offered to a member', async () => {
+      currentRole = 'member'
+      window.history.replaceState({}, '', '/settings?tab=ai')
+      renderWithQueryClient(<Settings />)
+      expect(screen.queryByRole('tab', { name: /^ai$/i })).not.toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: /general/i })).toHaveAttribute('aria-selected', 'true')
     })
   })
 })

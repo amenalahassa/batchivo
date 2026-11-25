@@ -2545,6 +2545,11 @@ async def update_product_image(
 
     # Update fields
     update_data = image_data.model_dump(exclude_unset=True)
+    # Spec 008: a picture made by AI keeps its AI label (FR-018).
+    if image.origin == "ai" and update_data.get("origin") not in (None, "ai"):
+        raise HTTPException(status_code=422, detail="An AI image cannot be relabelled")
+    if update_data.get("origin") is None:
+        update_data.pop("origin", None)
     for field, value in update_data.items():
         setattr(image, field, value)
 
