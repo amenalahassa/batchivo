@@ -35,6 +35,10 @@ _INLINE = "guarded inline: the handler calls `_require_admin_role(user, tenant)`
 
 NOT_ROLE_GUARDED: dict[tuple[str, str, str], str] = {
     ("shipping", "POST", "/rates"): "a read: quotes postage for a parcel, writes nothing",
+    # Spec 010: any member, viewer included, manages their own tokens; the service
+    # scopes every row to the caller, and a token never exceeds its owner's role.
+    ("api_tokens", "POST", ""): "own tokens only; a token never exceeds its owner's role",
+    ("api_tokens", "POST", "/{token_id}/revoke"): "revokes only the caller's own token",
     ("settings", "PUT", "/square"): _INLINE,
     ("settings", "POST", "/square/test"): _INLINE,
     ("settings", "PUT", "/etsy"): _INLINE,
