@@ -39,13 +39,13 @@ async def second_tenant(db_session: AsyncSession) -> Tenant:
 @pytest.fixture
 async def second_user(db_session: AsyncSession, second_tenant: Tenant) -> User:
     """Create a user for the second tenant."""
-    from app.auth.password import get_password_hash
+    from tests.passwords import hashed_test_password
 
     user = User(
         id=uuid4(),
         email="user2@example.com",
         full_name="Second User",
-        hashed_password=get_password_hash("password123"),
+        hashed_password=hashed_test_password("password123"),
         is_active=True,
     )
     db_session.add(user)
