@@ -37,6 +37,26 @@ from app.models.user import User, UserRole
 from tests.passwords import hashed_test_password
 
 
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    """Drop the migrated template databases the migration tests copied from.
+
+    Only in the process that outlives the others -- the xdist controller, or
+    the only process without xdist -- so no worker drops a template another
+    worker is still copying from.
+    """
+    if hasattr(session.config, "workerinput"):
+        return
+    url = os.environ.get("DATABASE_URL", "")
+    if "postgres" not in url:
+        return
+    from tests.integration.migration_support import drop_templates
+
+    try:
+        drop_templates(url)
+    except Exception:  # noqa: BLE001 -- cleanup must not turn a green run red
+        pass
+
+
 # Configure anyio to only use asyncio backend (not trio)
 @pytest.fixture
 def anyio_backend():

@@ -13,9 +13,13 @@ import uuid
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-from tests.integration.migration_support import alembic_against, database_named, sync_url
+from tests.integration.migration_support import (
+    alembic_against,
+    scratch_database_at,
+    templates_needed,
+)
 
 REVISION = "model_file_versions_v1"
 PARENT = "packaging_advisor_v2"
@@ -69,25 +73,12 @@ def _insert_file(conn, model_id, name, file_type, *, primary=False, uploaded="20
     )
 
 
+templates_needed(PARENT)
+
+
 @pytest.fixture(scope="module")
 def migrated():
-    base_url = _database_url()
-    scratch = f"mfv_{uuid.uuid4().hex[:10]}"
-    admin = create_engine(
-        sync_url(database_named(base_url, "postgres")), isolation_level="AUTOCOMMIT"
-    )
-    scratch_url = database_named(base_url, scratch)
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{scratch}"'))
-        engine = create_engine(sync_url(scratch_url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-
-        with alembic_against(scratch_url) as config:
-            command.upgrade(config, PARENT)
-
+    with scratch_database_at(PARENT, "mfv") as (engine, scratch_url):
         ids = {"with_files": uuid.uuid4(), "no_sliced": uuid.uuid4(), "no_files": uuid.uuid4()}
         with engine.connect() as conn:
             conn.execute(
@@ -120,12 +111,6 @@ def migrated():
             command.upgrade(config, REVISION)
 
         yield engine, ids, before, scratch_url
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{scratch}" WITH (FORCE)'))
-        admin.dispose()
 
 
 class TestBackfill:

@@ -12,9 +12,13 @@ import uuid
 
 import pytest
 from alembic import command
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-from tests.integration.migration_support import alembic_against, database_named, sync_url
+from tests.integration.migration_support import (
+    alembic_against,
+    scratch_database_at,
+    templates_needed,
+)
 
 PARENT = "printer_serial_v1"
 REVISION = "genai_v1"
@@ -30,23 +34,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+templates_needed(PARENT)
+
+
 @pytest.fixture(scope="module")
 def scratch():
-    base_url = _database_url()
-    name = f"genai_mig_{uuid.uuid4().hex[:10]}"
-    admin = create_engine(
-        sync_url(database_named(base_url, "postgres")), isolation_level="AUTOCOMMIT"
-    )
-    url = database_named(base_url, name)
-    engine = None
-    try:
-        with admin.connect() as conn:
-            conn.execute(text(f'CREATE DATABASE "{name}"'))
-        engine = create_engine(sync_url(url), isolation_level="AUTOCOMMIT")
-        with engine.connect() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto"))
-        with alembic_against(url) as config:
-            command.upgrade(config, PARENT)
+    with scratch_database_at(PARENT, "genai_mig") as (engine, url):
         ids = {k: uuid.uuid4() for k in ("tenant", "idea", "entry", "orphan", "product", "image")}
         with engine.connect() as conn:
             conn.execute(
@@ -92,12 +85,6 @@ def scratch():
         with alembic_against(url) as config:
             command.upgrade(config, REVISION)
         yield engine, url, ids
-    finally:
-        if engine is not None:
-            engine.dispose()
-        with admin.connect() as conn:
-            conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-        admin.dispose()
 
 
 def test_existing_product_images_are_photos(scratch):
