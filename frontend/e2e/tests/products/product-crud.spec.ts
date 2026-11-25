@@ -11,8 +11,9 @@
  * Each test runs in a fresh tenant, so it creates the products it needs.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable } from '../../helpers'
 
 const PRODUCT_DETAIL_URL = /\/products\/[0-9a-f-]{36}$/
 const PRODUCT_EDIT_URL = /\/products\/[0-9a-f-]{36}\/edit$/
@@ -56,10 +57,9 @@ async function createProductViaForm(page: Page, sku: string, name: string) {
 test.describe('Product CRUD Operations', () => {
   let testProduct: ReturnType<typeof generateTestProduct>
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     testProduct = generateTestProduct()
-    await registerAndLogin(page)
   })
 
   test('should display products list page', async ({ page }) => {
@@ -188,9 +188,8 @@ test.describe('Product CRUD Operations', () => {
 })
 
 test.describe('Product List Navigation', () => {
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should navigate to product detail on row click', async ({ page }) => {

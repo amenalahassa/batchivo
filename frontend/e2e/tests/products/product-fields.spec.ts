@@ -11,8 +11,9 @@
  * - Boolean: shop_visible, is_featured
  */
 
-import { test, expect, Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, openDashboard } from '../../helpers'
 
 const PRODUCT_DETAIL_URL = /\/products\/[0-9a-f-]{36}$/
 const PRODUCT_EDIT_URL = /\/products\/[0-9a-f-]{36}\/edit$/
@@ -92,7 +93,6 @@ async function saveChanges(page: Page): Promise<void> {
 test.describe('Product Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/products/new')
   })
 
@@ -135,7 +135,6 @@ test.describe('Product Field Validation - Required Fields', () => {
 test.describe('Product Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/products/new')
   })
 
@@ -157,7 +156,6 @@ test.describe('Product Field Validation - Optional Text Fields', () => {
 test.describe('Product Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
     await page.goto('/products/new')
   })
 
@@ -202,7 +200,7 @@ test.describe('Product Field Validation - Numeric Fields', () => {
 test.describe('Product Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should create product with all fields populated', async ({ page }) => {
@@ -257,7 +255,7 @@ test.describe('Product Field Validation - Complete Form', () => {
 test.describe('Product Field Validation - Edit Mode Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should save shop settings when editing product', async ({ page }) => {
@@ -304,7 +302,7 @@ test.describe('Product Field Validation - Edit Mode Fields', () => {
 test.describe('Product Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running on port 8000')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should navigate to products page from dashboard', async ({ page }) => {

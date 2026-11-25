@@ -9,13 +9,16 @@
  * - Recent activity display
  */
 
-import { test, expect } from '@playwright/test'
-import { isBackendAvailable, registerAndLogin } from '../../helpers'
+import { test, expect } from '../../fixtures'
+import { isBackendAvailable, openDashboard } from '../../helpers'
+
+// The tests only read the tenant (or sign out client-side): one tenant per
+// worker for this file is enough.
+test.use({ account: 'shared' })
 
 test.describe('Dashboard Page', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/dashboard')
     await page.waitForLoadState('networkidle')
   })
@@ -67,7 +70,6 @@ test.describe('Dashboard Page', () => {
 test.describe('Dashboard Navigation', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/dashboard')
     await page.waitForLoadState('networkidle')
   })
@@ -109,7 +111,6 @@ test.describe('Dashboard Navigation', () => {
 test.describe('Dashboard Stats', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/dashboard')
     await page.waitForLoadState('networkidle')
   })
@@ -139,7 +140,7 @@ test.describe('Dashboard Stats', () => {
 test.describe('Dashboard Loading States', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should show loading state then content', async ({ page }) => {
@@ -177,7 +178,7 @@ test.describe('Dashboard Loading States', () => {
 test.describe('Dashboard Responsive Design', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
+    await openDashboard(page)
   })
 
   test('should be usable on mobile viewport', async ({ page }) => {

@@ -16,8 +16,9 @@
  * the API rather than by clicking through other screens.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from './helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from './fixtures'
+import { apiAs, isBackendAvailable } from './helpers'
 
 // Test data
 const TEST_MODEL = {
@@ -116,9 +117,8 @@ test.describe('Production Run Auto-Population from Model BOM', () => {
   // when the shared stack is busy.
   test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should auto-populate materials from model BOM when creating production run', async ({ page }) => {

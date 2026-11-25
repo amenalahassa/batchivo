@@ -10,8 +10,9 @@
  * These settings live on the product edit page ("Shop Display Settings").
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable } from '../../helpers'
 
 const PRODUCT_DETAIL_URL = /\/products\/[0-9a-f-]{36}$/
 
@@ -57,7 +58,6 @@ test.describe('Shop Visibility Toggle', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     testProduct = generateTestProduct()
-    await registerAndLogin(page)
     productId = await createTestProduct(page, testProduct)
   })
 
@@ -118,7 +118,6 @@ test.describe('Featured Product Toggle', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
     testProduct = generateTestProduct()
-    await registerAndLogin(page)
     productId = await createTestProduct(page, testProduct)
   })
 

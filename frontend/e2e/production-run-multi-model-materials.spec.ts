@@ -20,8 +20,9 @@
  * API rather than by clicking through other screens.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from './helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from './fixtures'
+import { apiAs, isBackendAvailable } from './helpers'
 
 const SPOOLS = {
   blue: { brand: 'E2E', color: 'Blue', name: 'E2E - PLA - Blue' },
@@ -106,9 +107,8 @@ test.describe('Multi-Model Production Run with Grouped Materials', () => {
   // when the shared stack is busy.
   test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not available')
-    await registerAndLogin(page)
   })
 
   test('should group materials by spool across multiple models with correct totals', async ({

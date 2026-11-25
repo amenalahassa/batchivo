@@ -11,8 +11,9 @@
  * the API rather than by clicking through other screens.
  */
 
-import { test, expect, type Page } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin } from '../../helpers'
+import { type Page } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable } from '../../helpers'
 
 // Generate unique test identifiers
 const TIMESTAMP = Date.now()
@@ -165,9 +166,8 @@ test.describe('Production Run Workflow with Inventory Deduction', () => {
   // when the shared stack is busy.
   test.describe.configure({ timeout: 90_000 })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
   })
 
   test('should deduct inventory when production run is completed', async ({ page }) => {
@@ -240,9 +240,8 @@ test.describe('Production Run completion west of UTC', () => {
   // The browser runs behind UTC, as for an operator in North America.
   test.use({ timezoneId: 'America/New_York' })
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async () => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
   })
 
   // Regression: .specify/bugs/complete-run-timezone-500 (the "Started" field

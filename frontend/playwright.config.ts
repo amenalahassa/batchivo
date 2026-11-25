@@ -8,17 +8,21 @@ import { defineConfig, devices } from '@playwright/test'
 export default defineConfig({
   testDir: './e2e',
 
-  /* Run tests in files in parallel - disabled to prevent registration rate limiting */
-  fullyParallel: false,
+  /* Tests sign in through fixtures.ts (a new tenant per test unless a file opts
+     into a shared one), so they do not depend on each other and can run in
+     parallel. The pricing projects opt out below. */
+  fullyParallel: true,
 
   /* Fail the build on CI if you accidentally left test.only in the source code. */
   forbidOnly: !!process.env.CI,
 
-  /* Retry failed tests (helps with rate limiting flakiness) */
+  /* Retry failed tests once locally */
   retries: process.env.CI ? 2 : 1,
 
-  /* Single worker to prevent registration rate limiting */
-  workers: 1,
+  /* Three workers by default (the local backend runs with E2E_TEST_HOOKS_ENABLED,
+     which switches the signup rate limit off). PLAYWRIGHT_WORKERS overrides it,
+     e.g. 1 on a machine short of memory. */
+  workers: Number(process.env.PLAYWRIGHT_WORKERS) || 3,
 
   /* Reporter to use. See https://playwright.dev/docs/test-reporters */
   reporter: 'html',
@@ -63,15 +67,21 @@ export default defineConfig({
      * and the viewer in once each, so the suite stays inside the login rate
      * limit; every spec reuses those sessions. CI runs `--project=pricing`.
      */
+    /* The journeys share and change that one seeded tenant, so they run one at
+     * a time, in file order, on a single worker, while chromium uses the rest. */
     {
       name: 'pricing-setup',
       testMatch: /pricing\/auth\.setup\.ts/,
+      fullyParallel: false,
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
     {
       name: 'pricing',
       testMatch: /pricing\/.*\.spec\.ts/,
       dependencies: ['pricing-setup'],
+      fullyParallel: false,
+      workers: 1,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

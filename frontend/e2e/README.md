@@ -14,7 +14,26 @@ E2E tests verify complete user workflows by automating real browser interactions
 - Running backend API (port 8000), started with `E2E_TEST_HOOKS_ENABLED=true`
 - Test user account in the database
 
+### Signed-in tests (`fixtures.ts`)
+
+Specs import `test` and `expect` from `e2e/fixtures.ts` instead of
+`@playwright/test`. Every page then opens already signed in as the owner of a
+3D-print tenant: the fixture registers the owner through the API (the same
+endpoints the signup page calls, plus the e2e token hook below) and hands the
+session to the browser as its storage state. No signup pages are loaded.
+
+- Default (`account: 'fresh'`): a new tenant per test. Keep it when a test reads
+  an empty state, counts rows, or reuses names fixed once per file.
+- `test.use({ account: 'shared' })`: one tenant per worker and spec file, for
+  files whose tests only read (dashboard, settings).
+
+The chromium project runs on 3 workers (`PLAYWRIGHT_WORKERS` overrides it); the
+pricing projects stay on one worker, in file order, since they share the seeded
+tenant.
+
 ### Throwaway users (`registerAndLogin`)
+
+The signup and login journeys (`tests/auth/*`) still sign up through the pages.
 
 Signup requires a business name and email verification. `registerAndLogin` walks
 the real flow: it fills `/signup`, reads the pending verification token from the
@@ -233,11 +252,9 @@ For consistent E2E tests, seed the database with:
 
 ### Parallel Execution
 
-Playwright runs tests in parallel by default. Configure workers in `playwright.config.ts`:
-
-```typescript
-workers: process.env.CI ? 1 : undefined
-```
+`playwright.config.ts` runs 3 workers (`PLAYWRIGHT_WORKERS=1 npx playwright test`
+for one); `fullyParallel` is on except for the pricing projects, which keep one
+worker of their own.
 
 ### Test Sharding (CI)
 

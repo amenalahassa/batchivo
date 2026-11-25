@@ -17,8 +17,9 @@
  * price, empty spool weight, a hand-typed spool ID) are not part of it.
  */
 
-import { test, expect, Page, Locator } from '@playwright/test'
-import { apiAs, isBackendAvailable, registerAndLogin, uniqueSuffix } from '../../helpers'
+import { type Page, type Locator } from '@playwright/test'
+import { test, expect } from '../../fixtures'
+import { apiAs, isBackendAvailable, uniqueSuffix } from '../../helpers'
 
 // Each test signs up a fresh tenant first; leave room for a busy shared backend.
 test.describe.configure({ timeout: 90_000 })
@@ -159,7 +160,6 @@ async function openSpoolSheet(page: Page, brand: string): Promise<Locator> {
 test.describe('Spool Field Validation - Required Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
     await expect(page.getByRole('heading', { level: 1, name: 'Filament Library' })).toBeVisible()
   })
@@ -228,7 +228,6 @@ test.describe('Spool Field Validation - Required Fields', () => {
 test.describe('Spool Field Validation - Optional Text Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
@@ -301,7 +300,6 @@ test.describe('Spool Field Validation - Optional Text Fields', () => {
 test.describe('Spool Field Validation - Numeric Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
@@ -379,7 +377,6 @@ test.describe('Spool Field Validation - Numeric Fields', () => {
 test.describe('Spool Field Validation - Boolean Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
@@ -430,7 +427,6 @@ test.describe('Spool Field Validation - Boolean Fields', () => {
 test.describe('Spool Field Validation - Select Fields', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
@@ -466,7 +462,6 @@ test.describe('Spool Field Validation - Select Fields', () => {
 test.describe('Spool Field Validation - Complete Form', () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!(await isBackendAvailable()), 'Backend API not running')
-    await registerAndLogin(page)
     await page.goto('/filaments')
   })
 
