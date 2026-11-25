@@ -15,10 +15,11 @@ import { PackagingSettings } from '@/components/settings/PackagingSettings'
 import { MarginDivergencePanel } from '@/components/pricing/MarginDivergencePanel'
 import { SquareSettings } from '@/components/settings/SquareSettings'
 import { TeamSettings } from '@/components/settings/TeamSettings'
+import { ApiTokensSettings } from '@/components/settings/ApiTokensSettings'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAuth } from '@/contexts/AuthContext'
 import { canEditMonetaryPolicy, canEditOperationalFigures } from '@/lib/pricing/permissions'
-import { Building2, Coins, CreditCard, Store, Users } from 'lucide-react'
+import { Building2, Coins, CreditCard, KeyRound, Store, Users } from 'lucide-react'
 
 export function Settings() {
   const { user } = useAuth()
@@ -59,6 +60,10 @@ export function Settings() {
             <TabsTrigger value="team" className="gap-2">
               <Users className="h-4 w-4" />
               Team
+            </TabsTrigger>
+            <TabsTrigger value="api-tokens" className="gap-2">
+              <KeyRound className="h-4 w-4" />
+              API tokens
             </TabsTrigger>
           </TabsList>
 
@@ -106,6 +111,10 @@ export function Settings() {
 
           <TabsContent value="team">
             <TeamSettings />
+          </TabsContent>
+
+          <TabsContent value="api-tokens">
+            <ApiTokensSettings />
           </TabsContent>
         </Tabs>
       </div>

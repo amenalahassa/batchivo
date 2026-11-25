@@ -207,6 +207,7 @@ async def live():
 # Include API routers
 from app.api.v1 import (
     analytics,
+    api_tokens,
     audit,
     auth,
     categories,
@@ -416,6 +417,10 @@ app.include_router(
 )
 # Product ideas, their timeline and conversion (spec 007)
 app.include_router(ideas.router, prefix=f"{settings.api_v1_prefix}/ideas", tags=["ideas"])
+# Personal API tokens for scripts and AI agents (spec 010)
+app.include_router(
+    api_tokens.router, prefix=f"{settings.api_v1_prefix}/api-tokens", tags=["api-tokens"]
+)
 app.include_router(
     settings_api.router, prefix=f"{settings.api_v1_prefix}/settings", tags=["settings"]
 )

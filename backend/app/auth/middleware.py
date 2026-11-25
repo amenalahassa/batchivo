@@ -78,6 +78,10 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
         This is a lightweight extraction for middleware. Full token validation
         happens in get_current_user dependency.
         """
+        # A personal API token (spec 010) is not a JWT: never decode it. Its
+        # tenant is resolved by `get_current_tenant` from the token row.
+        if token.startswith("bvt_"):
+            return None
         try:
             # Import here to avoid circular imports
             from app.core.security import decode_token

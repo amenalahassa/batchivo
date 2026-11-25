@@ -45,6 +45,7 @@ dependencies = [
     "cryptography (>=46.0.6)",
     "requests (>=2.33.0)",
     "greenlet (>=3.2.0)",
+    "mcp (>=2.3.0,<3)",
 ]
 
 [project.optional-dependencies]

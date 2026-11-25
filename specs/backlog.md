@@ -545,7 +545,7 @@ printer secrets; tests per the testing policy.
 
 ## Batchivo MCP server for AI agents
 
-**Status:** not specified (feature 010, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §7). Read-only tools can start after 007.
+**Status:** specified, clarified and designed, auth design validated; built and converged on branch `claude/mystifying-bardeen-acb21d`, awaiting merge (feature 010, spec in `specs/010-mcp-server/`, see `docs/ARCHITECTURE-IDEAS-GENAI-PREFLIGHT.md` §7).
 
 ### Prompt
 
