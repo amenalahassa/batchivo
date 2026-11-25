@@ -31,6 +31,10 @@ The chromium project runs on 3 workers (`PLAYWRIGHT_WORKERS` overrides it); the
 pricing projects stay on one worker, in file order, since they share the seeded
 tenant.
 
+`apiAs` (API seeding in specs) sends a call once more when its keep-alive socket
+was reset (`ECONNRESET` / `socket hang up`, `connectionRetry.ts`); any other error
+still fails. Check it with `node --test e2e/connectionRetry.check.ts`.
+
 ### Throwaway users (`registerAndLogin`)
 
 The signup and login journeys (`tests/auth/*`) still sign up through the pages.

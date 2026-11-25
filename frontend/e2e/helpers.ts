@@ -7,6 +7,7 @@
 
 import { BrowserContext, Page } from '@playwright/test'
 import { API_URL, HEALTH_URL } from './config'
+import { retryOnConnectionReset } from './connectionRetry'
 
 /**
  * Check if the backend API is available
@@ -214,7 +215,10 @@ async function pollAccessToken(page: Page, timeout: number): Promise<string> {
 export async function apiAs(page: Page) {
   const headers = { Authorization: `Bearer ${await getAccessToken(page)}` }
   async function call<T>(method: 'get' | 'post' | 'put' | 'patch' | 'delete', path: string, data?: unknown): Promise<T> {
-    const response = await page.request[method](`${API_URL}${path}`, { headers, data })
+    // A reset keep-alive socket is retried once (connectionRetry.ts); nothing else is.
+    const response = await retryOnConnectionReset(() =>
+      page.request[method](`${API_URL}${path}`, { headers, data })
+    )
     if (!response.ok()) {
       throw new Error(`${method.toUpperCase()} ${path} answered HTTP ${response.status()}: ${await response.text()}`)
     }
